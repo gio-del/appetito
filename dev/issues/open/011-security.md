@@ -12,3 +12,7 @@ PRD §4, gate 3. Source: `scripts/security-audit`, `ports-check`, `tailscale/pol
 - [ ] Test (a): `agent` can't sudo; audit green in the sandbox
 
 Acceptance: gate 3 tests green.
+
+## Progress (2026-10-13)
+- Done: users and groups (installer), `security-audit` and `ports-check` for a systemd host, per-uid nftables firewall + egress proxy with host allowlists, test (a) in `tests/e2e/security.sh` — green, and `security-audit` green in the sandbox (smoke scenario).
+- Next: Tailscale policy template with `tests` (`guard/tailscale/policy.template.hujson`).
