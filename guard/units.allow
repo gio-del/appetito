@@ -1,0 +1,14 @@
+# Which user each core unit (core/systemd/) runs as. Timers and path units follow their service.
+# Never root: root jobs live in guard/systemd/ and are not editable without the owner's tap.
+appetito-tracker.service          tracker
+appetito-worker.service           agent
+appetito-worker-request.service   agent
+appetito-suggest.service          agent
+appetito-monitor.service          appetito
+appetito-lint.service             appetito
+appetito-housekeep.service        appetito
+appetito-brain-sort.service       brain
+appetito-brain-propose.service    brain
+appetito-brain-cal.service        brain
+appetito-vault-autocommit.service brain
+appetito-syncthing.service        brain

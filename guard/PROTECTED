@@ -1,0 +1,3 @@
+# Paths whose changes never auto-merge: the deploy runner shows them in the tracker as
+# "Change to protections — needs your tap". Prefixes, one per line; this file is itself under guard/.
+guard/

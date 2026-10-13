@@ -1,0 +1,46 @@
+#!/bin/sh
+# branch-policy REPO BASE HEAD: decides what the deploy runner may do with an agent branch.
+# Prints one verdict line and exits 0:
+#   ok                          merge under the merge gate
+#   protected <path> [...]      touches guard/PROTECTED: wait for the owner's tap
+#   reject <reason>             never merged
+# Rules (docs/architecture.md): proposals are only the owner's to approve, so a branch may not
+# touch issues/proposed/, add or change `Approved:` / `Source:` header lines anywhere in issues/,
+# or delete an issue (moving open/ → done/ is fine).
+set -eu
+R=$1 BASE=$2 HEAD=$3
+g() { git -C "$R" "$@"; }
+g cat-file -e "$HEAD^{commit}" 2>/dev/null || { echo "reject unknown commit"; exit 0; }
+# Merge commits from the agent could hide changes from a plain diff: linear branches only.
+if [ -n "$(g rev-list --merges "$BASE..$HEAD")" ]; then echo "reject merge commits are not allowed on agent branches"; exit 0; fi
+files=$(g diff --name-only --no-renames "$BASE" "$HEAD")
+[ -n "$files" ] || { echo "reject empty branch"; exit 0; }
+# Symlinks and submodules could point outside the tree.
+if g diff --raw --no-renames "$BASE" "$HEAD" | awk '{print $2}' | grep -Eq '^(120000|160000)$'; then
+	echo "reject symlinks and submodules are not allowed"; exit 0
+fi
+if printf '%s\n' "$files" | grep -q '^issues/proposed/'; then echo "reject changes issues/proposed/ (proposals are approved only by the owner)"; exit 0; fi
+# Compare those header lines per issue number (an issue keeps its number when it moves folder).
+hdr() { g show "$1" 2>/dev/null | grep -E '^(Approved|Source):' | sort; }
+for f in $(printf '%s\n' "$files" | grep -E '^issues/(open|done)/[0-9]+-[^/]*\.md$' || true); do
+	g cat-file -e "$HEAD:$f" 2>/dev/null || continue
+	n=${f##*/}; n=${n%%-*}
+	old=$(g ls-tree --name-only "$BASE" issues/open/ issues/done/ issues/proposed/ | grep -E "/$n-[^/]*\.md\$" | head -1 || true)
+	if [ "$(hdr "$HEAD:$f")" != "$(if [ -n "$old" ]; then hdr "$BASE:$old"; fi)" ]; then
+		echo "reject adds or changes an Approved:/Source: line in $f (only the tracker writes them)"; exit 0
+	fi
+done
+for f in $(g diff --no-renames --diff-filter=D --name-only "$BASE" "$HEAD" -- issues/ | grep -E '/[0-9]+-[^/]*\.md$' || true); do
+	n=${f##*/}; n=${n%%-*}
+	g ls-tree --name-only "$HEAD" issues/open/ issues/done/ | grep -Eq "/$n-[^/]*\.md\$" || { echo "reject deletes issue $n"; exit 0; }
+done
+prot=""
+while IFS= read -r p; do
+	case $p in ''|'#'*) continue ;; esac
+	hit=$(printf '%s\n' "$files" | grep -F -- "$p" | awk -v p="$p" 'index($0, p) == 1' | head -5 | tr '\n' ' ')
+	[ -z "$hit" ] || prot="$prot$hit"
+done <<LIST
+$(g show "$BASE:guard/PROTECTED" 2>/dev/null || echo guard/)
+LIST
+if [ -n "$prot" ]; then echo "protected ${prot% }"; exit 0; fi
+echo ok
