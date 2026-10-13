@@ -50,7 +50,9 @@ one_run() {
 	OUT=$ROOT/tests/e2e/out/$RUN; mkdir -p "$OUT"
 	NAME=appetito-e2e-$$-$n
 	log "run $RUN ($BACKEND${BACKEND:+, model $MODEL})"
-	docker build -q --platform "linux/$ARCH" --build-arg BASE="$BASE" -t "$IMG" tests/e2e >/dev/null
+	if ! docker build -q --platform "linux/$ARCH" --build-arg BASE="$BASE" -t "$IMG" tests/e2e > "$OUT/build.log" 2>&1; then
+		tail -5 "$OUT/build.log"; log "FAIL image build (see $OUT/build.log; arm64 needs binfmt/qemu in Docker)"; result fail "$(date +%s)" "image build failed"; return 1
+	fi
 	docker rm -f "$NAME" >/dev/null 2>&1 || true
 	docker run -d --name "$NAME" --platform "linux/$ARCH" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
 		--tmpfs /run --tmpfs /run/lock --hostname appetito-box -p 127.0.0.1::8080 -p 127.0.0.1::8081 "$IMG" >/dev/null
