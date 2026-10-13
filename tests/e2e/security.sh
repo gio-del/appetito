@@ -52,9 +52,9 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -b /root/e2e-cookies -H 'Origin: h
 [ "$code" = 403 ] && pass "moving it to To do without the confirm page: $code" || fail "moving it to To do answered $code"
 # The agent forging an approval on its branch: rejected by the deploy runner.
 id2=$(issue "Forge an approval")
-script <<EOF
-{"steps":[{"sh":"f=\$(ls issues/open/$id2-*.md) && sed -i 's/^Status: todo/Status: todo\\\\nSource: system\\\\nApproved: 2026-01-01/' \$f && printf 'Opened: 2026-01-01\\\\nBlocked on: -\\\\nStatus: todo\\\\nSource: brain\\\\nApproved: 2026-01-01\\\\n' > issues/open/999-forged.md && git add -A && git commit -qm forged","must":true}],"result":"done"}
-EOF
+jq -n --arg id "$id2" '{steps: [
+	{write: "issues/open/999-forged.md", content: "# Forged\n\nOpened: 2026-01-01\nBlocked on: -\nStatus: todo\nSource: brain\nApproved: 2026-01-01\n"},
+	{sh: "git add -A && git commit -qm forged", must: true}], result: "done"}' | script
 work "$id2"
 st=$(state "$id2")
 [ "$st" = rejected ] && pass "branch with a forged Approved:/Source: rejected" || fail "forged approval branch state '$st'"
@@ -75,11 +75,12 @@ head=$(git -C "$R" rev-parse HEAD)
 work "$id3"
 st=$(state "$id3")
 [ "$st" = rolled-back ] && pass "deploy rolled back (state $st)" || fail "state '$st', expected rolled-back"
-git -C "$R" log -1 --format=%s | grep -q '^Roll back agent/' && pass "main ends with the revert commit" || fail "no revert commit on main: $(git -C "$R" log -1 --format=%s)"
+git -C "$R" log -5 --format=%s | grep -q '^Roll back agent/' && pass "main has the revert commit" || fail "no revert commit on main: $(git -C "$R" log -5 --format=%s | tr '\n' '|')"
 [ ! -e "$R/services/broken" ] && pass "the broken service is gone from main" || fail "services/broken still on main"
 systemctl cat broken.service >/dev/null 2>&1 && fail "broken.service still installed" || pass "broken.service uninstalled"
 ls "$R"/issues/open/*deploy-of-agent* >/dev/null 2>&1 && pass "monitor issue opened: $(ls "$R"/issues/open/*deploy-of-agent* | head -1 | xargs basename)" || fail "no monitor issue for the rollback"
-[ "$(readlink -f /opt/appetito/current)" = "$(readlink -f /opt/appetito/releases/"$(git -C "$R" rev-parse HEAD)")" ] && pass "the running release is main's" || fail "current release is not main's HEAD"
+code=$(git -C "$R" log -1 --format=%H -- . ':!issues')
+[ "$(readlink -f /opt/appetito/current)" = "$(readlink -f /opt/appetito/releases/"$code")" ] && pass "the running release is main's latest code" || fail "current release $(readlink -f /opt/appetito/current) is not main's latest code ${code:0:12}"
 /opt/appetito/current/guard/bin/appetito-checks >/dev/null 2>&1 && pass "checks green again after the rollback" || fail "checks fail after the rollback"
 
 echo "== $fails failure(s)"

@@ -10,3 +10,4 @@ One line per `make e2e` run (`tests/e2e/run`).
 | 2026-10-13 19:36 | 15a186d | debian13 | amd64 | smoke | claude-code (sonnet) | 2 min | pass |
 | 2026-10-13 19:39 | 12e822c | debian13 | amd64 | security | fake (sonnet) | 2 min | fail: see tests/e2e/out/20261013-193704-debian13-amd64-security |
 | 2026-10-13 22:09 | 427f1fa | debian13 | amd64 | security | fake (sonnet) | 1 min | fail: install failed |
+| 2026-10-13 22:13 | 6188228 | debian13 | amd64 | security | fake (sonnet) | 3 min | fail: see tests/e2e/out/20261013-220959-debian13-amd64-security |
