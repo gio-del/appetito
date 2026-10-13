@@ -1,0 +1,15 @@
+[Unit]
+Description=appetito monitor: failures become issues
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=appetito
+Group=appetito
+EnvironmentFile=/etc/appetito/appetito.env
+Environment=HOME=/var/lib/appetito/home
+ExecStart=/usr/bin/env node /opt/appetito/current/core/monitor/monitor.js
+TimeoutStartSec=10min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full

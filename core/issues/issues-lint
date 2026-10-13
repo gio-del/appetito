@@ -1,0 +1,6 @@
+#!/bin/sh
+# Shape-rule checker (issues/README.md "Shape rules"): prints the open issues that break a rule as
+# JSON ([{id, rule, fp, msg}]). Same checks the tracker shows in the drawer; the monitor turns them
+# into monitor issues. Usage: issues-lint [REPO]
+HERE=$(cd "$(dirname "$0")/../.." && pwd)
+exec node "$HERE/guard/tracker/issues.js" --lint "${1:-/opt/appetito/repo}"

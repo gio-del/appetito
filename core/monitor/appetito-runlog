@@ -1,0 +1,14 @@
+#!/bin/sh
+# appetito-runlog DIR [DAYS] [MB]: rotate a directory of kept agent runs (one sub-directory per run,
+# as agent-run writes them): runs older than DAYS (30) go, then the oldest until DIR is under MB
+# (200). Mode 700 on DIR: brain's runs carry vault text.
+set -eu
+dir=$1 days=${2:-30} mb=${3:-200}
+[ -d "$dir" ] || exit 0
+chmod 700 "$dir"
+find "$dir" -mindepth 1 -maxdepth 1 -mtime +"$days" -exec rm -rf {} +
+while [ "$(du -sk "$dir" | cut -f1)" -gt $((mb * 1024)) ]; do
+	old=$(ls -1tr "$dir" | head -1)
+	[ -n "$old" ] && [ "$(ls -1 "$dir" | wc -l)" -gt 1 ] || break
+	rm -rf "${dir:?}/$old"
+done

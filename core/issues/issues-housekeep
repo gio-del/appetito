@@ -1,0 +1,6 @@
+#!/bin/sh
+# Issue housekeeping: close epics whose children are all done, unblock issues whose
+# "Blocked on: issue NNN" blockers are done. Same rules the tracker applies after every edit; this
+# catches closes made with git mv by the agent. Usage: issues-housekeep [REPO]
+HERE=$(cd "$(dirname "$0")/../.." && pwd)
+exec node "$HERE/guard/tracker/issues.js" "${1:-/opt/appetito/repo}"

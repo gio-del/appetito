@@ -1,0 +1,5 @@
+# Health URLs of appetito's own parts, checked by the deploy runner after every deploy and by the
+# monitor every 5 minutes (services declare theirs with HEALTH= in services/<name>/service.env).
+# Only http://127.0.0.1:PORT/…; ${VAR} comes from /etc/appetito/appetito.env.
+http://127.0.0.1:${TRACKER_PORT}/healthz
+http://127.0.0.1:${TRACKER_CONFIRM_PORT}/healthz

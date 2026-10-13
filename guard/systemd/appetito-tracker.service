@@ -5,7 +5,6 @@ After=network-online.target
 [Service]
 User=tracker
 Group=tracker
-SupplementaryGroups=appetito-issues
 EnvironmentFile=/etc/appetito/appetito.env
 Environment=TRACKER_REPO=/opt/appetito/repo TRACKER_STATE=/var/lib/appetito/tracker TRACKER_PUBLIC=/opt/appetito/current/core/tracker/public
 ExecStart=/usr/bin/env node /opt/appetito/current/guard/tracker/server.js

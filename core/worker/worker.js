@@ -352,6 +352,7 @@ async function round(manual, only) {
 		event({ e: 'round-end', result: ended });
 		unlock();
 		status();
+		try { execFileSync(path.join(CUR, 'core', 'monitor', 'appetito-runlog'), [path.join(ST, 'runs')], { stdio: 'ignore' }); } catch {}
 	}
 }
 

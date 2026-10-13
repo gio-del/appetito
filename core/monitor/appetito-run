@@ -1,0 +1,20 @@
+#!/bin/sh
+# appetito-run NAME CMD [ARG...]: run a scheduled job and, when it fails, drop an event for the
+# monitor (which turns it into an issue). Output still goes to the journal.
+# Events: /var/lib/appetito/events (mode 1733: anyone drops, only the monitor's user can list;
+# files 644). The monitor trusts the event file's owner, not its content: for user brain it
+# ignores the log text (brain reads untrusted material).
+name=$1; shift
+case $name in *[!a-z0-9-]*|'') echo "appetito-run: bad name" >&2; exit 2 ;; esac
+EV=${APPETITO_EVENTS:-/var/lib/appetito/events}
+out=$(mktemp) || exit 1
+"$@" > "$out" 2>&1; rc=$?
+cat "$out"
+if [ "$rc" -ne 0 ] && [ -d "$EV" ]; then
+	ev=$(mktemp -p "$EV" ".$name.XXXXXX") && {
+		printf 'name %s\nrc %s\nwhen %s\n' "$name" "$rc" "$(date +%s)"
+		echo "---"; tail -n 40 "$out" | cut -c1-300
+	} > "$ev" && chmod 644 "$ev" && mv "$ev" "$EV/$name.$(date +%s).$$"
+fi
+rm -f "$out"
+exit "$rc"

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Duplicate check before writing an issue: prints the open and recently done (60 days) issues whose
+# title/description look like the given ones, "id<TAB>score<TAB>state<TAB>title", best first;
+# nothing = no candidate. Deterministic, no model. Usage: issues-similar TITLE [BODY]
+# (repo: $ISSUES_REPO, default the current git repo, else /opt/appetito/repo)
+HERE=$(cd "$(dirname "$0")/../.." && pwd)
+[ -n "${ISSUES_REPO:-}" ] || ISSUES_REPO=$(git rev-parse --show-toplevel 2>/dev/null || echo /opt/appetito/repo)
+ISSUES_REPO=$ISSUES_REPO exec node "$HERE/guard/tracker/issues.js" --similar "$@"
