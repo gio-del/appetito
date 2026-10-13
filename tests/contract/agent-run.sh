@@ -21,8 +21,9 @@ echo "== edit-repo can write"
 fs s-write
 rc=0; "$AR" --prompt "$T/p-write" --dir "$T/w" --profile edit-repo --backend "$B" --out "$T/o1" --timeout 600 || rc=$?
 node "$HERE/validate.js" "$T/o1"
-[ "$rc" = 0 ] || { echo "exit $rc, expected 0"; cat "$T/o1/final.txt"; exit 1; }
-[ -f "$T/w/hello.txt" ] || { echo "hello.txt was not created"; exit 1; }
+[ -n "${CONTRACT_ONLY:-}" ] || [ "$rc" = 0 ] || { echo "exit $rc, expected 0"; cat "$T/o1/final.txt"; exit 1; }
+# CONTRACT_ONLY=1 (small local models): check the contract, not whether the model managed the task.
+if [ -z "${CONTRACT_ONLY:-}" ]; then [ -f "$T/w/hello.txt" ] || { echo "hello.txt was not created"; exit 1; }; fi
 
 echo "== read-only can't write"
 rm -f "$T/w/hello.txt"

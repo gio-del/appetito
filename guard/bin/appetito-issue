@@ -1,0 +1,45 @@
+#!/bin/sh
+# appetito-issue: create an issue file from guard code (root). Root never runs core/ code, so
+# the deploy runner has its own tiny writer instead of the tracker's or the monitor's.
+#
+#   appetito-issue REPO "Title" LABELS < body      prints the new path (issues/open/NNN-slug.md)
+#   appetito-issue --comment FILE AUTHOR < text     appends a comment to an existing issue
+#
+# Numbering takes the same lock directory as the tracker and the monitor
+# ($APPETITO_STATE/issues.lock, mkdir is atomic), so two writers never pick the same number.
+set -eu
+umask 002
+STATE=${APPETITO_STATE:-/var/lib/appetito}
+lock() {
+	i=0
+	until mkdir "$STATE/issues.lock" 2>/dev/null; do
+		i=$((i + 1))
+		# A lock older than 2 minutes belongs to a writer that died.
+		if [ $i -gt 50 ] || [ -n "$(find "$STATE/issues.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rmdir "$STATE/issues.lock" 2>/dev/null || true; fi
+		sleep 0.1
+	done
+}
+unlock() { rmdir "$STATE/issues.lock" 2>/dev/null || true; }
+now() { date '+%Y-%m-%d %H:%M'; }
+
+if [ "${1:-}" = --comment ]; then
+	f=$2 who=$3
+	lock; trap unlock EXIT
+	grep -q '^## Comments' "$f" || printf '\n## Comments\n' >> "$f"
+	printf '\n### %s (%s)\n%s\n' "$(now)" "$who" "$(cat)" >> "$f"
+	exit 0
+fi
+
+R=$1 title=$2 labels=$3
+body=$(cat)
+slug=$(printf '%s' "$title" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//' | cut -c1-40 | sed 's/-$//')
+lock; trap unlock EXIT
+last=$(ls "$R/issues/open" "$R/issues/done" "$R/issues/proposed" 2>/dev/null | sed -n 's/^\([0-9][0-9]*\)-.*\.md$/\1/p' | sort -n | tail -1)
+n=$(printf '%03d' $(( ${last:-0} + 1 )))
+f=$R/issues/open/$n-$slug.md
+{
+	printf '# %s\n\nOpened: %s\nBlocked on: -\nStatus: todo\nPriority: high\nLabels: %s\n\n' "$title" "$(date +%F)" "$labels"
+	printf '%s\n' "$body"
+} > "$f.tmp"
+mv "$f.tmp" "$f"
+echo "issues/open/$n-$slug.md"
