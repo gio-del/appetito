@@ -778,10 +778,11 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const PAGE_CSP = "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self' " + ORIGINS.concat(CORIGINS).join(' ') + "; frame-ancestors 'none'; base-uri 'none'";
 function page(res, code, lang, title, body, headers = {}) {
   const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<meta name="referrer" content="no-referrer"><title>${esc(title)}</title><link rel="stylesheet" href="/confirm.css"><link rel="icon" href="/icon.svg"></head>` +
+    `<meta name="referrer" content="same-origin"><title>${esc(title)}</title><link rel="stylesheet" href="/confirm.css"><link rel="icon" href="/icon.svg"></head>` +
     `<body><main class="box"><img src="/icon.svg" alt="" width="40" height="40"><h1>${esc(title)}</h1>${body}</main></body></html>`;
   res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': PAGE_CSP,
-    'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...headers });
+    // same-origin, not no-referrer: with no-referrer browsers send `Origin: null` on form posts.
+    'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', ...headers });
   res.end(html);
 }
 function redirect(res, to, headers = {}) { res.writeHead(303, { Location: to, 'Cache-Control': 'no-store', ...headers }); res.end(); }

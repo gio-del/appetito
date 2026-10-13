@@ -239,6 +239,9 @@ if [ "$TAILSCALE" = yes ]; then
 	tailscale serve --bg --https=8443 http://127.0.0.1:8081 >/dev/null
 fi
 
+# The worker's status for the tracker's live page, before its first round.
+runuser -u agent -- env HOME="$VAR/agent" APPETITO_ENV_FILE="$ETC/appetito.env" node "$OPT/current/core/worker/worker.js" --status >/dev/null 2>&1 || true
+
 say "Checks"
 "$OPT/current/guard/bin/appetito-checks" || echo "Some checks failed: see above. The monitor opened issues for them." >&2
 

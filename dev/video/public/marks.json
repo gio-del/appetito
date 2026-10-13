@@ -1,0 +1,1 @@
+{"t0":0,"events":[{"name":"board","t":1000},{"name":"backlog","t":3000},{"name":"drawer","t":5000},{"name":"moved","t":7000},{"name":"started","t":9000},{"name":"live","t":12000},{"name":"closed","t":72000},{"name":"done-drawer","t":80000},{"name":"app","t":86000}]}

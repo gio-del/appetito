@@ -217,7 +217,7 @@ async function start(issue, btn) {
 
 function blocker(st) {
   if (D.pending) return ['hourglass', t('au.b.pending')];
-  if (!st) return ['alert', t('au.b.nostate')];
+  if (!st) return null;
   if (st.code === 'working' || st.code === 'deploying') return ['bot', t('au.b.working')];
   if (st.gates && st.gates.quotaUntil) return ['gauge', t('au.b.quota')];
   if (!st.queueTotal) return ['done', t('au.b.empty')];
@@ -239,7 +239,8 @@ const issueLink = (id, title) => h('a', { class: 'ilink', href: '/#' + id }, h('
 // ---------- sections ----------
 
 function renderHero(st) {
-  const code = st && STATES[st.code] ? st.code : 'error';
+  // No status yet (a fresh install, before the worker's first round): waiting, not an error.
+  const code = !st ? 'idle' : STATES[st.code] ? st.code : 'error';
   const [ic, tone] = STATES[code];
   let frac = 0, center = null, line = explain('stt.' + code);
   if (st && st.current && st.current.start) {

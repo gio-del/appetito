@@ -1,0 +1,20 @@
+{
+  "name": "appetito-launch-video",
+  "private": true,
+  "description": "Launch video: Playwright records a real run in the sandbox, Remotion composes, ffmpeg (bundled with Remotion) encodes.",
+  "scripts": {
+    "record": "node record.js",
+    "render": "remotion render src/index.ts Launch out/appetito-launch.mp4 --codec=h264 --crf=18"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.529",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.529",
+    "playwright": "1.63.0"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3",
+    "@types/react": "18.3.12"
+  }
+}

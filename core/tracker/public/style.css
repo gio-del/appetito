@@ -488,3 +488,4 @@ pre.diff .add { color: var(--green); } pre.diff .del { color: var(--red); } pre.
 .day { margin-top: 10px; display: grid; gap: 4px; font-size: 13px; }
 .day-row { display: flex; gap: 8px; align-items: baseline; }
 .day-row > span:first-child { min-width: 90px; color: var(--muted); }
+.au-tiles:empty, .au-section:empty { display: none; }

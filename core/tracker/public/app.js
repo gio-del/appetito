@@ -494,9 +494,9 @@ function renderDetail() {
     h('span', { class: 'k' }, t('d.labels')), labels,
     h('span', { class: 'k' }, t('d.parent')), h('div', null, parentEl),
     h('span', { class: 'k' }, t('d.related')), related,
-    L.blocks.length && [h('span', { class: 'k' }, t('d.blocks')), h('div', { class: 'links' }, linkChips(L.blocks))],
-    L.duplicateOf.length && [h('span', { class: 'k' }, t('d.dupof')), h('div', { class: 'links' }, linkChips(L.duplicateOf))],
-    L.duplicates.length && [h('span', { class: 'k' }, t('d.dups')), h('div', { class: 'links' }, linkChips(L.duplicates))],
+    !!L.blocks.length && [h('span', { class: 'k' }, t('d.blocks')), h('div', { class: 'links' }, linkChips(L.blocks))],
+    !!L.duplicateOf.length && [h('span', { class: 'k' }, t('d.dupof')), h('div', { class: 'links' }, linkChips(L.duplicateOf))],
+    !!L.duplicates.length && [h('span', { class: 'k' }, t('d.dups')), h('div', { class: 'links' }, linkChips(L.duplicates))],
     markDup && [h('span', { class: 'k' }, ''), h('div', null, markDup)],
     autoGo && [h('span', { class: 'k' }, t('d.auto')), h('div', null, autoGo)],
     d.source && [h('span', { class: 'k' }, t('d.source')), h('div', null, sourceBadge(d))],
@@ -507,7 +507,7 @@ function renderDetail() {
     h('span', { class: 'k' }, t('d.opened')), h('span', null, d.opened || '—'),
     d.approved && [h('span', { class: 'k' }, t('d.approved')), h('span', null, d.approved)],
     d.closed && [h('span', { class: 'k' }, t('d.closed')), h('span', null, d.closed)],
-    d.branches?.length && [h('span', { class: 'k' }, t('d.branches')), h('div', { class: 'links' }, d.branches.map(b =>
+    !!d.branches?.length && [h('span', { class: 'k' }, t('d.branches')), h('div', { class: 'links' }, d.branches.map(b =>
       h('a', { class: 'parent-chip', href: 'changes.html' }, `${b.branch.replace(/^agent\//, '')} · ${t('branch.' + b.state)}`)))]);
 
   // Description: rendered, checkboxes toggle their source line; "Modifica" swaps in a textarea.
@@ -566,11 +566,11 @@ function renderDetail() {
     const e = ENTRY(ENTRY_IDS.includes(d.entry) ? d.entry : 'other');
     proposal = h('div', { class: 'proposal' },
       h('p', null, h('b', null, e.warn[0]), e.warn[1]),
-      L.possibleDuplicate.length && h('div', { class: 'possible-dup' }, h('b', null, t('p.possibledup')), linkChips(L.possibleDuplicate)),
+      !!L.possibleDuplicate.length && h('div', { class: 'possible-dup' }, h('b', null, t('p.possibledup')), linkChips(L.possibleDuplicate)),
       note,
       h('p', { class: 'muted reasons-h' }, t('p.why')), chips,
       h('div', { class: 'edit-actions' },
-        L.possibleDuplicate.length && h('button', { class: 'btn', title: t('p.rejectdup.title', L.possibleDuplicate[0].id),
+        !!L.possibleDuplicate.length && h('button', { class: 'btn', title: t('p.rejectdup.title', L.possibleDuplicate[0].id),
           onclick: ev => decide({ duplicateOf: L.possibleDuplicate[0].id, note: note.value }, ev.currentTarget) }, t('p.rejectdup')),
         h('button', { class: 'btn', onclick: ev => decide({ reject: { reason: reason(), note: note.value } }, ev.currentTarget) }, t('p.reject')),
         h('button', { class: 'btn', title: t('p.approve.backlog.title') + ' — ' + t('p.confirm'),
@@ -598,7 +598,7 @@ function renderDetail() {
   }
 
   // Shape rules (issues/README.md): the worker can't see work in an issue shaped like this.
-  const problems = d.problems?.length && h('div', { class: 'proposal' },
+  const problems = !!d.problems?.length && h('div', { class: 'proposal' },
     h('p', null, h('b', null, t('shape.title')), t('shape.text')),
     h('ul', null, d.problems.map(x => h('li', null, x))));
 
