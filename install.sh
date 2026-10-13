@@ -192,12 +192,13 @@ say "Second brain"
 if [ ! -d "$VAR/brain/vault" ]; then
 	cp -r "$OPT/repo/core/brain/vault-template" "$VAR/brain/vault"
 	chown -R brain:brain "$VAR/brain/vault"
-	runuser -u brain -- env HOME="$VAR/brain" "$OPT/repo/core/brain/vault-autocommit"
+	# brain can't read the server repo (on purpose): its scripts come in on stdin.
+	runuser -u brain -- env HOME="$VAR/brain" sh -s < "$OPT/repo/core/brain/vault-autocommit"
 fi
 install -d -o brain -g brain -m 700 "$VAR/brain/state" "$VAR/brain/.cache" "$VAR/brain/.cache/brain-propose" "$VAR/brain/.cache/brain-cal"
 SYNC_IP=127.0.0.1
 [ "$TAILSCALE" = yes ] && SYNC_IP=$(tailscale ip -4 | head -1)
-runuser -u brain -- env HOME="$VAR/brain" "$OPT/repo/core/brain/syncthing-setup" "$SYNC_IP"
+runuser -u brain -- env HOME="$VAR/brain" sh -s "$SYNC_IP" < "$OPT/repo/core/brain/syncthing-setup"
 
 # ------------------------------------------------------------------ agent backend
 say "Agent backend: $BACKEND"
