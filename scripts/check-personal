@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Fail if any personal value appears anywhere in the repo or its history.
+
+The values are never stored in clear: scripts/personal.sha256 holds the sha256 of each
+lowercased value. Text is split into tokens (letters, digits and . _ @ -), and every token
+and every sub-token (split on . _ @ -) is hashed and compared. Scanned: every blob reachable
+from any ref (so the whole history), the working tree, and every commit's author, committer
+and message.
+
+  scripts/check-personal              scan (exit 1 on a hit)
+  scripts/check-personal --hash FILE  print hashes for a plaintext list (one value per line)
+"""
+import hashlib, os, re, subprocess, sys
+
+ROOT = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True, text=True, check=True).stdout.strip()
+HASHES = os.path.join(ROOT, 'scripts', 'personal.sha256')
+# Whole tokens that are public on purpose (the repo's future home) and must not be split.
+ALLOW = {'gio-del', 'gio-del@users.noreply.github.com', 'github.com/gio-del/appetito'}
+TOKEN = re.compile(r'[a-z0-9][a-z0-9._@-]*[a-z0-9]|[a-z0-9]')
+SPLIT = re.compile(r'[._@-]+')
+
+
+def h(s):
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+def git(*args):
+    return subprocess.run(['git', '-C', ROOT, *args], capture_output=True, check=True).stdout
+
+
+def scan(text, bad):
+    hits = set()
+    for tok in TOKEN.findall(text.lower()):
+        if tok in ALLOW:
+            continue
+        for t in {tok, *SPLIT.split(tok)}:
+            if t and h(t) in bad:
+                hits.add(h(t)[:12])
+    return hits
+
+
+def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--hash':
+        vals = sorted({l.strip().lower() for l in open(sys.argv[2]) if l.strip()})
+        print('\n'.join(sorted(h(v) for v in vals)))
+        return 0
+    bad = {l.split()[0] for l in open(HASHES) if l.strip() and not l.startswith('#')}
+    found = []
+    # Every blob in history (and the index/worktree via the working tree walk below).
+    seen = set()
+    for line in git('rev-list', '--all', '--objects').decode().splitlines():
+        parts = line.split(' ', 1)
+        if len(parts) < 2 or parts[0] in seen:
+            continue
+        seen.add(parts[0])
+        if git('cat-file', '-t', parts[0]).strip() != b'blob':
+            continue
+        data = git('cat-file', 'blob', parts[0])
+        if b'\0' in data[:8000]:
+            continue
+        for hit in scan(data.decode('utf-8', 'replace'), bad):
+            found.append(f'history:{parts[1]} ({hit})')
+    for path in git('ls-files', '-co', '--exclude-standard').decode().splitlines():
+        p = os.path.join(ROOT, path)
+        if not os.path.isfile(p) or os.path.islink(p):
+            continue
+        data = open(p, 'rb').read()
+        if b'\0' in data[:8000]:
+            continue
+        for hit in scan(path + '\n' + data.decode('utf-8', 'replace'), bad):
+            found.append(f'{path} ({hit})')
+    log = git('log', '--all', '--format=%H%n%an%n%ae%n%cn%n%ce%n%B%x00').decode('utf-8', 'replace')
+    for entry in log.split('\0'):
+        entry = entry.strip()
+        if entry:
+            for hit in scan(entry, bad):
+                found.append(f'commit {entry[:12]} ({hit})')
+    for f in sorted(set(found)):
+        print('personal value:', f)
+    print(f'check-personal: {len(set(found))} hit(s)')
+    return 1 if found else 0
+
+
+sys.exit(main())

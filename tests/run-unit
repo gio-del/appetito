@@ -1,0 +1,13 @@
+#!/bin/sh
+# Unit tests: every tests/unit/*.sh and the node tests under core/ and guard/.
+set -eu
+cd "$(dirname "$0")/.."
+fail=0
+for t in tests/unit/*.sh; do
+	[ -f "$t" ] || continue
+	if sh "$t" >"/tmp/appetito-unit.$$" 2>&1; then echo "ok   $t"; else echo "FAIL $t"; sed 's/^/     /' "/tmp/appetito-unit.$$"; fail=1; fi
+done
+rm -f "/tmp/appetito-unit.$$"
+tests=$(find core guard -name '*.test.js' -not -path '*/node_modules/*' 2>/dev/null | sort)
+[ -z "$tests" ] || node --test $tests || fail=1
+exit $fail
