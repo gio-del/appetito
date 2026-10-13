@@ -1,0 +1,9 @@
+[Unit]
+Description=appetito daily proposals (checked hourly, runs once a day)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=appetito daily proposals (read-only agent run)
+After=network-online.target appetito-egress.service appetito-tracker.service
+
+[Service]
+Type=oneshot
+User=agent
+Group=agent
+EnvironmentFile=/etc/appetito/appetito.env
+Environment=HOME=/var/lib/appetito/agent HTTPS_PROXY=http://127.0.0.1:3128 HTTP_PROXY=http://127.0.0.1:3128 NO_PROXY=127.0.0.1,localhost
+ExecStart=/opt/appetito/current/core/monitor/appetito-run suggest /usr/bin/env node /opt/appetito/current/core/suggest/suggest.js
+TimeoutStartSec=1h
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
