@@ -1,0 +1,43 @@
+#!/bin/sh
+# CalDAV helper for the second brain (user brain): the only way the sorting job touches the owner's
+# calendars, so it never needs the network itself. Optional: works only when a CalDAV server is
+# configured (APPETITO_CALDAV_URL in /etc/appetito/appetito.env, e.g. http://127.0.0.1:5232/owner,
+# with brain's password in /etc/appetito/secrets/brain-caldav). Collections: tasks, calendar
+# (names configurable with APPETITO_CALDAV_TASKS / APPETITO_CALDAV_CALENDAR).
+#   brain-cal add  calendar|tasks FILE.ics   new item (refused if its UID exists)
+#   brain-cal edit calendar|tasks FILE.ics   replace an existing item (same UID)
+#   brain-cal list calendar|tasks            print the whole collection (iCalendar)
+set -eu
+ENVF=${APPETITO_ENV_FILE:-/etc/appetito/appetito.env}
+conf() { sed -n "s/^$1=//p" "$ENVF" | tail -1 | tr -d "\"'"; }
+B=$(conf APPETITO_CALDAV_URL)
+P=${APPETITO_CALDAV_PASSWORD_FILE:-/etc/appetito/secrets/brain-caldav}
+die() { echo "brain-cal: $*" >&2; exit 1; }
+usage() { sed -n '8,10s/^# //p' "$0" >&2; exit 2; }
+[ -n "$B" ] || die "no calendar configured (APPETITO_CALDAV_URL): keep tasks and events as notes"
+case $B in http://127.0.0.1:*|http://localhost:*) ;; *) die "APPETITO_CALDAV_URL must be on 127.0.0.1" ;; esac
+[ $# -ge 2 ] || usage
+case $2 in calendar) C=$(conf APPETITO_CALDAV_CALENDAR); C=${C:-calendar}; want=VEVENT ;; tasks) C=$(conf APPETITO_CALDAV_TASKS); C=${C:-tasks}; want=VTODO ;; *) usage ;; esac
+cfg() { printf 'user = "brain:%s"\n' "$(cat "$P")"; }
+case $1 in
+list) cfg | curl -fsS -K - "$B/$C/" ;;
+add|edit)
+	[ $# -eq 3 ] && [ -f "$3" ] || usage
+	head -1 "$3" | grep -q '^BEGIN:VCALENDAR' || die "$3 is not an iCalendar file"
+	uid=$(sed -n 's/^UID:\(.*\)$/\1/p' "$3" | tr -d '\r' | sort -u)
+	[ "$(printf '%s\n' "$uid" | grep -c .)" -eq 1 ] || die "$3 needs exactly one UID"
+	printf '%s' "$uid" | grep -Eq '^[A-Za-z0-9@._-]{1,200}$' || die "UID must match [A-Za-z0-9@._-]"
+	grep -q "^BEGIN:$want" "$3" || die "$2 takes $want items"
+	cond="If-None-Match: *"
+	if [ "$1" = edit ]; then
+		[ "$(cfg | curl -sS -K - -o /dev/null -w '%{http_code}' "$B/$C/$uid.ics")" = 200 ] || die "no item $uid in $2"
+		cond="X-Appetito: edit"
+	fi
+	code=$(cfg | curl -sS -K - -o /dev/null -w '%{http_code}' -X PUT -H "$cond" -H 'Content-Type: text/calendar; charset=utf-8' --data-binary "@$3" "$B/$C/$uid.ics")
+	case $code in
+	201|204) echo "ok: $2/$uid" ;;
+	412) die "UID $uid already exists in $2 (use edit)" ;;
+	*) die "PUT $2/$uid failed: HTTP $code" ;;
+	esac ;;
+*) usage ;;
+esac

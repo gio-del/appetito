@@ -1,0 +1,30 @@
+#!/bin/sh
+# Syncthing for the vault (run as brain by the installer, idempotent): config in ~/syncthing, folder
+# "vault" at ~/vault, and nothing that reaches beyond what you connect yourself: no global or local
+# discovery, no relays, no NAT traversal, no usage reporting. It listens on the Tailscale address
+# when Tailscale is on, on 127.0.0.1 otherwise; the GUI stays on 127.0.0.1:8384.
+#   syncthing-setup [LISTEN_IP]
+set -eu
+H=${HOME:-/var/lib/appetito/brain}
+C=$H/syncthing
+IP=${1:-127.0.0.1}
+[ -f "$C/config.xml" ] || syncthing generate --home="$C" >/dev/null 2>&1 || syncthing -generate="$C" >/dev/null
+x=$C/config.xml
+set_tag() { sed -i "s|<$1>[^<]*</$1>|<$1>$2</$1>|g" "$x"; }
+set_tag globalAnnounceEnabled false
+set_tag localAnnounceEnabled false
+set_tag relaysEnabled false
+set_tag natEnabled false
+set_tag urAccepted -1
+set_tag startBrowser false
+set_tag autoUpgradeIntervalH 0
+set_tag crashReportingEnabled false
+sed -i "s|<listenAddress>[^<]*</listenAddress>|<listenAddress>tcp://$IP:22000</listenAddress>|" "$x"
+# Only one listen address.
+awk 'BEGIN{n=0} /<listenAddress>/{n++; if(n>1) next} {print}' "$x" > "$x.new" && mv "$x.new" "$x"
+sed -i 's|<address>[^<]*:8384</address>|<address>127.0.0.1:8384</address>|' "$x"
+if ! grep -q 'id="vault"' "$x"; then
+	me=$(sed -n 's|.*<device id="\([A-Z0-9-]*\)".*|\1|p' "$x" | head -1)
+	sed -i "s|<options>|<folder id=\"vault\" label=\"vault\" path=\"$H/vault\" type=\"sendreceive\" rescanIntervalS=\"3600\" fsWatcherEnabled=\"true\" fsWatcherDelayS=\"10\" ignorePerms=\"true\" autoNormalize=\"true\"><device id=\"$me\"></device><versioning type=\"staggered\"><param key=\"maxAge\" val=\"2592000\"></param></versioning></folder>\n    <options>|" "$x"
+fi
+echo "syncthing: device $(sed -n 's|.*<device id="\([A-Z0-9-]*\)".*|\1|p' "$x" | head -1), listening on $IP:22000"

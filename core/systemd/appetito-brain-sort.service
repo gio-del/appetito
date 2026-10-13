@@ -1,0 +1,15 @@
+[Unit]
+Description=appetito second brain: sort the vault's Inbox
+After=network-online.target appetito-egress.service
+
+[Service]
+Type=oneshot
+User=brain
+Group=brain
+EnvironmentFile=/etc/appetito/appetito.env
+Environment=HOME=/var/lib/appetito/brain HTTPS_PROXY=http://127.0.0.1:3128 HTTP_PROXY=http://127.0.0.1:3128 NO_PROXY=127.0.0.1,localhost
+ExecStart=/opt/appetito/current/core/monitor/appetito-run brain-sort /usr/bin/env node /opt/appetito/current/core/brain/brain-sort.js
+TimeoutStartSec=40min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full

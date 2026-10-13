@@ -1,0 +1,18 @@
+[Unit]
+Description=appetito second brain: Syncthing for the vault
+After=network-online.target
+
+[Service]
+User=brain
+Group=brain
+Environment=HOME=/var/lib/appetito/brain
+ExecStart=/usr/bin/syncthing serve --home=/var/lib/appetito/brain/syncthing --no-browser --no-restart --logflags=0
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+SuccessExitStatus=3 4
+
+[Install]
+WantedBy=multi-user.target

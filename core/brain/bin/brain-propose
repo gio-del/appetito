@@ -1,0 +1,24 @@
+#!/bin/sh
+# Propose an issue to this server's tracker (user brain). The only way the second brain reaches
+# the server side: the proposal waits in the tracker and becomes work only when the owner approves
+# it there. Token: /etc/appetito/secrets/brain-token (readable by brain only).
+#   brain-propose TITLE DESC-FILE ORIGIN [PARENT-ID] [LABEL...]
+# PARENT-ID ("" for none) must be another pending proposal (an epic proposed earlier).
+# Prints "ok: #NNN <link to the proposal in the tracker>".
+set -eu
+[ $# -ge 3 ] && [ -f "$2" ] || { sed -n '5,7s/^# //p' "$0" >&2; exit 2; }
+ENVF=${APPETITO_ENV_FILE:-/etc/appetito/appetito.env}
+conf() { sed -n "s/^$1=//p" "$ENVF" | tail -1 | tr -d "\"'"; }
+PORT=$(conf TRACKER_PORT); PORT=${PORT:-8080}
+ORIGIN=$(conf TRACKER_ORIGINS | cut -d, -f1); ORIGIN=${ORIGIN:-http://127.0.0.1:$PORT}
+HOSTH=${ORIGIN#*://}
+title=$1 desc=$2 origin=$3; shift 3
+parent=${1:-}; [ $# -gt 0 ] && shift
+body=$(jq -n --arg t "$title" --rawfile d "$desc" --arg o "$origin" --arg p "$parent" \
+	'{title: $t, desc: $d, origin: $o, labels: $ARGS.positional} + (if $p == "" then {} else {parent: $p} end)' --args "$@")
+out=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "${APPETITO_BRAIN_TOKEN_FILE:-/etc/appetito/secrets/brain-token}")" |
+	curl -sS -K - -w '\n%{http_code}' -X POST -H "Host: $HOSTH" -H 'Content-Type: application/json' \
+		--data-binary "$body" "http://127.0.0.1:$PORT/api/propose")
+code=$(printf '%s' "$out" | tail -1); res=$(printf '%s' "$out" | sed '$d')
+[ "$code" = 201 ] || { echo "brain-propose: HTTP $code $res" >&2; exit 1; }
+printf '%s\n' "$res" | jq -r --arg u "$ORIGIN/#" '"ok: #\(.id) \($u)\(.id)"'

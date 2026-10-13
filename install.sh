@@ -187,6 +187,18 @@ for who in brain:brain suggest:agent; do
 	fi
 done
 
+# ------------------------------------------------------------------ second brain
+say "Second brain"
+if [ ! -d "$VAR/brain/vault" ]; then
+	cp -r "$OPT/repo/core/brain/vault-template" "$VAR/brain/vault"
+	chown -R brain:brain "$VAR/brain/vault"
+	runuser -u brain -- env HOME="$VAR/brain" "$OPT/repo/core/brain/vault-autocommit"
+fi
+install -d -o brain -g brain -m 700 "$VAR/brain/state" "$VAR/brain/.cache" "$VAR/brain/.cache/brain-propose" "$VAR/brain/.cache/brain-cal"
+SYNC_IP=127.0.0.1
+[ "$TAILSCALE" = yes ] && SYNC_IP=$(tailscale ip -4 | head -1)
+runuser -u brain -- env HOME="$VAR/brain" "$OPT/repo/core/brain/syncthing-setup" "$SYNC_IP"
+
 # ------------------------------------------------------------------ agent backend
 say "Agent backend: $BACKEND"
 if [ "$BACKEND" = claude-code ]; then

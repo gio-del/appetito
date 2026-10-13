@@ -1,0 +1,10 @@
+#!/bin/sh
+# Commit every change in the vault (user brain, timer every 15 min): the vault's own history,
+# so nothing the brain or a device does is ever lost.
+set -eu
+V=${APPETITO_VAULT:-$HOME/vault}
+cd "$V"
+[ -d .git ] || { git init -q -b main; git config user.name brain; git config user.email brain@localhost; }
+git add -A
+git diff --cached --quiet && exit 0
+git commit -qm "auto: $(date '+%Y-%m-%d %H:%M') ($(git diff --cached --name-only | wc -l) files)"

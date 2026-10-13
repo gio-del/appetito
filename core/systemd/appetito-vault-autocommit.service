@@ -1,0 +1,12 @@
+[Unit]
+Description=appetito second brain: commit the vault's changes
+
+[Service]
+Type=oneshot
+User=brain
+Group=brain
+Environment=HOME=/var/lib/appetito/brain
+ExecStart=/opt/appetito/current/core/monitor/appetito-run brain-vault-autocommit /opt/appetito/current/core/brain/vault-autocommit
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
