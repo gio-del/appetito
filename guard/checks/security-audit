@@ -1,0 +1,94 @@
+#!/bin/bash
+# security-audit: the security model (docs/architecture.md, SECURITY.md) checked on the running
+# host. Read-only; run as root by appetito-checks after every deploy, and by hand any time.
+# Prints PASS/WARN/FAIL; exit 1 on any FAIL.
+set -uo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8
+OPT=${APPETITO_OPT:-/opt/appetito}
+VAR=${APPETITO_STATE:-/var/lib/appetito}
+fails=0
+pass() { echo "PASS  $*"; }
+warn() { echo "WARN  $*"; }
+fail() { echo "FAIL  $*"; fails=$((fails + 1)); }
+as() { runuser -u "$1" -- "${@:2}"; }
+
+echo "== unprivileged users"
+for u in agent brain tracker appetito; do
+	id -u "$u" >/dev/null 2>&1 || { fail "user $u missing"; continue; }
+	if sudo -n -l -U "$u" 2>/dev/null | grep -q 'may run'; then fail "$u has sudo rules"; else pass "$u: no sudo rules"; fi
+	if as "$u" sudo -n true >/dev/null 2>&1; then fail "$u can run sudo"; else pass "$u can't sudo"; fi
+	g=$(id -nG "$u" | tr ' ' '\n' | grep -Ex 'sudo|wheel|adm|admin|docker|lxd|libvirt|disk|shadow|root|systemd-journal' | tr '\n' ' ')
+	[ -z "$g" ] && pass "$u: no privileged groups" || fail "$u is in privileged groups: $g"
+	[ "$(id -u "$u")" != 0 ] || fail "$u has uid 0"
+done
+
+echo "== files"
+for p in "$OPT/current/guard" "$OPT/repo/guard" /etc/appetito/appetito.env; do
+	[ -e "$p" ] || continue
+	bad=$(find -L "$p" \( ! -user root -o -perm -o+w -o -perm -g+w \) -print 2>/dev/null | head -3)
+	[ -z "$bad" ] && pass "$p root-owned, not writable by others" || fail "$p writable by non-root: $bad"
+done
+for u in agent brain tracker appetito; do
+	id -u "$u" >/dev/null 2>&1 || continue
+	if as "$u" test -w "$OPT/repo/core" 2>/dev/null; then fail "$u can write the server repo"; else pass "$u can't write the server repo code"; fi
+	if as "$u" test -w "$OPT/current" 2>/dev/null; then fail "$u can write the running release"; fi
+done
+if id -u brain >/dev/null 2>&1; then
+	as brain test -r "$OPT/repo/README.md" 2>/dev/null && fail "brain can read the server repo" || pass "brain can't read the server repo"
+fi
+if id -u agent >/dev/null 2>&1 && [ -d "$VAR/brain" ]; then
+	as agent ls "$VAR/brain/vault" >/dev/null 2>&1 && fail "agent can read the vault" || pass "agent can't read the vault"
+fi
+if [ -d "$VAR/tracker/proposed" ]; then
+	as agent ls "$VAR/tracker/proposed" >/dev/null 2>&1 && fail "agent can read pending proposals" || pass "agent can't read pending proposals"
+fi
+if [ -d /etc/appetito/secrets ]; then
+	bad=$(find /etc/appetito/secrets -type f -perm /o+rwx 2>/dev/null | head -3)
+	[ -z "$bad" ] && pass "secrets not world-readable" || fail "world-readable secrets: $bad"
+	for f in /etc/appetito/secrets/*; do
+		[ -f "$f" ] || continue
+		for u in agent brain; do
+			o=$(stat -c %U "$f"); [ "$o" = "$u" ] && continue
+			as "$u" test -r "$f" 2>/dev/null && fail "$u can read $(basename "$f")"
+		done
+	done
+fi
+
+echo "== services"
+# No service the agent wrote may run as root (guard units are the only root jobs we install).
+while IFS= read -r u; do
+	case $u in *.service) ;; *) continue ;; esac
+	[ -f "$OPT/current/guard/systemd/$u" ] && continue
+	usr=$(systemctl show -p User --value "$u" 2>/dev/null)
+	if [ -z "$usr" ] || [ "$usr" = root ]; then fail "$u runs as root"; else pass "$u runs as $usr"; fi
+	nnp=$(systemctl show -p NoNewPrivileges --value "$u" 2>/dev/null)
+	[ "$nnp" = yes ] || fail "$u without NoNewPrivileges"
+done < <(cat "$VAR/deploy/units" 2>/dev/null)
+
+echo "== listeners"
+# Beyond loopback only: sshd, tailscaled, the brain's Syncthing sync port, and ports a service
+# declares with a non-loopback address (ports-check matches the rest).
+while read -r proto addr proc; do
+	host=${addr%:*}; port=${addr##*:}
+	case $host in 127.*|'[::1]'|'[::ffff:127.'*|*%lo) continue ;; esac
+	name=$(sed -n 's/^users:(("\([^"]*\)".*/\1/p' <<<"$proc")
+	case $name in
+	sshd|tailscaled|systemd-resolve|chronyd|dhclient|systemd-network|systemd-timesyn) pass "$proto $addr $name" ;;
+	syncthing) [ "$port" = 22000 ] || [ "$port" = 21027 ] && pass "$proto $addr syncthing (sync)" || fail "$proto $addr syncthing beyond loopback" ;;
+	*) grep -qsE "^PORTS=.*(0\.0\.0\.0|\[::\]|\*):$port(/$proto)?\b" "$OPT"/current/services/*/service.env \
+		&& pass "$proto $addr $name (declared)" || fail "$proto $addr $name listens beyond loopback, not declared" ;;
+	esac
+done < <(ss -H -ltunp 2>/dev/null | awk '{print $1, $5, $7}')
+
+echo "== firewall"
+if [ "$(sed -n 's/^APPETITO_FIREWALL=//p' /etc/appetito/appetito.env 2>/dev/null)" = off ]; then
+	warn "per-uid firewall disabled (APPETITO_FIREWALL=off)"
+elif nft list table inet appetito >/dev/null 2>&1; then
+	pass "nftables table inet appetito loaded"
+	for u in agent brain; do nft list table inet appetito 2>/dev/null | grep -q "skuid $(id -u "$u" 2>/dev/null || echo x)" && pass "rules for $u" || fail "no firewall rules for $u"; done
+else
+	fail "per-uid firewall not loaded (nft table inet appetito)"
+fi
+
+echo "== $fails failure(s)"
+[ "$fails" = 0 ]

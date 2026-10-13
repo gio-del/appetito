@@ -1,0 +1,51 @@
+#!/bin/bash
+# appetito-checks: what must hold after every deploy (run as root by appetito-deploy; read-only
+# except for the tests, which run as the unprivileged user appetito). Prints PASS/FAIL lines;
+# exit 1 on any FAIL.
+set -uo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8
+OPT=${APPETITO_OPT:-/opt/appetito}
+CUR=$OPT/current
+ST=${APPETITO_STATE:-/var/lib/appetito}/deploy
+# appetito.env is written by the installer (root only), so it is safe to load here.
+set -a; [ -r /etc/appetito/appetito.env ] && . /etc/appetito/appetito.env; set +a
+fails=0
+pass() { echo "PASS  $*"; }
+fail() { echo "FAIL  $*"; fails=$((fails + 1)); }
+
+echo "== tests (as appetito)"
+if out=$(cd /tmp && runuser -u appetito -- env HOME=/var/lib/appetito/home TMPDIR=/tmp timeout 900 sh -c "cd '$CUR' && tests/run-unit" 2>&1); then
+	pass "unit tests"
+else
+	fail "unit tests"; printf '%s\n' "$out" | tail -40
+fi
+
+echo "== units"
+deadline=$((SECONDS + 60))
+while IFS= read -r u; do
+	case $u in *.service) ;; *) continue ;; esac
+	grep -q '^WantedBy=' "/etc/systemd/system/$u" 2>/dev/null || continue
+	while [ "$(systemctl is-active "$u" 2>/dev/null)" = activating ] && [ $SECONDS -lt $deadline ]; do sleep 1; done
+	st=$(systemctl is-active "$u" 2>/dev/null || true)
+	[ "$st" = active ] && pass "$u active" || { fail "$u is $st"; journalctl -u "$u" -n 15 --no-pager 2>/dev/null | sed 's/^/      /'; }
+done < <(cat "$ST/units" 2>/dev/null)
+
+echo "== health"
+urls() {
+	for m in "$CUR"/services/*/service.env; do [ -f "$m" ] && sed -n 's/^HEALTH=//p' "$m" | tr -d "\"'"; done
+	[ -f "$CUR/core/health.list" ] && grep -v '^#' "$CUR/core/health.list" | sed 's/[[:space:]]*#.*//' | grep .
+}
+for url in $(urls | envsubst 2>/dev/null || urls); do
+	case $url in http://127.0.0.1:[0-9]*/*|http://127.0.0.1:[0-9]*) ;; *) fail "health URL $url (only http://127.0.0.1:PORT/…)"; continue ;; esac
+	ok=0
+	for _ in $(seq 1 30); do curl -fsS -o /dev/null -m 5 "$url" 2>/dev/null && { ok=1; break; }; sleep 2; done
+	[ $ok = 1 ] && pass "$url" || fail "$url not healthy after 60 s"
+done
+
+echo "== security-audit"
+"$CUR/guard/checks/security-audit" || fails=$((fails + 1))
+echo "== ports-check"
+"$CUR/guard/checks/ports-check" || fails=$((fails + 1))
+
+echo "== $fails failure(s)"
+[ "$fails" = 0 ]

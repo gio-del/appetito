@@ -161,6 +161,9 @@ function lintRepo(repo) {
 		}
 	}
 	const names = new Set(candidates.map(c => c.name));
+	// guard's own units may be ordered against (After=/Before=), never pulled in.
+	const guardUnits = new Set();
+	try { for (const f of fs.readdirSync(path.join(repo, 'guard', 'systemd'))) guardUnits.add(f); } catch {}
 	const seen = new Set();
 	for (const c of candidates) {
 		if (seen.has(c.name)) { err(c.file, 0, 'unit name used twice'); continue; }
@@ -183,7 +186,8 @@ function lintRepo(repo) {
 			switch (rule) {
 			case 'deps':
 				for (const t of v.split(/\s+/).filter(Boolean))
-					if (!SAFE_TARGETS.has(t) && !names.has(t)) bad(`${t} is not a safe target or one of this repo's units`);
+					if (!SAFE_TARGETS.has(t) && !names.has(t) && !(guardUnits.has(t) && (e.key === 'After' || e.key === 'Before')))
+						bad(`${t} is not a safe target or one of this repo's units`);
 				break;
 			case 'exec':
 				hasExec = true;

@@ -1,0 +1,9 @@
+[Unit]
+Description=appetito worker rounds (:07 and :37)
+
+[Timer]
+OnCalendar=*-*-* *:07,37:00
+Persistent=no
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=appetito worker: watch for start requests from the tracker
+
+[Path]
+PathChanged=/var/lib/appetito/worker-request/request.json
+Unit=appetito-worker-request.service
+
+[Install]
+WantedBy=paths.target

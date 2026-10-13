@@ -1,0 +1,10 @@
+[Unit]
+Description=appetito deploy runner: start on a push from the worker or a request from the tracker
+
+[Path]
+PathModified=/var/lib/appetito/agent/pushed
+PathChanged=/var/lib/appetito/requests
+Unit=appetito-deploy.service
+
+[Install]
+WantedBy=paths.target

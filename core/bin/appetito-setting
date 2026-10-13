@@ -1,0 +1,26 @@
+#!/bin/sh
+# appetito-setting KEY: prints the value of a tracker-editable setting for jobs to use.
+# Keys and ranges come from the tracker's schema (guard/tracker/settings.schema.json); values from
+# the file the tracker's settings page writes. A missing or invalid value falls back to the same
+# key in /etc/appetito/appetito.env (if valid), then to the schema default, so a corrupted file
+# can't push a job out of range. Bools print 1/0. Unknown key: exit 2.
+set -eu
+HERE=$(cd "$(dirname "$0")/../.." && pwd)
+SCHEMA=${APPETITO_SETTINGS_SCHEMA:-$HERE/guard/tracker/settings.schema.json}
+FILE=${APPETITO_SETTINGS_FILE:-/var/lib/appetito/settings.env}
+ENVF=${APPETITO_ENV_FILE:-/etc/appetito/appetito.env}
+key=${1:-}
+case $key in ''|*[!A-Z0-9_]*) echo "usage: appetito-setting KEY" >&2; exit 2 ;; esac
+pick() { [ -r "$1" ] && sed -n "s/^$key=//p" "$1" | tail -1 | tr -d "\"'\r"; true; }
+jq -r --arg k "$key" --arg f "$(pick "$FILE")" --arg e "$(pick "$ENVF")" '
+	.[$k] as $s
+	| if $s == null then error("unknown setting \($k)") else . end
+	| def ok($v): if $s.type == "bool" then ($v == "1" or $v == "0")
+		elif $s.type == "int" then ($v | test("^[0-9]{1,6}$")) and ($v | tonumber) >= $s.min and ($v | tonumber) <= $s.max
+		elif $s.type == "time" then ($v | test("^([01][0-9]|2[0-3]):[0-5][0-9]$"))
+		elif $s.type == "enum" then ($s.values | index($v)) != null
+		elif $s.type == "text" then ($v | test("^[^[:cntrl:]\"\\\\/=]{1,64}$"))
+		else false end;
+	  if ok($f) then $f elif ok($e) then $e
+	  elif $s.type == "bool" then (if $s.default then "1" else "0" end)
+	  else $s.default | tostring end' "$SCHEMA" 2>/dev/null || { echo "appetito-setting: unknown setting $key" >&2; exit 2; }

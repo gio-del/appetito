@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101112">
+<title>Issue home-server</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="icons.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-box">
+    <img src="icon.svg" alt="" width="40" height="40">
+    <h1>Issue home-server</h1>
+    <input id="login-pw" type="password" autocomplete="current-password" placeholder="Password" required>
+    <button type="submit" class="btn primary">Entra</button>
+    <p id="login-err" class="err" role="alert"></p>
+  </form>
+</div>
+
+<div id="setup" class="login" hidden>
+  <form id="setup-form" class="login-box">
+    <img src="icon.svg" alt="" width="40" height="40">
+    <h1>Imposta la password</h1>
+    <p class="muted small">Link usa e getta. Genera la password con il gestore di password e salvala lì, poi incollala qui due volte.</p>
+    <input id="setup-pw" type="password" autocomplete="new-password" placeholder="Nuova password (min. 12 caratteri)" minlength="12" required>
+    <input id="setup-pw2" type="password" autocomplete="new-password" placeholder="Ripeti la password" minlength="12" required>
+    <button type="submit" class="btn primary">Salva ed entra</button>
+    <p id="setup-err" class="err" role="alert"></p>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="top">
+    <div class="brand"><img src="icon.svg" alt="" width="20" height="20"><span>home-server</span></div>
+    <div class="filters">
+      <input id="q" type="search" placeholder="Cerca…  /" aria-label="Cerca">
+      <span class="fsel"><select id="f-prio" aria-label="Filtra per priorità"></select><button type="button" class="fclear" data-clear="f-prio" aria-label="Togli il filtro priorità" title="Togli il filtro" hidden>×</button></span>
+      <span class="fsel"><select id="f-label" aria-label="Filtra per etichetta"></select><button type="button" class="fclear" data-clear="f-label" aria-label="Togli il filtro etichetta" title="Togli il filtro" hidden>×</button></span>
+      <select id="f-entry" aria-label="Filtra le proposte per provenienza"></select>
+      <button type="button" id="f-stale" class="btn ghost fstale" aria-pressed="false" title="Solo le issue ferme in Backlog da troppo tempo" hidden></button>
+    </div>
+    <div class="actions">
+      <a id="auto-pill" class="auto-pill" href="auto.html" title="Sviluppo automatico: stato e avvio manuale"></a>
+      <button id="new" class="btn primary" title="Nuova issue (C)">+ Nuova</button>
+      <button id="logout" class="btn ghost" title="Esci">Esci</button>
+    </div>
+  </header>
+  <nav id="tabs" class="tabs" aria-label="Colonne"></nav>
+  <main id="board" class="board"></main>
+</div>
+
+<div id="drawer" class="drawer" hidden>
+  <div class="drawer-bg" data-close></div>
+  <section class="panel" role="dialog" aria-modal="true" aria-labelledby="d-title">
+    <div class="panel-head">
+      <span id="d-id" class="muted"></span>
+      <span id="d-dirty" class="muted small"></span>
+      <button class="btn ghost icon" data-close aria-label="Chiudi">✕</button>
+    </div>
+    <div id="d-body" class="panel-body"></div>
+  </section>
+</div>
+
+<div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

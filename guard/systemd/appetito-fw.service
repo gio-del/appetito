@@ -1,0 +1,14 @@
+[Unit]
+Description=appetito per-uid egress firewall (agent, brain)
+After=network-pre.target
+Before=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/appetito/current/guard/firewall/appetito-fw start
+ExecReload=/opt/appetito/current/guard/firewall/appetito-fw start
+ExecStop=/opt/appetito/current/guard/firewall/appetito-fw stop
+
+[Install]
+WantedBy=multi-user.target

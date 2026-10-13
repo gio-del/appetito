@@ -1,0 +1,53 @@
+#!/bin/sh
+# appetito-fw: per-uid egress firewall (nftables) for the users agent and brain. They may talk to
+# loopback only (brain: only the ports it needs), so everything outside goes through the egress
+# proxy (egress-proxy.js, by host name) — or nowhere. brain may also reach its Syncthing peers.
+#   appetito-fw start | stop | show
+# Settings from /etc/appetito/appetito.env: APPETITO_FIREWALL (on|off), TRACKER_PORT,
+# APPETITO_EGRESS_PORT (3128), APPETITO_BRAIN_LOOPBACK_PORTS (extra ports, e.g. a local model or
+# CalDAV), APPETITO_SYNC_PEERS (CIDRs; default the Tailscale ranges).
+set -eu
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+ENVF=${APPETITO_ENV_FILE:-/etc/appetito/appetito.env}
+conf() { sed -n "s/^$1=//p" "$ENVF" 2>/dev/null | tail -1 | tr -d "\"'"; }
+case ${1:-} in
+stop) nft delete table inet appetito 2>/dev/null || true; exit 0 ;;
+show) nft list table inet appetito; exit 0 ;;
+start) ;;
+*) echo "usage: $0 start|stop|show" >&2; exit 2 ;;
+esac
+[ "$(conf APPETITO_FIREWALL)" = off ] && { nft delete table inet appetito 2>/dev/null || true; exit 0; }
+AGENT=$(id -u agent) BRAIN=$(id -u brain)
+EGRESS=$(conf APPETITO_EGRESS_PORT); EGRESS=${EGRESS:-3128}
+TRACKER=$(conf TRACKER_PORT); TRACKER=${TRACKER:-8080}
+EXTRA=$(conf APPETITO_BRAIN_LOOPBACK_PORTS | tr ' ' ',' | sed 's/,,*/,/g; s/^,//; s/,$//')
+PEERS=$(conf APPETITO_SYNC_PEERS); PEERS=${PEERS:-100.64.0.0/10 fd7a:115c:a1e0::/48}
+P4=$(printf '%s\n' $PEERS | grep -v : | paste -sd, -)
+P6=$(printf '%s\n' $PEERS | grep : | paste -sd, -)
+# brain's loopback: egress proxy, tracker (propose API), DNS, its own Syncthing GUI and sync.
+BLO="53, $EGRESS, $TRACKER, 8384, 22000${EXTRA:+, $EXTRA}"
+nft -f - <<NFT
+table inet appetito
+delete table inet appetito
+table inet appetito {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		meta skuid $AGENT jump agent
+		meta skuid $BRAIN jump brain
+	}
+	chain agent {
+		oif lo accept
+		limit rate 6/minute log prefix "appetito-fw agent: " level info
+		reject with icmpx admin-prohibited
+	}
+	chain brain {
+		oif lo meta l4proto { tcp, udp } th dport { $BLO } accept
+		oif lo meta l4proto icmp accept
+		${P4:+ip daddr { $P4 } meta l4proto { tcp, udp } th dport 22000 accept}
+		${P6:+ip6 daddr { $P6 } meta l4proto { tcp, udp } th dport 22000 accept}
+		limit rate 6/minute log prefix "appetito-fw brain: " level info
+		reject with icmpx admin-prohibited
+	}
+}
+NFT
+echo "appetito-fw: agent=$AGENT brain=$BRAIN egress=127.0.0.1:$EGRESS"

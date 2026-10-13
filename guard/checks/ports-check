@@ -1,0 +1,25 @@
+#!/bin/bash
+# ports-check: every port a service's user listens on is declared in its services/<name>/service.env
+# (PORTS=addr:port …). Run as root by appetito-checks. Exit 1 on an undeclared listener.
+set -uo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+OPT=${APPETITO_OPT:-/opt/appetito}
+fails=0
+declare -A ports user_of
+for m in "$OPT"/current/services/*/service.env; do
+	[ -f "$m" ] || continue
+	svc=$(basename "$(dirname "$m")")
+	u=$(sed -n 's/^USER=//p' "$m" | tr -d "\"'"); u=${u:-$svc}
+	user_of[$u]=$svc
+	ports[$u]=" $(sed -n 's/^PORTS=//p' "$m" | tr -d "\"'") "
+done
+while read -r proto addr proc; do
+	pid=$(sed -n 's/.*pid=\([0-9]*\).*/\1/p' <<<"$proc"); [ -n "$pid" ] || continue
+	u=$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ') || continue
+	[ -n "${user_of[$u]:-}" ] || continue
+	host=${addr%:*}; port=${addr##*:}
+	case $host in '[::]'|'*'|0.0.0.0) host='(0\.0\.0\.0|\[::\]|\*)' ;; '[::1]') host='\[::1\]' ;; *) host=${host//./\\.} ;; esac
+	if grep -qE " $host:$port(/$proto)? " <<<"${ports[$u]}"; then echo "PASS  ${user_of[$u]}: $proto $addr"
+	else echo "FAIL  ${user_of[$u]}: $proto $addr is not in its PORTS (${ports[$u]# })"; fails=$((fails + 1)); fi
+done < <(ss -H -ltunp 2>/dev/null | awk '{print $1, $5, $7}')
+[ "$fails" = 0 ]

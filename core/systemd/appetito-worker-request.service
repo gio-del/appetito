@@ -1,0 +1,15 @@
+[Unit]
+Description=appetito worker: manual start requested from the tracker
+After=network-online.target appetito-egress.service
+
+[Service]
+Type=oneshot
+User=agent
+Group=agent
+EnvironmentFile=/etc/appetito/appetito.env
+Environment=HOME=/var/lib/appetito/agent HTTPS_PROXY=http://127.0.0.1:3128 HTTP_PROXY=http://127.0.0.1:3128 NO_PROXY=127.0.0.1,localhost
+ExecStart=/usr/bin/env node /opt/appetito/current/core/worker/worker.js --request
+TimeoutStartSec=4h
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full

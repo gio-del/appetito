@@ -1,0 +1,72 @@
+{
+  "APPETITO_UI_LANG": {
+    "type": "enum", "values": ["en", "it"], "default": "en", "group": "tracker",
+    "label": { "en": "Language", "it": "Lingua" },
+    "desc": { "en": "Language of the tracker.", "it": "Lingua del tracker." }
+  },
+  "APPETITO_AUTO_PAUSE": {
+    "type": "bool", "default": false, "group": "auto",
+    "label": { "en": "Paused", "it": "In pausa" },
+    "desc": { "en": "Stops the worker from picking issues on its schedule (Start now still works). Failures keep becoming issues.", "it": "Ferma i giri programmati del worker (Avvia ora funziona comunque). Gli errori continuano a diventare issue." }
+  },
+  "APPETITO_AUTO_MAX_PER_RUN": {
+    "type": "int", "min": 1, "max": 5, "default": 1, "group": "auto",
+    "label": { "en": "Issues per round", "it": "Issue per giro" },
+    "desc": { "en": "How many issues one round may work. After a closed issue it takes the next one; it stops at the first one that is not closed.", "it": "Quante issue al massimo per giro. Dopo una issue chiusa prende la successiva; si ferma alla prima che non chiude." }
+  },
+  "APPETITO_AUTO_QUOTA_MAX": {
+    "type": "int", "min": 10, "max": 100, "default": 50, "unit": "%", "group": "auto",
+    "label": { "en": "Plan usage limit", "it": "Limite d'uso del piano" },
+    "desc": { "en": "When a usage window the backend reports (e.g. Claude's weekly limit) is above this, the worker waits for it to reset.", "it": "Quando una finestra d'uso riportata dal backend (es. il limite settimanale di Claude) supera questa soglia, il worker aspetta che si azzeri." }
+  },
+  "APPETITO_AUTO_RUNS_DAY": {
+    "type": "int", "min": 0, "max": 96, "default": 0, "group": "auto",
+    "label": { "en": "Runs per day", "it": "Esecuzioni al giorno" },
+    "desc": { "en": "Maximum agent runs per day (0 = no limit).", "it": "Numero massimo di esecuzioni dell'agente al giorno (0 = nessun limite)." }
+  },
+  "APPETITO_AUTO_KTOKENS_DAY": {
+    "type": "int", "min": 0, "max": 999999, "default": 0, "unit": "k", "group": "auto",
+    "label": { "en": "Tokens per day", "it": "Token al giorno" },
+    "desc": { "en": "Thousands of tokens the worker may use per day (0 = no limit). Useful with pay-per-use endpoints.", "it": "Migliaia di token che il worker può usare al giorno (0 = nessun limite). Utile con endpoint a consumo." }
+  },
+  "APPETITO_AUTO_COST_DAY": {
+    "type": "int", "min": 0, "max": 1000, "default": 0, "unit": "$", "group": "auto",
+    "label": { "en": "Cost per day", "it": "Costo al giorno" },
+    "desc": { "en": "Dollars the worker may spend per day, as reported by the backend (0 = no limit).", "it": "Dollari che il worker può spendere al giorno, come riportato dal backend (0 = nessun limite)." }
+  },
+  "APPETITO_SUGGEST_ENABLED": {
+    "type": "bool", "default": false, "group": "suggest",
+    "label": { "en": "On", "it": "Attive" },
+    "desc": { "en": "Every day the agent proposes improvements to the server; you find them in the Proposals column and decide.", "it": "Ogni giorno l'agente propone migliorie al server; le trovi nella colonna Proposte e decidi tu." }
+  },
+  "APPETITO_SUGGEST_HOUR": {
+    "type": "int", "min": 0, "max": 23, "default": 8, "unit": "h", "group": "suggest",
+    "label": { "en": "Hour", "it": "Ora" },
+    "desc": { "en": "Hour of the day when proposals run.", "it": "Ora del giorno in cui girano le proposte." }
+  },
+  "APPETITO_SUGGEST_MAX": {
+    "type": "int", "min": 0, "max": 5, "default": 3, "group": "suggest",
+    "label": { "en": "Proposals per day", "it": "Proposte al giorno" },
+    "desc": { "en": "Maximum new proposals per run.", "it": "Numero massimo di nuove proposte per giro." }
+  },
+  "APPETITO_SUGGEST_PENDING_MAX": {
+    "type": "int", "min": 1, "max": 30, "default": 10, "group": "suggest",
+    "label": { "en": "Pending proposals", "it": "Proposte in attesa" },
+    "desc": { "en": "With this many proposals waiting for you, the run is skipped.", "it": "Se ci sono già tante proposte da valutare, il giro salta." }
+  },
+  "APPETITO_BRAIN_SORT_MINUTES": {
+    "type": "int", "min": 5, "max": 1440, "default": 30, "unit": "min", "group": "brain",
+    "label": { "en": "Sort the inbox every", "it": "Smista l'inbox ogni" },
+    "desc": { "en": "How often the second brain sorts new notes in Inbox/ (a note tagged #now is sorted at the next check, within a minute).", "it": "Ogni quanto il second brain smista le note nuove in Inbox/ (una nota con #now viene smistata al controllo successivo, entro un minuto)." }
+  },
+  "APPETITO_OBSIDIAN_VAULT": {
+    "type": "text", "default": "Vault", "group": "tracker",
+    "label": { "en": "Obsidian vault name", "it": "Nome del vault Obsidian" },
+    "desc": { "en": "The vault's name in the Obsidian app: used for the Origin link of the second brain's proposals.", "it": "Il nome del vault nell'app Obsidian: serve al link «Origine» delle proposte del second brain." }
+  },
+  "APPETITO_BACKLOG_STALE_DAYS": {
+    "type": "int", "min": 7, "max": 180, "default": 30, "unit": "d", "group": "tracker",
+    "label": { "en": "Backlog stale after", "it": "Backlog fermo dopo" },
+    "desc": { "en": "A Backlog issue with no decision for this many days is flagged, with buttons to move it to To do, keep it or reject it.", "it": "Una issue in Backlog senza decisioni da tanti giorni viene segnalata, con i pulsanti per spostarla in To do, tenerla o scartarla." }
+  }
+}

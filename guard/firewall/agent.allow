@@ -1,0 +1,27 @@
+# Hosts the user agent may reach through the egress proxy (HTTPS on 443, HTTP on 80).
+# `*.example.com` = any subdomain. Add your own in /etc/appetito/firewall.d/agent.allow.
+# Model endpoints
+api.anthropic.com
+*.anthropic.com
+claude.ai
+*.claude.ai
+*.claude.com
+# Package registries and source hosting the agent uses to build services
+registry.npmjs.org
+pypi.org
+files.pythonhosted.org
+github.com
+api.github.com
+codeload.github.com
+objects.githubusercontent.com
+raw.githubusercontent.com
+release-assets.githubusercontent.com
+deb.debian.org
+security.debian.org
+archive.ubuntu.com
+security.ubuntu.com
+ports.ubuntu.com
+# Container images (some services ship only as images; their binaries are extracted, not run in Docker)
+registry-1.docker.io
+auth.docker.io
+production.cloudflare.docker.com

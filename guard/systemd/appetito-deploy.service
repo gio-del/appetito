@@ -1,0 +1,9 @@
+[Unit]
+Description=appetito deploy runner (merge, apply, check, roll back)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/appetito/current/guard/bin/appetito-deploy
+TimeoutStartSec=1h
+Nice=5

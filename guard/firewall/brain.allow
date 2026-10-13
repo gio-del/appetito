@@ -1,0 +1,7 @@
+# Hosts the user brain may reach through the egress proxy. Vault content is untrusted, so this is
+# only the model endpoint. Add your own in /etc/appetito/firewall.d/brain.allow.
+api.anthropic.com
+*.anthropic.com
+claude.ai
+*.claude.ai
+*.claude.com
