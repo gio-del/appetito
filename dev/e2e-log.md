@@ -12,3 +12,4 @@ One line per `make e2e` run (`tests/e2e/run`).
 | 2026-10-13 22:09 | 427f1fa | debian13 | amd64 | security | fake (sonnet) | 1 min | fail: install failed |
 | 2026-10-13 22:13 | 6188228 | debian13 | amd64 | security | fake (sonnet) | 3 min | fail: see tests/e2e/out/20261013-220959-debian13-amd64-security |
 | 2026-10-13 22:17 | 22f105e | debian13 | amd64 | security | fake (sonnet) | 3 min | pass |
+| 2026-10-13 22:20 | 45ae2fa | debian13 | amd64 | first-issue | claude-code (sonnet) | 2 min | fail: see tests/e2e/out/20261013-221819-debian13-amd64-first-issue |

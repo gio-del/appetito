@@ -31,7 +31,7 @@ wait-closed) # wait-closed ID TIMEOUT_S: closed on main and its branch merged
 	while [ "$(date +%s)" -lt "$end" ]; do
 		if ls /opt/appetito/repo/issues/done/"$id"-*.md >/dev/null 2>&1; then echo "closed"; exit 0; fi
 		s=$(api GET /api/auto 2>/dev/null | jq -r '.status.code // "?"' 2>/dev/null || echo '?')
-		d=$(cat /var/lib/appetito/deploy/branches/agent_"$id"-*.json 2>/dev/null | jq -r .state 2>/dev/null | tail -1)
+		d=$(cat /var/lib/appetito/deploy/branches/agent_"$id"-*.json 2>/dev/null | jq -r .state 2>/dev/null | tail -1 || true)
 		now="worker=$s deploy=${d:-none}"
 		[ "$now" = "$last" ] || { echo "$(date +%T) $now"; last=$now; }
 		case $d in rolled-back|rejected|conflict) echo "deploy: $d"; ;; esac
