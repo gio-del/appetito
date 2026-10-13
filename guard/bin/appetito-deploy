@@ -52,7 +52,7 @@ sset() { # sset BRANCH SHA STATE REASON
 	log "$1 ${2:0:12}: $3${4:+ ($4)}"
 }
 issue_of() { printf '%s' "$1" | sed -n 's|^agent/\([0-9]\{3,4\}\)-.*|\1|p'; }
-issue_file() { ls "$REPO"/issues/open/"$1"-*.md "$REPO"/issues/done/"$1"-*.md 2>/dev/null | head -1; }
+issue_file() { { ls "$REPO"/issues/open/"$1"-*.md "$REPO"/issues/done/"$1"-*.md 2>/dev/null || true; } | head -1; }
 comment() { # comment ISSUE_NUMBER TEXT
 	local f; [ -n "$1" ] || return 0
 	f=$(issue_file "$1"); [ -n "$f" ] || return 0
@@ -189,7 +189,7 @@ apply() { # apply SHA LOGFILE: install the release; returns 1 if it could not be
 	done
 	echo "applied ${sha:0:12} (new: ${new[*]:-none}; changed: ${changed[*]:-none})" >> "$out"
 	# Keep the five newest releases plus the one in use.
-	ls -1dt "$OPT"/releases/*/ 2>/dev/null | tail -n +6 | while read -r d; do
+	{ ls -1dt "$OPT"/releases/*/ 2>/dev/null || true; } | tail -n +6 | while read -r d; do
 		[ "$(readlink -f "$OPT/current")/" = "$d" ] || rm -rf "$d"
 	done
 }
