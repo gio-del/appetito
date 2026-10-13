@@ -1,0 +1,88 @@
+#!/usr/bin/env node
+'use strict';
+// agent-run: the only door between appetito and an agent backend (docs/agent-run.md).
+//
+//   agent-run --prompt FILE --dir DIR --profile PROFILE --out DIR
+//             [--system FILE] [--job NAME] [--backend NAME] [--timeout SECONDS]
+//
+// Runs the backend as the calling user (agent or brain: never root, no profile grants sudo) and
+// writes to --out: transcript.jsonl (normalized), usage.json, final.txt, and the backend's own
+// output as raw.jsonl / stderr.txt (debugging only: nothing else may parse it).
+// Exit: 0 success, 1 failure, 2 usage error, 3 backend limit reached, 4 timeout.
+// Backend: --backend, else $APPETITO_BACKEND_<JOB> (job name upper-cased, - → _), else
+// $APPETITO_BACKEND, else claude-code. Settings come from the environment (callers load
+// /etc/appetito/appetito.env); $APPETITO_ENV names an extra KEY=VALUE file to load first.
+const fs = require('node:fs');
+const path = require('node:path');
+
+const HERE = __dirname;
+const ADAPTERS = ['claude-code', 'openai', 'fake'];
+
+function die(msg) { process.stderr.write(`agent-run: ${msg}\n`); process.exit(2); }
+
+function parseArgs(argv) {
+	const o = {};
+	for (let i = 0; i < argv.length; i++) {
+		const k = argv[i];
+		if (!k.startsWith('--')) die(`unexpected argument ${k}`);
+		const v = argv[++i];
+		if (v === undefined) die(`${k} needs a value`);
+		o[k.slice(2)] = v;
+	}
+	return o;
+}
+
+function loadEnvFile(f) {
+	for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
+		const m = line.match(/^\s*([A-Z][A-Z0-9_]*)=(.*)$/);
+		if (!m || process.env[m[1]] !== undefined) continue;
+		process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+	}
+}
+
+async function main() {
+	const a = parseArgs(process.argv.slice(2));
+	for (const k of ['prompt', 'dir', 'profile', 'out']) if (!a[k]) die(`--${k} is required`);
+	if (process.getuid && process.getuid() === 0) die('refusing to run as root');
+	if (process.env.APPETITO_ENV) loadEnvFile(process.env.APPETITO_ENV);
+	if (!/^[a-z][a-z0-9-]*$/.test(a.profile)) die('bad profile name');
+	const pf = path.join(HERE, 'profiles', `${a.profile}.json`);
+	if (!fs.existsSync(pf)) die(`unknown profile ${a.profile}`);
+	const profile = JSON.parse(fs.readFileSync(pf, 'utf8'));
+	const job = a.job ? a.job.toUpperCase().replace(/-/g, '_') : '';
+	const backend = a.backend || (job && process.env[`APPETITO_BACKEND_${job}`]) || process.env.APPETITO_BACKEND || 'claude-code';
+	if (!ADAPTERS.includes(backend)) die(`unknown backend ${backend}`);
+	const prompt = fs.readFileSync(a.prompt, 'utf8');
+	const system = a.system ? fs.readFileSync(a.system, 'utf8') : '';
+	const dir = path.resolve(a.dir);
+	if (!fs.statSync(dir).isDirectory()) die(`--dir ${dir} is not a directory`);
+	const timeout = Number(a.timeout || 3600);
+	if (!(timeout > 0)) die('bad --timeout');
+	fs.mkdirSync(a.out, { recursive: true, mode: 0o750 });
+
+	const { Transcript, writeUsage } = require('./lib.js');
+	const tr = new Transcript(a.out);
+	tr.backend = backend;
+	const started = Date.now();
+	const adapter = require(`./adapters/${backend}.js`);
+	let r;
+	try {
+		r = await adapter.run({ prompt, system, dir, profile, out: a.out, timeout, transcript: tr, env: process.env });
+	} catch (e) {
+		tr.result('error', null, `adapter failed: ${e.message}`);
+		r = { status: 'error', usage: {} };
+	}
+	tr.close();
+	const usage = {
+		backend, model: r.model || null, profile: profile.name,
+		input_tokens: r.usage?.input_tokens ?? null, output_tokens: r.usage?.output_tokens ?? null,
+		cache_read_tokens: r.usage?.cache_read_tokens ?? null, cost_usd: r.usage?.cost_usd ?? null,
+		turns: r.turns ?? null, tools: tr.tools, denied: tr.denied, duration_ms: Date.now() - started,
+		status: r.status,
+	};
+	writeUsage(a.out, usage);
+	fs.writeFileSync(path.join(a.out, 'final.txt'), (r.text || '') + '\n', { mode: 0o640 });
+	process.exit({ success: 0, limit: 3, timeout: 4 }[r.status] ?? 1);
+}
+
+main().catch(e => { process.stderr.write(`agent-run: ${e.stack || e}\n`); process.exit(1); });

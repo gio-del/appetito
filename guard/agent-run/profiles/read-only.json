@@ -1,0 +1,2 @@
+{ "name": "read-only", "write": false, "shell": false, "web": false,
+  "about": "Read and search files in the working dir. No edits, no shell, no web." }

@@ -1,0 +1,2 @@
+{ "name": "vault-edit", "write": true, "shell": true, "web": false,
+  "about": "The second brain: edit and move notes in the vault as user brain. No web (vault content is untrusted)." }

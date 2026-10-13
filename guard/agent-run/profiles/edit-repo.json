@@ -1,0 +1,2 @@
+{ "name": "edit-repo", "write": true, "shell": true, "web": true,
+  "about": "The worker: edit files, run commands and fetch docs as the unprivileged user that called agent-run. The OS (no sudo, per-uid firewall, file ownership) is the boundary." }
