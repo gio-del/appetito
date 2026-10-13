@@ -211,6 +211,15 @@ if [ "$BACKEND" = claude-code ]; then
 	done
 	if [ -n "$CLAUDE_TOKEN_FILE" ]; then
 		install -o agent -g agent -m 600 "$CLAUDE_TOKEN_FILE" "$ETC/secrets/claude-token"
+	elif [ ! -s "$ETC/secrets/claude-token" ] && [ ! -s "$VAR/agent/.claude/.credentials.json" ] && [ -z "$YES" ] && [ -t 0 ]; then
+		echo "The agent needs a Claude Code token: on any computer where you use Claude Code, run"
+		echo "  claude setup-token"
+		read -r -s -p "and paste the token here (empty = later): " CT; echo
+		[ -z "$CT" ] || printf '%s\n' "$CT" | install -o agent -g agent -m 600 /dev/stdin "$ETC/secrets/claude-token"
+	fi
+	# The second brain uses the same token unless it gets its own.
+	if [ -s "$ETC/secrets/claude-token" ] && [ ! -s "$ETC/secrets/claude-token-brain" ]; then
+		install -o brain -g brain -m 600 "$ETC/secrets/claude-token" "$ETC/secrets/claude-token-brain"
 	fi
 fi
 
@@ -242,9 +251,8 @@ appetito is installed.
 EOF
 if [ "$BACKEND" = claude-code ] && [ ! -s "$ETC/secrets/claude-token" ] && [ ! -s "$VAR/agent/.claude/.credentials.json" ]; then
 	cat <<EOF
-  3. Sign the agent in to Claude (a terminal on this box):
-       sudo -u agent -H claude-agent setup-token     → paste the token into $ETC/secrets/claude-token
-       (owner agent, mode 600), or log in with: sudo -u agent -H claude-agent
+  3. Give the agent a Claude Code token: run \`claude setup-token\` on a computer where you use
+     Claude Code, then here: sudo ./install.sh   (it asks for it; nothing else changes)
 EOF
 fi
 cat <<EOF

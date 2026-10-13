@@ -59,7 +59,11 @@ async function run({ prompt, system, dir, profile, out, timeout, transcript: tr,
 	// Never let a run turn on the dangerous mode through the environment.
 	delete childEnv.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS;
 	if (env.APPETITO_CLAUDE_TOKEN_FILE && !childEnv.CLAUDE_CODE_OAUTH_TOKEN) {
-		try { const tok = fs.readFileSync(env.APPETITO_CLAUDE_TOKEN_FILE, 'utf8').trim(); if (tok) childEnv.CLAUDE_CODE_OAUTH_TOKEN = tok; } catch {}
+		// A per-user copy (`<file>-<user>`, e.g. the second brain's) wins over the shared one.
+		const user = require('node:os').userInfo().username;
+		for (const f of [`${env.APPETITO_CLAUDE_TOKEN_FILE}-${user}`, env.APPETITO_CLAUDE_TOKEN_FILE]) {
+			try { const tok = fs.readFileSync(f, 'utf8').trim(); if (tok) { childEnv.CLAUDE_CODE_OAUTH_TOKEN = tok; break; } } catch {}
+		}
 	}
 	tr.start('claude-code', env.APPETITO_CLAUDE_MODEL || null);
 	const r = await spawnBackend(claudeBin(env), args, {
