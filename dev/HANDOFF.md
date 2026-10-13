@@ -42,7 +42,7 @@ Dev issues closed: 001, 002, 006, 007, 008, 011, 016. Open: 003 (agent-run: Olla
 1. Fix the brain firewall check; rerun `tests/e2e/run --scenario first-issue --repeat 3` until 3 consecutive PASS; close 005/012 partially.
 2. `tests/e2e/run --scenario vaultwarden` (timeout 3600); iterate on starter issue 001's text if the agent struggles (gate 7).
 3. Ubuntu 24.04 amd64, then arm64 for both distros (`--arch arm64`, slow: emulated).
-4. Brain e2e: drop a note in `/var/lib/appetito/brain/vault/Inbox/` with `#now`, check it's sorted and an idea becomes a pending proposal (add a `brain` scenario to `tests/e2e/run`).
+4. ~~Brain e2e~~ done: `--scenario brain` PASS, dev issue 009 closed.
 5. Ollama contract run (small model, `CONTRACT_ONLY=1`, long timeout), then close 003.
 6. Video: real Vaultwarden run recorded with `dev/video/record.js` against a box with fixed ports (add `-p 127.0.0.1:18080:8080 -p 127.0.0.1:18081:8081 -p 127.0.0.1:18222:8222` and set `TRACKER_ORIGINS=http://127.0.0.1:18080`, `TRACKER_CONFIRM_ORIGINS=http://127.0.0.1:18081` in the box, restart the tracker), copy footage+marks to `dev/video/public/`, `npm run render`; judge drafts yourself, show the owner only the final candidate; make `docs/media/demo.gif`.
 7. Screenshots for the post from the sandbox; owner approves video + post (HITL, push notification).
