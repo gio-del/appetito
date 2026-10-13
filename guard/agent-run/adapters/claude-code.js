@@ -1,8 +1,18 @@
 'use strict';
 // claude-code adapter: headless `claude -p` with stream-json output, normalized here and only here.
-// Settings: APPETITO_CLAUDE_BIN (claude), APPETITO_CLAUDE_MODEL, APPETITO_CLAUDE_MAX_BUDGET_USD (10),
-// APPETITO_CLAUDE_PERMISSION_MODE (acceptEdits | auto | default; bypass is refused).
+// Settings: APPETITO_CLAUDE_BIN (~/.local/bin/claude, else claude on PATH), APPETITO_CLAUDE_MODEL,
+// APPETITO_CLAUDE_MAX_BUDGET_USD (10), APPETITO_CLAUDE_PERMISSION_MODE (acceptEdits | auto | default;
+// bypass is refused), APPETITO_CLAUDE_TOKEN_FILE (a `claude setup-token` token the calling user can
+// read; otherwise the user's own ~/.claude login is used).
+const fs = require('node:fs');
+const path = require('node:path');
 const { spawnBackend } = require('../lib.js');
+
+function claudeBin(env) {
+	if (env.APPETITO_CLAUDE_BIN) return env.APPETITO_CLAUDE_BIN;
+	const own = env.HOME && path.join(env.HOME, '.local', 'bin', 'claude');
+	return own && fs.existsSync(own) ? own : 'claude';
+}
 
 const CAT = {
 	Read: 'read', NotebookRead: 'read', LS: 'read',
@@ -48,8 +58,11 @@ async function run({ prompt, system, dir, profile, out, timeout, transcript: tr,
 	const childEnv = { ...env };
 	// Never let a run turn on the dangerous mode through the environment.
 	delete childEnv.CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS;
+	if (env.APPETITO_CLAUDE_TOKEN_FILE && !childEnv.CLAUDE_CODE_OAUTH_TOKEN) {
+		try { const tok = fs.readFileSync(env.APPETITO_CLAUDE_TOKEN_FILE, 'utf8').trim(); if (tok) childEnv.CLAUDE_CODE_OAUTH_TOKEN = tok; } catch {}
+	}
 	tr.start('claude-code', env.APPETITO_CLAUDE_MODEL || null);
-	const r = await spawnBackend(env.APPETITO_CLAUDE_BIN || 'claude', args, {
+	const r = await spawnBackend(claudeBin(env), args, {
 		cwd: dir, env: childEnv, timeout, out,
 		onObj: o => {
 			if (o.type === 'system' && o.subtype === 'init') model = o.model || model;

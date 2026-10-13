@@ -1,0 +1,127 @@
+#!/bin/bash
+# make e2e: a disposable systemd container per run, rebuilt from the distro's image, then the real
+# installer and a real scenario. Nothing touches the host system beyond Docker.
+#
+#   tests/e2e/run [--distro debian13|ubuntu2404] [--arch amd64|arm64] [--scenario NAME]
+#                 [--backend claude-code|fake] [--model sonnet] [--repeat N] [--keep]
+#
+# Scenarios:
+#   smoke        install + the deploy runner's checks
+#   first-issue  the owner writes an issue in the tracker, the worker closes it (< 30 min) — gate 1
+#   security     gate 3 (a)-(d) with the scripted backend: no sudo, guard change waits, proposals
+#                never run unapproved, a broken deploy rolls back
+#   vaultwarden  starter issue "Add Vaultwarden" moved to To do and closed by the agent — gate 7
+#
+# Claude Code: the PC's own login is copied into the box as an access token only (no refresh token,
+# so a box can never rotate the PC's login). It must be valid for the whole run.
+# Results: tests/e2e/out/<run>/ (logs) and one line per run in dev/e2e-log.md.
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+ROOT=$PWD
+DISTRO=debian13 ARCH=$(docker info --format '{{.Architecture}}' | sed 's/x86_64/amd64/; s/aarch64/arm64/') SCENARIO=smoke BACKEND=claude-code MODEL=${E2E_MODEL:-sonnet} REPEAT=1 KEEP=""
+while [ $# -gt 0 ]; do
+	case $1 in
+	--distro) DISTRO=$2; shift ;; --arch) ARCH=$2; shift ;; --scenario) SCENARIO=$2; shift ;;
+	--backend) BACKEND=$2; shift ;; --model) MODEL=$2; shift ;; --repeat) REPEAT=$2; shift ;; --keep) KEEP=1 ;;
+	*) echo "unknown option $1" >&2; exit 2 ;;
+	esac
+	shift
+done
+case $DISTRO in debian13) BASE=debian:trixie ;; ubuntu2404) BASE=ubuntu:24.04 ;; *) echo "distro: debian13 or ubuntu2404" >&2; exit 2 ;; esac
+[ "$SCENARIO" = security ] && BACKEND=fake
+IMG=appetito-e2e-$DISTRO-$ARCH
+
+log() { echo "$(date +%T) $*" | tee -a "$OUT/run.log"; }
+inbox() { docker exec "$NAME" "$@"; }
+
+claude_creds() { # the PC's access token only, as a credentials file for the box
+	local f=$HOME/.claude/.credentials.json exp
+	[ -s "$f" ] || { echo "no Claude login on this PC ($f)" >&2; return 1; }
+	exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$f")
+	if [ "$exp" -lt $(( ($(date +%s) + 40 * 60) * 1000 )) ]; then
+		echo "the PC's Claude access token expires in less than 40 minutes: use Claude Code on the PC once to renew it, then rerun" >&2; return 1
+	fi
+	jq '{claudeAiOauth: (.claudeAiOauth | del(.refreshToken))}' "$f"
+}
+
+one_run() {
+	local n=$1 start end rc=0
+	local RUN; RUN=$(date +%Y%m%d-%H%M%S)-$DISTRO-$ARCH-$SCENARIO
+	OUT=$ROOT/tests/e2e/out/$RUN; mkdir -p "$OUT"
+	NAME=appetito-e2e-$$-$n
+	log "run $RUN ($BACKEND${BACKEND:+, model $MODEL})"
+	docker build -q --platform "linux/$ARCH" --build-arg BASE="$BASE" -t "$IMG" tests/e2e >/dev/null
+	docker rm -f "$NAME" >/dev/null 2>&1 || true
+	docker run -d --name "$NAME" --platform "linux/$ARCH" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+		--tmpfs /run --tmpfs /run/lock --hostname appetito-box -p 127.0.0.1::8080 -p 127.0.0.1::8081 "$IMG" >/dev/null
+	trap '[ -n "$KEEP" ] || docker rm -f "$NAME" >/dev/null 2>&1 || true' RETURN
+	for _ in $(seq 1 60); do inbox systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break; sleep 1; done
+	# A stranger's clone: the current commit, nothing else.
+	rm -rf "$OUT/clone" && git clone -q --no-hardlinks "$ROOT" "$OUT/clone" && rm -rf "$OUT/clone/.git/hooks"
+	docker cp "$OUT/clone" "$NAME:/root/appetito" >/dev/null && rm -rf "$OUT/clone"
+	docker cp tests/e2e/in-box.sh "$NAME:/root/in-box.sh" >/dev/null
+	start=$(date +%s)
+	log "install"
+	if ! inbox bash -c "cd /root/appetito && ./install.sh --no-tailscale --backend $( [ "$BACKEND" = fake ] && echo claude-code || echo "$BACKEND" ) --yes > /root/install.log 2>&1"; then
+		docker cp "$NAME:/root/install.log" "$OUT/" >/dev/null; log "FAIL install (see $OUT/install.log)"; result fail "$start" "install failed"; return 1
+	fi
+	docker cp "$NAME:/root/install.log" "$OUT/" >/dev/null
+	log "installed in $(( $(date +%s) - start )) s"
+	inbox /root/in-box.sh setup | tee -a "$OUT/run.log"
+	if [ "$BACKEND" = claude-code ]; then
+		claude_creds > "$OUT/.creds" || { rm -f "$OUT/.creds"; result fail "$start" "no valid Claude token"; return 1; }
+		inbox install -d -o agent -g agent -m 700 /var/lib/appetito/agent/.claude
+		docker cp "$OUT/.creds" "$NAME:/var/lib/appetito/agent/.claude/.credentials.json" >/dev/null; rm -f "$OUT/.creds"
+		inbox chown agent:agent /var/lib/appetito/agent/.claude/.credentials.json
+		inbox chmod 600 /var/lib/appetito/agent/.claude/.credentials.json
+		inbox sed -i "/^APPETITO_CLAUDE_MODEL=/d" /etc/appetito/appetito.env
+		[ -z "$MODEL" ] || inbox sh -c "echo APPETITO_CLAUDE_MODEL=$MODEL >> /etc/appetito/appetito.env"
+	fi
+	case $SCENARIO in
+	smoke) scenario_smoke || rc=$? ;;
+	first-issue) scenario_issue "Add a hello page" tests/e2e/issues/hello.md 1800 || rc=$? ;;
+	vaultwarden) scenario_starter 001 3600 || rc=$? ;;
+	security) docker cp tests/e2e/security.sh "$NAME:/root/security.sh" >/dev/null; inbox bash /root/security.sh 2>&1 | tee -a "$OUT/run.log"; rc=${PIPESTATUS[0]} ;;
+	*) log "unknown scenario $SCENARIO"; rc=2 ;;
+	esac
+	collect
+	end=$(date +%s)
+	if [ "$rc" = 0 ]; then log "PASS in $(( (end - start) / 60 )) min $(( (end - start) % 60 )) s"; result pass "$start"; else log "FAIL"; result fail "$start" "see tests/e2e/out/$RUN"; fi
+	return "$rc"
+}
+
+scenario_smoke() {
+	inbox /opt/appetito/current/guard/bin/appetito-checks > "$OUT/checks.log" 2>&1 && log "checks green" || { log "checks failed"; tail -30 "$OUT/checks.log"; return 1; }
+}
+scenario_issue() { # TITLE DESC_FILE TIMEOUT
+	local id
+	docker cp "$2" "$NAME:/root/issue.md" >/dev/null
+	id=$(inbox /root/in-box.sh create "$1" /root/issue.md todo)
+	log "owner opened #$id \"$1\" in To do; Start now"
+	inbox /root/in-box.sh start "$id" | tee -a "$OUT/run.log"
+	inbox /root/in-box.sh wait-closed "$id" "$3" 2>&1 | tee -a "$OUT/run.log"
+	[ "${PIPESTATUS[0]}" = 0 ] && scenario_smoke
+}
+scenario_starter() { # ID TIMEOUT
+	log "owner moves starter issue #$1 to To do; Start now"
+	inbox /root/in-box.sh move "$1" todo | tee -a "$OUT/run.log"
+	inbox /root/in-box.sh start "$1" | tee -a "$OUT/run.log"
+	inbox /root/in-box.sh wait-closed "$1" "$2" 2>&1 | tee -a "$OUT/run.log"
+	[ "${PIPESTATUS[0]}" = 0 ] && scenario_smoke
+}
+collect() {
+	inbox bash -c 'cd /var/lib/appetito && tar -czf /root/state.tgz deploy/deploy.log deploy/branches deploy/logs worker/events.jsonl worker/worker.log worker/status.json monitor 2>/dev/null; true'
+	docker cp "$NAME:/root/state.tgz" "$OUT/" >/dev/null 2>&1 || true
+	inbox git -C /opt/appetito/repo log --format='%h %an %s' -30 > "$OUT/git-log.txt" 2>/dev/null || true
+	inbox journalctl -b --no-pager -u 'appetito-*' > "$OUT/journal.txt" 2>/dev/null || true
+}
+result() { # pass|fail START [why]
+	local mins=$(( ($(date +%s) - $2 + 59) / 60 ))
+	printf '| %s | %s | %s | %s | %s | %s | %s min | %s |\n' "$(date '+%F %H:%M')" "$(git rev-parse --short HEAD)" "$DISTRO" "$ARCH" "$SCENARIO" "$BACKEND${MODEL:+ ($MODEL)}" "$mins" "$1${3:+: $3}" >> dev/e2e-log.md
+}
+
+[ -f dev/e2e-log.md ] || printf '# e2e runs\n\nOne line per `make e2e` run (`tests/e2e/run`).\n\n| when | commit | distro | arch | scenario | backend | time | result |\n|---|---|---|---|---|---|---|---|\n' > dev/e2e-log.md
+fails=0
+for n in $(seq 1 "$REPEAT"); do one_run "$n" || fails=$((fails + 1)); done
+echo "e2e: $((REPEAT - fails))/$REPEAT passed"
+[ "$fails" = 0 ]

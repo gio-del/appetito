@@ -109,7 +109,8 @@ release() { # release SHA → prints its dir
 	local sha=$1 rel=$OPT/releases/$1
 	if [ ! -d "$rel" ]; then
 		rm -rf "$rel.tmp"; mkdir -p "$rel.tmp"
-		g archive "$sha" | tar -x -C "$rel.tmp" --no-same-owner --no-same-permissions
+		# issues/ stays out of releases: the second brain runs code from a release and must not read issues.
+		g archive "$sha" -- . ':!issues' | tar -x -C "$rel.tmp" --no-same-owner --no-same-permissions
 		chown -R root:root "$rel.tmp"; chmod -R go-w,a+rX "$rel.tmp"
 		mv "$rel.tmp" "$rel"
 	fi

@@ -1,5 +1,5 @@
+/dev/video/out/
+.env
+*.log
 node_modules/
 /tests/e2e/out/
-/dev/video/out/
-*.log
-.env
