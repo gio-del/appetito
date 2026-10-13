@@ -1,0 +1,7 @@
+#!/bin/sh
+# render-policy PHONE_IP LAPTOP_IP > policy.hujson: fill the template with your devices' tailnet IPs
+# (Tailscale app → the device → its 100.x address), then paste it in the admin console.
+set -eu
+[ $# -eq 2 ] || { echo "usage: $0 PHONE_IP LAPTOP_IP" >&2; exit 2; }
+for ip in "$1" "$2"; do echo "$ip" | grep -Eq '^100\.[0-9]+\.[0-9]+\.[0-9]+$' || { echo "not a tailnet IPv4: $ip" >&2; exit 2; }; done
+sed "s/\${PHONE_IP}/$1/; s/\${LAPTOP_IP}/$2/" "$(dirname "$0")/policy.template.hujson"

@@ -1,0 +1,42 @@
+// Tailscale policy for an appetito server. Render it with guard/tailscale/render-policy (fills
+// ${PHONE_IP} and ${LAPTOP_IP}, the tailnet IPs of your own devices), paste the result in
+// https://login.tailscale.com/admin/acls/file and tag the server `tag:appetito`
+// (Machines → the server → Edit ACL tags). The `tests` make the console refuse any later edit that
+// opens a port they say must stay closed.
+//
+// On a normal Linux host tailscaled runs in kernel mode, so services bound to 127.0.0.1 are not
+// reachable from the tailnet at all; what the tailnet reaches is what `tailscale serve` publishes
+// (443 tracker, 8443 its confirm pages, any HTTPS port you add for a service) and Syncthing's 22000.
+{
+	"tagOwners": {"tag:appetito": ["autogroup:admin"]},
+	"hosts": {
+		"phone":  "${PHONE_IP}",
+		"laptop": "${LAPTOP_IP}",
+	},
+	"grants": [
+		// Your devices keep talking to each other.
+		{"src": ["autogroup:member"], "dst": ["autogroup:member"], "ip": ["*"]},
+		// Your devices: the tracker (443), its confirm pages (8443), HTTPS ports for services you
+		// publish later (8440-8459), the vault's Syncthing (22000).
+		{"src": ["phone", "laptop"], "dst": ["tag:appetito"], "ip": ["tcp:443", "tcp:8443", "tcp:8440-8459", "tcp:22000"]},
+		// SSH only from the laptop (remove it if you don't use SSH).
+		{"src": ["laptop"], "dst": ["tag:appetito"], "ip": ["tcp:22"]},
+		// Nothing else: the server never initiates connections to your devices.
+	],
+	"tests": [
+		{
+			"src": "phone",
+			"accept": ["tag:appetito:443", "tag:appetito:8443", "tag:appetito:22000"],
+			"deny": ["tag:appetito:22", "tag:appetito:8080", "tag:appetito:8081", "tag:appetito:3128", "tag:appetito:8384", "tag:appetito:8460"],
+		},
+		{
+			"src": "laptop",
+			"accept": ["tag:appetito:443", "tag:appetito:8443", "tag:appetito:22", "tag:appetito:22000"],
+			"deny": ["tag:appetito:8080", "tag:appetito:8081", "tag:appetito:3128", "tag:appetito:8384"],
+		},
+		{
+			"src": "tag:appetito",
+			"deny": ["phone:22", "laptop:22", "phone:443"],
+		},
+	],
+}
