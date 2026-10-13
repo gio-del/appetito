@@ -26,6 +26,9 @@ P4=$(printf '%s\n' $PEERS | grep -v : | paste -sd, -)
 P6=$(printf '%s\n' $PEERS | grep : | paste -sd, -)
 # brain's loopback: egress proxy, tracker (propose API), DNS, its own Syncthing GUI and sync.
 BLO="53, $EGRESS, $TRACKER, 8384, 22000${EXTRA:+, $EXTRA}"
+R4="" R6=""
+[ -z "$P4" ] || R4="ip daddr { $P4 } meta l4proto { tcp, udp } th dport 22000 accept"
+[ -z "$P6" ] || R6="ip6 daddr { $P6 } meta l4proto { tcp, udp } th dport 22000 accept"
 nft -f - <<NFT
 table inet appetito
 delete table inet appetito
@@ -43,8 +46,8 @@ table inet appetito {
 	chain brain {
 		oif lo meta l4proto { tcp, udp } th dport { $BLO } accept
 		oif lo meta l4proto icmp accept
-		${P4:+ip daddr { $P4 } meta l4proto { tcp, udp } th dport 22000 accept}
-		${P6:+ip6 daddr { $P6 } meta l4proto { tcp, udp } th dport 22000 accept}
+		$R4
+		$R6
 		limit rate 6/minute log prefix "appetito-fw brain: " level info
 		reject with icmpx admin-prohibited
 	}
