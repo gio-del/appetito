@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'monitor-'));
 const REPO = path.join(T, 'repo'), VAR = path.join(T, 'var');
-Object.assign(process.env, { APPETITO_REPO: REPO, APPETITO_STATE: VAR, APPETITO_CURRENT: path.resolve(__dirname, '..', '..'),
+Object.assign(process.env, { APPETITO_REPO: REPO, APPETITO_STATE: VAR, APPETITO_CURRENT: path.join(T, 'current'),
   APPETITO_UNITS: path.join(T, 'units'), APPETITO_EVENTS: path.join(VAR, 'events'), APPETITO_DISK_MAX: '101' });
 for (const d of ['open', 'done']) fs.mkdirSync(path.join(REPO, 'issues', d), { recursive: true });
 fs.mkdirSync(path.join(VAR, 'events'), { recursive: true });

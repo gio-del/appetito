@@ -238,8 +238,22 @@ function liveOf(out) {
 	return { tools: tools.slice(-80), counts, total: tools.length, denied: recs.filter(r => r.kind === 'denied').length, lastAt: last };
 }
 
+// The tracker writes issues into main's working tree and the deploy runner commits them on its next
+// pass: an issue the owner just wrote may not be in main's history yet, and the agent's clone only
+// sees history. Ask the runner for a pass (the same signal as a push) and wait for it.
+async function issueCommitted(file) {
+	const rel = `issues/open/${file}`;
+	for (let i = 0; i < 40; i++) {
+		try { git(MAIN, ['cat-file', '-e', `HEAD:${rel}`]); return true; } catch {}
+		if (i === 0) fs.writeFileSync(PUSHED, String(nowS()));
+		await new Promise(r => setTimeout(r, 3000));
+	}
+	return false;
+}
+
 async function workIssue(pick, attempt, manual) {
 	const id = pick.id;
+	if (!await issueCommitted(pick.file)) log(`#${id}: not in main's history after 2 minutes, working on it anyway`);
 	const branch = `agent/${id}-${slugOf(pick.file)}`;
 	const run = `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}_${id}`;
 	const out = path.join(ST, 'runs', run);

@@ -52,6 +52,8 @@ async function run({ prompt, system, dir, profile, out, timeout, transcript: tr,
 		'--permission-mode', mode, '--allowedTools', allow.join(','), '--disallowedTools', deny.join(','),
 		'--max-budget-usd', String(env.APPETITO_CLAUDE_MAX_BUDGET_USD || 10)];
 	if (env.APPETITO_CLAUDE_MODEL) args.push('--model', env.APPETITO_CLAUDE_MODEL);
+	// The server's history is the owner's: no co-author trailers (APPETITO_CLAUDE_ATTRIBUTION=1 keeps them).
+	if (env.APPETITO_CLAUDE_ATTRIBUTION !== '1') args.push('--settings', JSON.stringify({ attribution: { commit: '', pr: '' }, includeCoAuthoredBy: false }));
 	if (system) args.push('--append-system-prompt', system);
 
 	let model = null, result = null, limited = false;
