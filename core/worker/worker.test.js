@@ -14,7 +14,7 @@ process.env.APPETITO_SETTINGS_FILE = path.join(T, 'settings.env');
 process.env.APPETITO_ENV_FILE = path.join(T, 'none.env');
 fs.mkdirSync(path.join(VAR, 'worker'), { recursive: true });
 fs.mkdirSync(path.join(VAR, 'deploy', 'branches'), { recursive: true });
-const { queue, gates } = require('./worker.js');
+const { queue, gates, issueOnMain } = require('./worker.js');
 
 function issue(state, file, fields, body = '') {
 	fs.mkdirSync(path.join(MAIN, 'issues', state), { recursive: true });
@@ -62,5 +62,19 @@ test('gates: daily budgets of runs, tokens and cost', () => {
 	assert.strictEqual(gates().budget, '');
 	fs.writeFileSync(process.env.APPETITO_SETTINGS_FILE, 'APPETITO_AUTO_COST_DAY=2\n');
 	assert.match(gates().budget, /cost \$2.00\/\$2/);
+});
+test('issueOnMain: committed and with no tracker edit still waiting for the runner', () => {
+	const R = path.join(T, 'onmain'), rel = 'issues/open/001-x.md', f = path.join(R, rel);
+	const g = (...a) => require('node:child_process').execFileSync('git', ['-C', R, ...a], { stdio: 'ignore' });
+	fs.mkdirSync(path.dirname(f), { recursive: true });
+	g('init', '-q'); g('config', 'user.email', 'e@x'); g('config', 'user.name', 'e');
+	fs.writeFileSync(f, 'Status: backlog\n');
+	assert.strictEqual(issueOnMain('001-x.md', R), false, 'not committed yet');
+	g('add', '-A'); g('commit', '-qm', 'x');
+	assert.strictEqual(issueOnMain('001-x.md', R), true);
+	fs.writeFileSync(f, 'Status: todo\n');
+	assert.strictEqual(issueOnMain('001-x.md', R), false, 'the owner moved it and the runner has not committed it yet');
+	g('commit', '-qam', 'y');
+	assert.strictEqual(issueOnMain('001-x.md', R), true);
 });
 test.after(() => fs.rmSync(T, { recursive: true, force: true }));

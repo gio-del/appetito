@@ -239,12 +239,18 @@ function liveOf(out) {
 }
 
 // The tracker writes issues into main's working tree and the deploy runner commits them on its next
-// pass: an issue the owner just wrote may not be in main's history yet, and the agent's clone only
-// sees history. Ask the runner for a pass (the same signal as a push) and wait for it.
-async function issueCommitted(file) {
+// pass: an issue the owner just wrote or moved may not be in main's history yet, and the agent's
+// clone only sees history. Working on an older version makes the branch conflict with the tracker's
+// edit (the Status: line) when it lands. So the issue must be in HEAD and identical to the working
+// tree. Compares the blob with the file: `git diff` would want to write the index, which agent can't.
+function issueOnMain(file, repo = MAIN) {
 	const rel = `issues/open/${file}`;
+	try { return execFileSync('git', ['-C', repo, 'cat-file', 'blob', `HEAD:${rel}`], { stdio: ['ignore', 'pipe', 'ignore'] }).equals(fs.readFileSync(path.join(repo, rel))); } catch { return false; }
+}
+// Ask the runner for a pass (the same signal as a push) and wait for it.
+async function issueCommitted(file) {
 	for (let i = 0; i < 40; i++) {
-		try { git(MAIN, ['cat-file', '-e', `HEAD:${rel}`]); return true; } catch {}
+		if (issueOnMain(file)) return true;
 		if (i === 0) fs.writeFileSync(PUSHED, String(nowS()));
 		await new Promise(r => setTimeout(r, 3000));
 	}
@@ -253,7 +259,7 @@ async function issueCommitted(file) {
 
 async function workIssue(pick, attempt, manual) {
 	const id = pick.id;
-	if (!await issueCommitted(pick.file)) log(`#${id}: not in main's history after 2 minutes, working on it anyway`);
+	if (!await issueCommitted(pick.file)) log(`#${id}: not committed on main as the tracker shows it after 2 minutes, working on it anyway`);
 	const branch = `agent/${id}-${slugOf(pick.file)}`;
 	const run = `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}_${id}`;
 	const out = path.join(ST, 'runs', run);
@@ -482,5 +488,5 @@ async function main() {
 	return round(manual, only);
 }
 
-module.exports = { queue, gates, rounds, nextSlot };
+module.exports = { queue, gates, rounds, nextSlot, issueOnMain };
 if (require.main === module) main().then(c => process.exit(c || 0), e => { console.error(e.stack || e); try { log(`crash: ${e.message}`); } catch {} process.exit(1); });

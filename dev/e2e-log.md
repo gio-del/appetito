@@ -20,3 +20,4 @@ One line per `make e2e` run (`tests/e2e/run`).
 | 2026-10-13 22:39 | 454939d | debian13 | amd64 | first-issue | claude-code (sonnet) | 2 min | pass |
 | 2026-10-13 22:42 | 454939d | debian13 | amd64 | first-issue | claude-code (sonnet) | 2 min | pass |
 | 2026-10-13 22:45 | 6d7eacf | debian13 | amd64 | brain | claude-code (sonnet) | 2 min | pass |
+| 2026-10-13 22:51 | 5fc2f10 | debian13 | amd64 | vaultwarden | claude-code (sonnet) | 6 min | fail: deploy conflict (agent branched before the tracker's move to To do was committed; fixed in the worker), then quota gate 69% > 50%; stopped by hand |
