@@ -1,22 +1,25 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101112">
-<title>Impostazioni</title>
+<title>Settings</title>
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
+<script src="i18n.js" defer></script>
 <script src="settings.js" defer></script>
 </head>
 <body>
 <main class="pa">
-  <h1>Impostazioni</h1>
-  <p class="muted small">Ritmo dei lavori automatici del server. Le modifiche valgono dal prossimo giro, senza riavvii. Indirizzi, password e permessi non si cambiano da qui.</p>
+  <p><a href="/" id="st-back"></a></p>
+  <h1 id="st-h"></h1>
+  <p class="muted small" id="st-intro"></p>
   <form id="st-form" hidden>
     <div id="st-list"></div>
-    <div class="st-actions"><button class="btn primary" type="submit">Salva</button><span id="st-ok" class="pa-ok" role="status"></span></div>
+    <div class="st-actions"><button class="btn primary" type="submit" id="st-save"></button><span id="st-ok" class="pa-ok" role="status"></span></div>
   </form>
+  <section id="st-gate" class="st-gate" hidden></section>
   <p id="st-msg" class="err" role="alert"></p>
 </main>
 </body>

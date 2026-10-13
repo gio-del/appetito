@@ -1,6 +1,6 @@
 {
-  "name": "Issue home-server",
-  "short_name": "Issue",
+  "name": "appetito",
+  "short_name": "appetito",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

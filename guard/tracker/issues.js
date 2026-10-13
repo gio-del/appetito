@@ -1,8 +1,9 @@
 'use strict';
-// Issue files (issues/{open,done,proposed}/NNN-slug.md, format in issues/README.md): parser/serializer
-// shared by the tracker (server.js) and the housekeeping rules (issue 033), which run both in the
-// tracker after every edit and as `issues-housekeep [REPO]` (/usr/local/bin, run as $HS_USER by
-// issues-autocommit and the deploy), so closes made with git mv by Claude are seen too.
+// Issue files (issues/{open,done}/NNN-slug.md, format in issues/README.md): parser/serializer shared
+// by the tracker (server.js) and the housekeeping rules, which run both in the tracker after every edit
+// and as `core/issues/issues-housekeep` (user appetito, timer), so closes made with git mv by the agent
+// are seen too. Pending proposals live outside the repo (the tracker's state dir, unreadable by the
+// agent): setProposedDir() points the readers at it.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -77,7 +78,7 @@ function now() {
 
 const FILE_RE = /^(\d{3,})-([a-z0-9-]+)\.md$/;
 
-// ---------- housekeeping (issue 033) ----------
+// ---------- housekeeping ----------
 
 const UNTICKED_RE = /^\s*[-*] \[ \]/m;
 // "issue 030", "issue 030, 031", "issues 030 and 031" (optionally "#030", a trailing "(why)").
@@ -94,10 +95,14 @@ function writeAtomic(full, text) {
   try { fs.renameSync(tmp, full); } catch (e) { try { fs.unlinkSync(tmp); } catch {} throw e; }
 }
 
+let PROPOSED_DIR = null;
+function setProposedDir(d) { PROPOSED_DIR = d; }
+const dirOf = (repo, state) => (state === 'proposed' ? PROPOSED_DIR || path.join(repo, 'issues', 'proposed') : path.join(repo, 'issues', state));
+
 function readAll(repo, states = ['open', 'done', 'proposed']) {
   const out = [];
   for (const state of states) {
-    const dir = path.join(repo, 'issues', state);
+    const dir = dirOf(repo, state);
     let names = [];
     try { names = fs.readdirSync(dir); } catch { continue; }
     for (const file of names) {
@@ -115,12 +120,12 @@ function addComment(p, author, text) {
   p.comments.push({ date: `${t.date} ${t.time}`, author, text });
 }
 
-// Deterministic, idempotent rules (no Claude):
+// Deterministic, idempotent rules (no model):
 // 1. an open issue labelled "epic", Blocked on "-", no unticked "- [ ]" step, with >=1 child and every
 //    child in done/ -> moved to done/ with Closed + a comment;
 // 2. an open issue "Blocked on: issue NNN[, MMM]" whose blockers are all in done/ -> "Blocked on: -" + a comment.
 // Returns the actions taken, one line each.
-function housekeep(repo, author = 'sistema') {
+function housekeep(repo, author = 'system') {
   const log = [];
   for (let round = 0; round < 10; round++) {
     const all = readAll(repo);
@@ -134,7 +139,7 @@ function housekeep(repo, author = 'sistema') {
         if (kids.length && kids.every(k => done.has(k))) {
           if (!getField(i.p, 'Closed')) setField(i.p, 'Closed', now().date);
           setField(i.p, 'Blocked on', '-');
-          addComment(i.p, author, `Chiusa in automatico: tutte le sotto-issue completate (${kids.join(', ')}).`);
+          addComment(i.p, author, `Closed automatically: all sub-issues are done (${kids.join(', ')}).`);
           writeAtomic(path.join(repo, 'issues', 'done', i.file), serialize(i.p));
           fs.unlinkSync(i.full);
           log.push(`closed epic ${i.id} (children ${kids.join(', ')})`);
@@ -145,7 +150,7 @@ function housekeep(repo, author = 'sistema') {
       const ids = blockers(blocked);
       if (ids && ids.every(k => done.has(k))) {
         setField(i.p, 'Blocked on', '-');
-        addComment(i.p, author, `Sbloccata: ${ids.join(', ')} ${ids.length > 1 ? 'chiuse' : 'chiusa'}.`);
+        addComment(i.p, author, `Unblocked: ${ids.join(', ')} ${ids.length > 1 ? 'are' : 'is'} done.`);
         writeAtomic(i.full, serialize(i.p));
         log.push(`unblocked ${i.id} (${ids.join(', ')} done)`);
         changed = true;
@@ -156,13 +161,13 @@ function housekeep(repo, author = 'sistema') {
   return log;
 }
 
-// ---------- relations and duplicates (issue 058) ----------
+// ---------- relations and duplicates ----------
 // `Related: NNN[, MMM]` (symmetric, stored on one side), `Duplicate of: NNN` (on the closed duplicate),
 // `Possible-duplicate: NNN` (set by the tracker on a proposal). The other side is always derived.
 
 const idList = v => [...new Set((v || '').match(/\d{3,}/g) || [])];
 
-// Deterministic similarity (no Claude): TF-IDF cosine of normalised tokens (accents stripped, stop words
+// Deterministic similarity (no model): TF-IDF cosine of normalised tokens (accents stripped, stop words
 // dropped, first 6 letters as a crude stem shared by it/en: propos-te/-als, verifi-ca/-cation), title
 // weighted 0.6 and description 0.4. IDF comes from the corpus, so words every issue uses count little.
 const STOP = new Set(('the and for with from into that this then than are was were has have not but all any its our out per one ' +
@@ -206,7 +211,7 @@ function corpus(repo, withProposed, nowMs = Date.now()) {
 
 // Candidates for "is this new title/body a duplicate?", best first: [{id, state, title, score}].
 // A closed duplicate (`Duplicate of: NNN`) lends its score to NNN, which ranks first on a tie: NNN is
-// where the work went, even once its own text has drifted away from the duplicate's (issue 059).
+// where the work went, even once its own text has drifted away from the duplicate's.
 function similar(all, title, desc, min = SIMILAR_MIN) {
   const score = similarity([{ title, desc }, ...all.map(i => ({ title: i.p.title, desc: i.p.desc }))]);
   const res = all.map((i, k) => ({ id: i.id, state: i.state, title: i.p.title, score: Math.round(score(0, k + 1) * 100) / 100,
@@ -242,7 +247,7 @@ function duplicatePairs(all, min = SIMILAR_MIN) {
   return out;
 }
 
-// ---------- shape rules (issue 034, issues/README.md "Shape rules") ----------
+// ---------- shape rules ----------
 
 const UNTICKED_LINE_RE = /^\s*[-*] \[ \]/;
 const STATUSES = ['backlog', 'todo', 'in-progress'];
@@ -250,11 +255,11 @@ const EPIC_GRACE_MS = 3600e3; // a freshly written epic gets an hour to receive 
 
 // Checks the open issues against the shape rules (proposals are never read: only their ids count as
 // existing). Returns one finding per problem: { id, ids (issues involved), rule, fp (stable, for
-// hs-monitor), msg (Italian) }.
+// the monitor), msg }.
 function lint(repo, nowMs = Date.now()) {
   const all = readAll(repo).filter(i => i.state !== 'proposed');
   const ids = new Set(all.map(i => i.id));
-  try { for (const f of fs.readdirSync(path.join(repo, 'issues', 'proposed'))) { const m = FILE_RE.exec(f); if (m) ids.add(m[1]); } } catch {}
+  try { for (const f of fs.readdirSync(dirOf(repo, 'proposed'))) { const m = FILE_RE.exec(f); if (m) ids.add(m[1]); } } catch {}
   const parentOf = new Map(all.map(i => [i.id, (getField(i.p, 'Parent') || '').trim()]));
   const out = [];
   const add = (i, rule, msg) => out.push({ id: i.id, ids: [i.id], rule, fp: `lint-${rule}-${i.id}`, msg });
@@ -263,35 +268,35 @@ function lint(repo, nowMs = Date.now()) {
     const blocked = (getField(i.p, 'Blocked on') || '-').trim();
     const unticked = i.p.desc.split('\n').filter(l => UNTICKED_LINE_RE.test(l));
     if (labels.includes('epic')) {
-      if (unticked.length) add(i, 'epic-work', `Epic ${i.id} contiene lavoro: spostalo in sotto-issue`);
+      if (unticked.length) add(i, 'epic-work', `Epic ${i.id} holds work: move it into sub-issues`);
       const kids = all.filter(c => parentOf.get(c.id) === i.id);
       let age = Infinity; try { age = nowMs - fs.statSync(i.full).mtimeMs; } catch {}
-      if (!kids.length && age > EPIC_GRACE_MS) add(i, 'epic-no-children', `Epic ${i.id} senza sotto-issue`);
+      if (!kids.length && age > EPIC_GRACE_MS) add(i, 'epic-no-children', `Epic ${i.id} has no sub-issues`);
     }
     const status = (getField(i.p, 'Status') || '').trim().toLowerCase();
-    if (!status) add(i, 'no-status', `Issue ${i.id} senza Status`);
-    else if (!STATUSES.includes(status)) add(i, 'no-status', `Issue ${i.id}: Status «${status}» non valido (backlog, todo, in-progress)`);
+    if (!status) add(i, 'no-status', `Issue ${i.id} has no Status`);
+    else if (!STATUSES.includes(status)) add(i, 'no-status', `Issue ${i.id}: Status "${status}" is not valid (backlog, todo, in-progress)`);
     if (/^user\b/i.test(blocked) && unticked.some(l => !/\(HITL\)/.test(l)))
-      add(i, 'hidden-work', `Issue ${i.id}: passi automatizzabili dietro un blocco dell'owner`);
+      add(i, 'hidden-work', `Issue ${i.id}: steps the agent could do are hidden behind an owner block`);
     const bl = blockers(blocked);
     const missing = (bl || []).filter(k => !ids.has(k));
-    if (missing.length) add(i, 'blocker-missing', `Issue ${i.id}: Blocked on nomina issue inesistenti (${missing.join(', ')})`);
+    if (missing.length) add(i, 'blocker-missing', `Issue ${i.id}: Blocked on names issues that don't exist (${missing.join(', ')})`);
     const par = parentOf.get(i.id);
     if (par) {
-      if (!/^\d{3,}$/.test(par) || !ids.has(par)) add(i, 'parent-bad', `Issue ${i.id}: Parent ${par} non esiste`);
-      else if (par === i.id || parentOf.get(par)) add(i, 'parent-bad', `Issue ${i.id}: Parent ${par} è a sua volta una sotto-issue (un solo livello)`);
+      if (!/^\d{3,}$/.test(par) || !ids.has(par)) add(i, 'parent-bad', `Issue ${i.id}: Parent ${par} doesn't exist`);
+      else if (par === i.id || parentOf.get(par)) add(i, 'parent-bad', `Issue ${i.id}: Parent ${par} is itself a sub-issue (one level only)`);
     }
   }
-  // Possible duplicates (issue 058): one finding per pair, gone once one closes or they get `Related:`.
+  // Possible duplicates: one finding per pair, gone once one closes or they get `Related:`.
   for (const [a, b] of duplicatePairs(all)) out.push({ id: a, ids: [a, b], rule: 'possible-duplicate', fp: `lint-possible-duplicate-${a}-${b}`,
-    msg: `Issue ${a} e ${b}: possibile duplicato (unisci con Duplicate of, o collega con Related se sono lavori diversi)` });
+    msg: `Issues ${a} and ${b} look like duplicates (merge with Duplicate of, or link with Related if they are different work)` });
   return out;
 }
 
-// ---------- stale backlog (issue 063) ----------
-// A backlog issue is stale when nobody decided on it for HS_BACKLOG_STALE_DAYS days. Its clock is the
+// ---------- stale backlog ----------
+// A backlog issue is stale when nobody decided on it for APPETITO_BACKLOG_STALE_DAYS days. Its clock is the
 // latest of `Backlog-reviewed:` (written by the tracker's «Tieni in backlog»), the last commit touching the
-// file (stands in for "when it got Status: backlog") and `Opened:`. Deterministic, no Claude, no lint.
+// file (stands in for "when it got Status: backlog") and `Opened:`. Deterministic, no model, no lint.
 
 const dayMs = s => { const m = /^(\d{4})-(\d\d)-(\d\d)/.exec((s || '').trim()); return m ? new Date(+m[1], m[2] - 1, +m[3]).getTime() : NaN; };
 
@@ -326,18 +331,18 @@ function staleBacklog(items, days, dates = new Map(), nowMs = Date.now()) {
     .filter(x => x.days !== null && x.days >= days).sort((a, b) => b.days - a.days || a.id.localeCompare(b.id));
 }
 
-module.exports = { backlogAge, staleBacklog, parseGitDates, gitDates, GIT_DATES_ARGS, readAll, parse, serialize, getField, setField, now, FILE_RE, COMMENTS_RE, housekeep, blockers, lint, idList, similar, corpus };
+module.exports = { setProposedDir, backlogAge, staleBacklog, parseGitDates, gitDates, GIT_DATES_ARGS, readAll, parse, serialize, getField, setField, now, FILE_RE, COMMENTS_RE, housekeep, blockers, lint, idList, similar, corpus };
 
 // CLI: `issues.js [REPO]` runs the housekeeping; `issues.js --lint [REPO]` prints the lint findings as JSON;
 // `issues.js --similar TITLE [BODY]` (REPO from $ISSUES_REPO) prints open/done issues similar to it, best
 // first (proposals are left out: their text is untrusted and this runs in the ops session).
 if (require.main === module && process.argv[2] === '--similar') {
-  const repo = process.env.ISSUES_REPO || path.join(process.env.HOME || '', 'home-server');
+  const repo = process.env.ISSUES_REPO || '/opt/appetito/repo';
   for (const c of similar(corpus(repo, false), process.argv[3] || '', process.argv[4] || ''))
     console.log(`${c.id}\t${c.score.toFixed(2)}\t${c.state}\t${c.title}`);
 } else if (require.main === module) {
   const lintMode = process.argv[2] === '--lint';
-  const repo = process.argv[lintMode ? 3 : 2] || path.join(process.env.HOME || '', 'home-server');
+  const repo = process.argv[lintMode ? 3 : 2] || '/opt/appetito/repo';
   if (lintMode) console.log(JSON.stringify(lint(repo), null, 1));
   else for (const l of housekeep(repo)) console.log(l);
 }

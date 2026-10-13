@@ -1,6 +1,6 @@
 :root {
   --bg: #101112; --panel: #17181a; --card: #1c1d20; --card-h: #222327; --line: #2a2c30;
-  --text: #e4e5e8; --muted: #8b8f98; --accent: #5e6ad2; --accent-h: #6c78e0;
+  --text: #e4e5e8; --muted: #8b8f98; --accent: #e5623a; --accent-h: #f07650; --accent-2: #f2a541;
   --red: #eb5757; --orange: #f2994a; --yellow: #f2c94c; --green: #4cb782; --blue: #4ea7fc;
   --radius: 8px; --shadow: 0 8px 30px rgb(0 0 0 / .45);
   color-scheme: dark;
@@ -43,14 +43,13 @@ input[type=search], input[type=text], input[type=password], select, textarea {
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 textarea { width: 100%; resize: vertical; line-height: 1.5; }
 
-/* login */
-.login { min-height: 100%; display: grid; place-items: center; padding: 16px; }
-.login-box {
-  width: min(320px, 100%); display: flex; flex-direction: column; gap: 12px; align-items: stretch;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 28px 24px; box-shadow: var(--shadow);
+/* changes waiting for the owner's tap */
+.waiting {
+  display: flex; align-items: center; gap: 8px; width: calc(100% - 24px); margin: 8px 12px 0; padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--orange) 50%, transparent); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--orange) 12%, var(--panel)); color: var(--text); cursor: pointer; text-align: left;
 }
-.login-box img { align-self: center; }
-.login-box h1 { font-size: 17px; text-align: center; margin: 0 0 6px; font-weight: 600; }
+.waiting .ic { width: 16px; height: 16px; color: var(--orange); flex: none; }
 
 /* layout */
 #app { height: 100%; display: flex; flex-direction: column; }
@@ -245,7 +244,7 @@ textarea { width: 100%; resize: vertical; line-height: 1.5; }
 .st-row input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
 .st-actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
 
-/* Proposals (issues 027, 048): entry-point badge, Scarta reasons */
+/* Proposals: entry-point badge, Scarta reasons */
 .src { border-radius: 4px; padding: 0 6px; font-size: 11px; line-height: 18px; font-weight: 600; white-space: nowrap; }
 .src-system { color: var(--blue); border: 1px solid var(--blue); }
 .src-note { color: var(--green); border: 1px solid var(--green); }
@@ -258,13 +257,13 @@ a.origin { color: var(--blue); }
 .reason { border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted);
   padding: 2px 10px; font: inherit; font-size: 13px; cursor: pointer; }
 .reason[aria-pressed=true] { color: var(--text); border-color: var(--red); background: color-mix(in srgb, var(--red) 15%, transparent); }
-/* Relations in the drawer (issue 058) */
+/* Relations in the drawer */
 .links { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .link-chip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-width: 0; }
 .link-chip .parent-chip { display: inline-flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .possible-dup { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 8px; }
 
-/* Sviluppo automatico (/auto.html, issues 067, 068): live status of ops-auto; every icon has a word or a tap explanation */
+/* Worker page (/auto.html): live status of the worker; every icon has a word or a tap explanation */
 .au-body { min-height: 100%; height: auto;
   background: radial-gradient(1200px 500px at 50% -200px, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%), var(--bg); }
 .au { max-width: 760px; margin: 0 auto; padding: max(14px, env(safe-area-inset-top)) 16px 48px; display: flex; flex-direction: column; gap: 16px; }
@@ -335,7 +334,7 @@ a.origin { color: var(--blue); }
 .hero-label { font-size: 21px; font-weight: 650; color: var(--tone); }
 .hero-line { font-size: 13px; max-width: 420px; margin-top: -4px; }
 .au-start { display: inline-flex; align-items: center; gap: 10px; border: 0; border-radius: 999px; padding: 12px 26px; font-size: 16px; font-weight: 600;
-  color: #fff; cursor: pointer; background: linear-gradient(135deg, var(--accent), #8b5cf6); box-shadow: 0 8px 28px color-mix(in srgb, var(--accent) 45%, transparent);
+  color: #fff; cursor: pointer; background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 8px 28px color-mix(in srgb, var(--accent) 45%, transparent);
   transition: transform .15s, box-shadow .15s; }
 .au-start:hover:not(:disabled) { transform: translateY(-1px) scale(1.02); }
 .au-start .ic { width: 20px; height: 20px; }
@@ -377,7 +376,7 @@ a.origin { color: var(--blue); }
 /* tool categories */
 .c-read { --c: #4ea7fc; } .c-search { --c: #22d3ee; } .c-edit { --c: #f2c94c; } .c-run { --c: #a78bfa; } .c-git { --c: #94a3b8; }
 .c-commit { --c: #4cb782; } .c-deploy { --c: #f97316; } .c-service { --c: #f472b6; } .c-net { --c: #2dd4bf; } .c-plan { --c: #c084fc; }
-.c-web { --c: #2dd4bf; } .c-other { --c: #8b8f98; }
+.c-web { --c: #2dd4bf; } .c-other { --c: #8b8f98; } .c-shell { --c: #a78bfa; } .c-agent { --c: #c084fc; }
 .counts { display: flex; flex-wrap: wrap; gap: 8px; }
 .cnt { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px 5px 8px; border-radius: 10px; color: var(--c); font-size: 13px; font-weight: 600;
   background: color-mix(in srgb, var(--c) 13%, var(--card)); border: 1px solid color-mix(in srgb, var(--c) 35%, transparent); }
@@ -462,7 +461,7 @@ a.origin { color: var(--blue); }
 .r-why { font-size: 12.5px; color: var(--muted); }
 .r-count { margin-left: auto; font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); background: var(--card-h); border-radius: 999px; padding: 1px 8px; }
 
-/* board header + drawer (issue 067) */
+/* board header + drawer */
 .auto-pill { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; color: var(--muted); border: 1px solid var(--line);
   border-radius: 999px; padding: 4px 10px 4px 8px; font-size: 12.5px; white-space: nowrap; background: var(--card); }
 .auto-pill:hover { color: var(--text); border-color: var(--accent); }
@@ -471,7 +470,21 @@ a.origin { color: var(--blue); }
 .auto-go { display: inline-flex; align-items: center; gap: 6px; }
 .auto-go .ic { width: 14px; height: 14px; }
 @media (max-width: 760px) { .auto-pill .lbl { display: none; } }
-/* Stale backlog (issue 063): badge on the card, board filter */
+/* Stale backlog: badge on the card, board filter */
 .stale { color: var(--orange); border: 1px solid var(--orange); border-radius: 4px; padding: 0 6px; font-size: 11px; line-height: 18px; font-weight: 600; white-space: nowrap; }
 .fstale { white-space: nowrap; color: var(--orange); }
 .fstale[aria-pressed=true] { border-color: var(--orange); background: color-mix(in srgb, var(--orange) 15%, transparent); }
+
+/* changes page */
+.change { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 12px; margin: 10px 0; display: grid; gap: 8px; }
+.change-h { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.change-h .ic { width: 16px; height: 16px; color: var(--orange); }
+.warn-box { margin: 0; padding: 8px 10px; border-radius: 6px; background: color-mix(in srgb, var(--orange) 12%, transparent); font-size: 13px; }
+pre.diff { margin: 6px 0 0; padding: 8px; max-height: 50vh; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; font-size: 12px; line-height: 1.4; }
+pre.diff .add { color: var(--green); } pre.diff .del { color: var(--red); } pre.diff .hunk { color: var(--blue); } pre.diff .file { color: var(--text); font-weight: 600; }
+.bstate { font-size: 12px; padding: 1px 7px; border-radius: 99px; background: var(--card-h); }
+.bstate.s-merged { color: var(--green); } .bstate.s-rolled-back, .bstate.s-rejected, .bstate.s-conflict { color: var(--red); } .bstate[class*="s-waiting"] { color: var(--orange); }
+.st-gate { margin-top: 24px; }
+.day { margin-top: 10px; display: grid; gap: 4px; font-size: 13px; }
+.day-row { display: flex; gap: 8px; align-items: baseline; }
+.day-row > span:first-child { min-width: 90px; color: var(--muted); }

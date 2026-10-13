@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # appetito-issue: create an issue file from guard code (root). Root never runs core/ code, so
 # the deploy runner has its own tiny writer instead of the tracker's or the monitor's.
 #
@@ -6,20 +6,22 @@
 #   appetito-issue --comment FILE AUTHOR < text     appends a comment to an existing issue
 #
 # Numbering takes the same lock directory as the tracker and the monitor
-# ($APPETITO_STATE/issues.lock, mkdir is atomic), so two writers never pick the same number.
+# ($APPETITO_STATE/issues-meta/lock, mkdir is atomic), so two writers never pick the same number.
 set -eu
 umask 002
 STATE=${APPETITO_STATE:-/var/lib/appetito}
+META=$STATE/issues-meta   # shared with the tracker and the monitor (group appetito-issues)
+mkdir -p "$META"
 lock() {
 	i=0
-	until mkdir "$STATE/issues.lock" 2>/dev/null; do
+	until mkdir "$META/lock" 2>/dev/null; do
 		i=$((i + 1))
 		# A lock older than 2 minutes belongs to a writer that died.
-		if [ $i -gt 50 ] || [ -n "$(find "$STATE/issues.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rmdir "$STATE/issues.lock" 2>/dev/null || true; fi
+		if [ $i -gt 50 ] || [ -n "$(find "$META/lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rmdir "$META/lock" 2>/dev/null || true; fi
 		sleep 0.1
 	done
 }
-unlock() { rmdir "$STATE/issues.lock" 2>/dev/null || true; }
+unlock() { rmdir "$META/lock" 2>/dev/null || true; }
 now() { date '+%Y-%m-%d %H:%M'; }
 
 if [ "${1:-}" = --comment ]; then
@@ -35,7 +37,10 @@ body=$(cat)
 slug=$(printf '%s' "$title" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//' | cut -c1-40 | sed 's/-$//')
 lock; trap unlock EXIT
 last=$(ls "$R/issues/open" "$R/issues/done" "$R/issues/proposed" 2>/dev/null | sed -n 's/^\([0-9][0-9]*\)-.*\.md$/\1/p' | sort -n | tail -1)
-n=$(printf '%03d' $(( ${last:-0} + 1 )))
+hint=$(cat "$META/max" 2>/dev/null | tr -dc 0-9); hint=${hint:-0}
+last=${last:-0}; [ "$((10#$hint))" -gt "$((10#$last))" ] && last=$hint
+n=$(printf '%03d' $(( 10#$last + 1 )))
+echo "$((10#$n))" > "$META/max.tmp" && mv "$META/max.tmp" "$META/max" || true
 f=$R/issues/open/$n-$slug.md
 {
 	printf '# %s\n\nOpened: %s\nBlocked on: -\nStatus: todo\nPriority: high\nLabels: %s\n\n' "$title" "$(date +%F)" "$labels"
