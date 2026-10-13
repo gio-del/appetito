@@ -38,5 +38,20 @@ wait-closed) # wait-closed ID TIMEOUT_S: closed on main and its branch merged
 		sleep 10
 	done
 	echo "timeout"; exit 1 ;;
+brain-note) # brain-note FILE: the owner's phone syncs a note into the vault's Inbox; the sort job runs
+	install -o brain -g brain -m 640 "$2" "/var/lib/appetito/brain/vault/Inbox/$(basename "$2")"
+	systemctl start --no-block appetito-brain-sort.service; echo "note in Inbox" ;;
+wait-brain) # wait-brain NAME TIMEOUT_S: the note left the Inbox and the brain proposed an issue
+	n=$2 end=$(( $(date +%s) + $3 )) last=""
+	while [ "$(date +%s)" -lt "$end" ]; do
+		inb=$([ -e "/var/lib/appetito/brain/vault/Inbox/$n" ] && echo yes || echo no)
+		p=$(api GET /api/issues 2>/dev/null | jq -r '[.issues[] | select(.column == "proposed" and .source == "brain")] | map("#\(.id) \(.title)") | join("; ")' 2>/dev/null || true)
+		now="in-inbox=$inb proposals=${p:-none}"
+		[ "$now" = "$last" ] || { echo "$(date +%T) $now"; last=$now; }
+		[ "$inb" = no ] && [ -n "$p" ] && { grep -rl "Proposed as issue" /var/lib/appetito/brain/vault --include='*.md' | sed 's|.*/vault/|note: |'; exit 0; }
+		systemctl is-active -q appetito-brain-sort.service || systemctl start --no-block appetito-brain-sort.service
+		sleep 10
+	done
+	tail -20 /var/lib/appetito/brain/state/sort.log 2>/dev/null; echo "timeout"; exit 1 ;;
 *) echo "unknown command $1" >&2; exit 2 ;;
 esac

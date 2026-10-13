@@ -6,7 +6,7 @@ Read first: `CLAUDE.md`, `docs/PRD.md` (§10 launch gate, §11 autonomy rules), 
 
 | # | Item | State |
 |---|---|---|
-| 1 | `make e2e` first issue closed < 30 min, 3 consecutive | **2/3 green.** `--repeat 3` on Debian 13 amd64 (Sonnet): run 1 closed the issue but the final checks failed `no firewall rules for brain` (see "Open bug"); runs 2 and 3 PASS (1 min 38 s, 1 min 28 s). Results land in `dev/e2e-log.md` and `tests/e2e/out/<run>/`. Need 3 consecutive green after the bug fix. |
+| 1 | `make e2e` first issue closed < 30 min, 3 consecutive | **Green on Debian 13 amd64**: 3/3 consecutive PASS at 454939d (1 min 35 s, 1 min 30 s, 1 min 42 s) after the firewall-check fix. Repeat on the other distro/arch (gate 2). Results in `dev/e2e-log.md` and `tests/e2e/out/<run>/`. |
 | 2 | Debian 13 + Ubuntu 24.04, amd64 + arm64 | Only Debian 13 amd64 run so far. arm64 emulation works through Docker Desktop (`--platform linux/arm64`, checked). Next: `--distro ubuntu2404`, `--arch arm64`. |
 | 3 | security-audit green + tests (a)-(d) | **Green**: `tests/e2e/run --scenario security` PASS (2 min 32 s), smoke checks green. |
 | 4 | Claude Code full e2e; Ollama honours the contract | Claude: yes (first-issue). Ollama/opencode: contract passes against a mock endpoint (`tests/contract/mock-openai.js`); a real Ollama run on CPU was in progress and then the Ollama container/volume were deleted to free disk. To finish: re-run `tests/contract/agent-run.sh openai` with `CONTRACT_ONLY=1` against a small model (watch the disk). |
@@ -19,9 +19,9 @@ Read first: `CLAUDE.md`, `docs/PRD.md` (§10 launch gate, §11 autonomy rules), 
 
 Dev issues closed: 001, 002, 006, 007, 008, 011, 016. Open: 003 (agent-run: Ollama real run left), 004 (tracker: mostly done — close after a last UI pass), 005 (worker: done in practice, close with the e2e), 009 (brain: code done, needs an e2e — a note in Inbox gets sorted and proposes), 010 (calendar: `brain-cal` done, off unless configured), 012 (installer: done, needs ubuntu/arm64), 013 (e2e), 014 (starter backlog: Vaultwarden run), 015 (docs: gif), 017, 018, 019.
 
-## Open bug (fix first)
+## Fixed bug (2026-10-13)
 
-Run 1 of first-issue: `security-audit` → `FAIL no firewall rules for brain` after a successful close. The check in `guard/checks/security-audit` greps `nft list table inet appetito` for `skuid <uid>`. Probably nft printing the user by name, or a race with `appetito-fw` being restarted during apply. Make the check match uid or name and verify with `nft list chain inet appetito output` in a kept box (`tests/e2e/run --scenario smoke --keep`).
+`no firewall rules for brain` was `| grep -q` under `pipefail` (SIGPIPE race), fixed everywhere and refused by `make lint`.
 
 ## Things learned this session (don't relearn)
 

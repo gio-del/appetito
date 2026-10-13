@@ -16,3 +16,6 @@ One line per `make e2e` run (`tests/e2e/run`).
 | 2026-10-13 22:25 | 96258e1 | debian13 | amd64 | first-issue | claude-code (sonnet) | 2 min | fail: see tests/e2e/out/20261013-222308-debian13-amd64-first-issue |
 | 2026-10-13 22:28 | 96258e1 | debian13 | amd64 | first-issue | claude-code (sonnet) | 2 min | pass |
 | 2026-10-13 22:31 | f0d4ceb | debian13 | amd64 | first-issue | claude-code (sonnet) | 2 min | pass |
+| 2026-10-13 22:37 | 454939d | debian13 | amd64 | first-issue | claude-code (sonnet) | 2 min | pass |
+| 2026-10-13 22:39 | 454939d | debian13 | amd64 | first-issue | claude-code (sonnet) | 2 min | pass |
+| 2026-10-13 22:42 | 454939d | debian13 | amd64 | first-issue | claude-code (sonnet) | 2 min | pass |

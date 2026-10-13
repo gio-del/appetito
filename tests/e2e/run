@@ -2,7 +2,7 @@
 # make e2e: a disposable systemd container per run, rebuilt from the distro's image, then the real
 # installer and a real scenario. Nothing touches the host system beyond Docker.
 #
-#   tests/e2e/run [--distro debian13|ubuntu2404] [--arch amd64|arm64] [--scenario NAME]
+#   tests/e2e/run [--distro debian13|ubuntu2404] [--arch amd64|arm64] [--scenario smoke|first-issue|vaultwarden|brain|security]
 #                 [--backend claude-code|fake] [--model sonnet] [--repeat N] [--keep]
 #
 # Scenarios:
@@ -70,10 +70,13 @@ one_run() {
 	inbox /root/in-box.sh setup | tee -a "$OUT/run.log"
 	if [ "$BACKEND" = claude-code ]; then
 		claude_creds > "$OUT/.creds" || { rm -f "$OUT/.creds"; result fail "$start" "no valid Claude token"; return 1; }
-		inbox install -d -o agent -g agent -m 700 /var/lib/appetito/agent/.claude
-		docker cp "$OUT/.creds" "$NAME:/var/lib/appetito/agent/.claude/.credentials.json" >/dev/null; rm -f "$OUT/.creds"
-		inbox chown agent:agent /var/lib/appetito/agent/.claude/.credentials.json
-		inbox chmod 600 /var/lib/appetito/agent/.claude/.credentials.json
+		for u in agent brain; do # the second brain shares the agent's token, as after install.sh
+			inbox install -d -o "$u" -g "$u" -m 700 "/var/lib/appetito/$u/.claude"
+			docker cp "$OUT/.creds" "$NAME:/var/lib/appetito/$u/.claude/.credentials.json" >/dev/null
+			inbox chown "$u:$u" "/var/lib/appetito/$u/.claude/.credentials.json"
+			inbox chmod 600 "/var/lib/appetito/$u/.claude/.credentials.json"
+		done
+		rm -f "$OUT/.creds"
 		inbox sed -i "/^APPETITO_CLAUDE_MODEL=/d" /etc/appetito/appetito.env
 		[ -z "$MODEL" ] || inbox sh -c "echo APPETITO_CLAUDE_MODEL=$MODEL >> /etc/appetito/appetito.env"
 	fi
@@ -81,6 +84,7 @@ one_run() {
 	smoke) scenario_smoke || rc=$? ;;
 	first-issue) scenario_issue "Add a hello page" tests/e2e/issues/hello.md 1800 || rc=$? ;;
 	vaultwarden) scenario_starter 001 3600 || rc=$? ;;
+	brain) scenario_brain tests/e2e/brain/rss-idea.md 1200 || rc=$? ;;
 	security) docker cp tests/e2e/security.sh "$NAME:/root/security.sh" >/dev/null; inbox bash /root/security.sh 2>&1 | tee -a "$OUT/run.log"; rc=${PIPESTATUS[0]} ;;
 	*) log "unknown scenario $SCENARIO"; rc=2 ;;
 	esac
@@ -107,6 +111,13 @@ scenario_starter() { # ID TIMEOUT
 	inbox /root/in-box.sh move "$1" todo | tee -a "$OUT/run.log"
 	inbox /root/in-box.sh start "$1" | tee -a "$OUT/run.log"
 	inbox /root/in-box.sh wait-closed "$1" "$2" 2>&1 | tee -a "$OUT/run.log"
+	[ "${PIPESTATUS[0]}" = 0 ] && scenario_smoke
+}
+scenario_brain() { # NOTE_FILE TIMEOUT
+	docker cp "$1" "$NAME:/root/$(basename "$1")" >/dev/null
+	log "owner's phone syncs $(basename "$1") (#now) into the vault's Inbox"
+	inbox /root/in-box.sh brain-note "/root/$(basename "$1")" | tee -a "$OUT/run.log"
+	inbox /root/in-box.sh wait-brain "$(basename "$1")" "$2" 2>&1 | tee -a "$OUT/run.log"
 	[ "${PIPESTATUS[0]}" = 0 ] && scenario_smoke
 }
 collect() {
