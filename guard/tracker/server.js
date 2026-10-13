@@ -232,6 +232,7 @@ const serial = fn => { const r = queue.then(fn); queue = r.catch(() => {}); retu
 const META = path.join(process.env.APPETITO_STATE || path.dirname(STATE), 'issues-meta');
 const ISSUES_LOCK = path.join(META, 'lock');
 async function withNumberLock(fn) {
+  await fsp.mkdir(META, { recursive: true }).catch(() => {});
   for (let i = 0; ; i++) {
     try { await fsp.mkdir(ISSUES_LOCK); break; } catch (e) {
       if (e.code !== 'EEXIST') throw e;
