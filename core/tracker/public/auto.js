@@ -43,7 +43,7 @@ Object.assign(I18N.en, {
   'au.r.refused': 'refused: {0}', 'au.r.skip': 'Skipped', 'au.r.skip.tip': 'The round started but did no work: {0}', 'au.r.count': '{0} rounds in a row skipped for the same reason',
   'au.m.dur': 'Duration', 'au.m.turns': 'Agent turns', 'au.m.turns.v': '{0} turns', 'au.m.tokens': 'Tokens used', 'au.m.cost': 'Cost reported by the backend (with a subscription plan it is not charged)',
   'au.m.denied': 'Steps refused by the permissions: details in the issue\'s comments', 'au.m.denied.v': '{0} denied', 'au.m.try': 'Attempt', 'au.m.try.v': 'attempt {0}', 'au.m.deploy': 'Deploy',
-  'au.upd': 'upd. {0}', 'au.ago': '{0} ago', 'au.yesterday': 'yesterday {0}', 'au.days': ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'], 'au.d': 'd',
+  'au.upd': 'upd. {0}', 'au.ago': '{0} ago', 'au.yesterday': 'yesterday {0}', 'au.d': 'd',
   'au.lg.rounds': [['Scheduled', 'Started by itself (:07 and :37)'], ['Manual', 'Started by you with Start now or ▶'], ['Skipped', 'The round started but did no work (reason next to it)']],
   'au.lg.queue': [['Failure found', 'Issue opened by the monitor: comes first'], ['To do', 'Issue in To do / In progress']],
 });
@@ -84,7 +84,7 @@ Object.assign(I18N.it, {
   'au.r.refused': 'rifiutato: {0}', 'au.r.skip': 'Saltato', 'au.r.skip.tip': 'Il giro è partito ma non ha lavorato: {0}', 'au.r.count': '{0} giri di fila saltati per lo stesso motivo',
   'au.m.dur': 'Durata', 'au.m.turns': 'Turni dell\'agente', 'au.m.turns.v': '{0} turni', 'au.m.tokens': 'Token usati', 'au.m.cost': 'Costo riportato dal backend (con un abbonamento non è addebitato)',
   'au.m.denied': 'Passi rifiutati dai permessi: dettagli nei commenti della issue', 'au.m.denied.v': '{0} bloccati', 'au.m.try': 'Tentativo', 'au.m.try.v': 'tentativo {0}', 'au.m.deploy': 'Deploy',
-  'au.upd': 'agg. {0}', 'au.ago': '{0} fa', 'au.yesterday': 'ieri {0}', 'au.days': ['dom', 'lun', 'mar', 'mer', 'giov', 'ven', 'sab'], 'au.d': 'g',
+  'au.upd': 'agg. {0}', 'au.ago': '{0} fa', 'au.yesterday': 'ieri {0}', 'au.d': 'g',
   'au.lg.rounds': [['Programmato', 'Partito da solo (:07 e :37)'], ['Manuale', 'Avviato da te con Avvia ora o ▶'], ['Saltato', 'Il giro è partito ma non ha lavorato (motivo accanto)']],
   'au.lg.queue': [['Errore trovato', 'Issue aperta dal monitor: viene prima'], ['Da fare', 'Issue in Da fare / In corso']],
 });
@@ -131,7 +131,7 @@ function dayHm(x) {
   if (d.toDateString() === n.toDateString()) return hm(x);
   const y = new Date(n); y.setDate(n.getDate() - 1);
   if (d.toDateString() === y.toDateString()) return t('au.yesterday', hm(x));
-  return `${t('au.days')[d.getDay()]} ${pad(d.getDate())} ${hm(x)}`;
+  return `${d.toLocaleDateString(LOCALE(), { weekday: 'short' })} ${pad(d.getDate())} ${hm(x)}`;
 }
 const kTok = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0);
 
