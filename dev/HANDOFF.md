@@ -6,7 +6,7 @@ Read first: `CLAUDE.md`, `docs/PRD.md` (§10 launch gate, §11 autonomy rules), 
 
 | # | Item | State |
 |---|---|---|
-| 1 | `make e2e` first issue closed < 30 min, 3 consecutive | **In progress.** `tests/e2e/run --scenario first-issue --repeat 3` was running at handoff (Debian 13 amd64, Claude Sonnet). Run 1: issue closed but the final checks failed `no firewall rules for brain` (see "Open bug" below). Run 2: **PASS in 1 min 38 s**. Run 3 was running. Results land in `dev/e2e-log.md` and `tests/e2e/out/<run>/`. Need 3 consecutive green after the bug fix. |
+| 1 | `make e2e` first issue closed < 30 min, 3 consecutive | **2/3 green.** `--repeat 3` on Debian 13 amd64 (Sonnet): run 1 closed the issue but the final checks failed `no firewall rules for brain` (see "Open bug"); runs 2 and 3 PASS (1 min 38 s, 1 min 28 s). Results land in `dev/e2e-log.md` and `tests/e2e/out/<run>/`. Need 3 consecutive green after the bug fix. |
 | 2 | Debian 13 + Ubuntu 24.04, amd64 + arm64 | Only Debian 13 amd64 run so far. arm64 emulation works through Docker Desktop (`--platform linux/arm64`, checked). Next: `--distro ubuntu2404`, `--arch arm64`. |
 | 3 | security-audit green + tests (a)-(d) | **Green**: `tests/e2e/run --scenario security` PASS (2 min 32 s), smoke checks green. |
 | 4 | Claude Code full e2e; Ollama honours the contract | Claude: yes (first-issue). Ollama/opencode: contract passes against a mock endpoint (`tests/contract/mock-openai.js`); a real Ollama run on CPU was in progress and then the Ollama container/volume were deleted to free disk. To finish: re-run `tests/contract/agent-run.sh openai` with `CONTRACT_ONLY=1` against a small model (watch the disk). |
