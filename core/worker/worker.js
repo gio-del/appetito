@@ -48,7 +48,7 @@ function writeJson(f, v) {
 const nowS = () => Math.floor(Date.now() / 1000);
 const today = () => new Date().toISOString().slice(0, 10);
 function git(dir, args, opts = {}) {
-	return execFileSync('git', ['-C', dir, '-c', `safe.directory=${dir}`, '-c', 'safe.directory=' + MAIN, ...args],
+	return execFileSync('git', ['-C', dir, '-c', `safe.directory=${dir}`, '-c', 'safe.directory=' + MAIN, '-c', `safe.directory=${MAIN}/.git`, ...args],
 		{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, ...opts }).trim();
 }
 function setting(k, d) {
@@ -159,7 +159,7 @@ function working() { const pid = Number(read(path.join(LOCK(), 'pid')).trim()); 
 function prepare(branch) {
 	if (!fs.existsSync(path.join(WORK, '.git'))) {
 		fs.mkdirSync(path.dirname(WORK), { recursive: true });
-		execFileSync('git', ['-c', 'safe.directory=' + MAIN, 'clone', '-q', MAIN, WORK], { stdio: 'ignore' });
+		execFileSync('git', ['-c', 'safe.directory=' + MAIN, '-c', `safe.directory=${MAIN}/.git`, 'clone', '-q', MAIN, WORK], { stdio: ['ignore', 'ignore', 'pipe'] });
 	}
 	if (!fs.existsSync(INBOX)) execFileSync('git', ['init', '-q', '--bare', INBOX], { stdio: 'ignore' });
 	git(WORK, ['config', 'user.name', 'appetito agent']);

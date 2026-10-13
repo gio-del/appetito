@@ -137,7 +137,9 @@ for u in agent tracker appetito; do
 	h=$(getent passwd "$u" | cut -d: -f6)
 	runuser -u "$u" -- env HOME="$h" git config --global --add safe.directory "$OPT/repo" 2>/dev/null || true
 done
-git config --system --add safe.directory "$OPT/repo" 2>/dev/null || true
+for d in "$OPT/repo" "$OPT/repo/.git"; do
+	git config --system --get-all safe.directory | grep -qx "$d" || git config --system --add safe.directory "$d"
+done
 
 # ------------------------------------------------------------------ settings
 say "Settings"
