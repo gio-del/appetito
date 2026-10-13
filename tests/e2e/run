@@ -55,7 +55,7 @@ one_run() {
 	docker run -d --name "$NAME" --platform "linux/$ARCH" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
 		--tmpfs /run --tmpfs /run/lock --hostname appetito-box -p 127.0.0.1::8080 -p 127.0.0.1::8081 "$IMG" >/dev/null
 	trap '[ -n "$KEEP" ] || docker rm -f "$NAME" >/dev/null 2>&1 || true' RETURN
-	for _ in $(seq 1 60); do inbox systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break; sleep 1; done
+	for _ in $(seq 1 60); do inbox systemctl is-system-running 2>/dev/null | grep -E 'running|degraded' >/dev/null && break; sleep 1; done
 	# A stranger's clone: the current commit, nothing else.
 	rm -rf "$OUT/clone" && git clone -q --no-hardlinks "$ROOT" "$OUT/clone" && rm -rf "$OUT/clone/.git/hooks"
 	docker cp "$OUT/clone" "$NAME:/root/appetito" >/dev/null && rm -rf "$OUT/clone"

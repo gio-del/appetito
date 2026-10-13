@@ -23,7 +23,7 @@ state() { cat "$V"/deploy/branches/agent_"$1"-*.json 2>/dev/null | jq -r .state 
 
 echo "== (a) agent can't sudo"
 if runuser -u agent -- sudo -n true 2>/dev/null; then fail "agent ran sudo"; else pass "sudo -n true as agent fails"; fi
-if sudo -l -U agent 2>/dev/null | grep -q 'may run'; then fail "agent has sudo rules"; else pass "no sudo rules for agent"; fi
+if sudo -l -U agent 2>/dev/null | grep 'may run' >/dev/null; then fail "agent has sudo rules"; else pass "no sudo rules for agent"; fi
 if runuser -u agent -- test -w "$R/guard"; then fail "agent can write guard/ on main"; else pass "agent can't write the server repo"; fi
 if runuser -u agent -- systemctl stop appetito-deploy.timer 2>/dev/null; then fail "agent stopped a system unit"; else pass "agent can't manage units"; fi
 
@@ -45,8 +45,8 @@ pid=$(runuser -u brain -- curl -s -H "Authorization: Bearer $tok" -H 'content-ty
 [ -n "$pid" ] && [ "$pid" != null ] && pass "brain proposed #$pid" || fail "brain could not propose"
 runuser -u agent -- ls "$V/tracker/proposed" >/dev/null 2>&1 && fail "agent can read pending proposals" || pass "agent can't read pending proposals"
 ls "$R"/issues/*/"$pid"-* >/dev/null 2>&1 && fail "the proposal is in the repo" || pass "the proposal is not in the repo"
-runuser -u agent -- env HOME=$V/agent node /opt/appetito/current/core/worker/worker.js --queue | grep -q "^$pid" && fail "the worker would pick it" || pass "not in the worker's queue"
-r=$($B start "$pid" 2>&1); echo "$r" | grep -q '"ok":true' && fail "manual start accepted for a proposal" || pass "manual start refused: $(echo "$r" | jq -r .error 2>/dev/null)"
+runuser -u agent -- env HOME=$V/agent node /opt/appetito/current/core/worker/worker.js --queue | grep "^$pid" >/dev/null && fail "the worker would pick it" || pass "not in the worker's queue"
+r=$($B start "$pid" 2>&1); echo "$r" | grep '"ok":true' >/dev/null && fail "manual start accepted for a proposal" || pass "manual start refused: $(echo "$r" | jq -r .error 2>/dev/null)"
 v=$(curl -s -b /root/e2e-cookies "http://127.0.0.1:8080/api/issues/$pid" | jq -r .version)
 code=$(curl -s -o /dev/null -w '%{http_code}' -b /root/e2e-cookies -H 'Origin: http://127.0.0.1:8080' -H 'content-type: application/json' -X PATCH -d "{\"version\":\"$v\",\"column\":\"todo\"}" "http://127.0.0.1:8080/api/issues/$pid")
 [ "$code" = 403 ] && pass "moving it to To do without the confirm page: $code" || fail "moving it to To do answered $code"
@@ -64,18 +64,17 @@ f=$(ls "$R"/issues/open/"$id2"-*.md)
 runuser -u appetito -- sh -c "sed 's/^Status: todo/Status: todo\nApproved: 2026-01-01/' '$f' > '$f.new' && mv '$f.new' '$f'"
 systemctl start appetito-deploy.service
 grep -q '^Approved:' "$f" && fail "an Approved: line written outside the tracker survived" || pass "autocommit refused an Approved: line not written by the tracker"
-git -C "$R" log -p -3 -- issues | grep -q '^+Approved:' && fail "an Approved: line was committed" || pass "nothing like it was committed"
+git -C "$R" log -p -3 -- issues | grep '^+Approved:' >/dev/null && fail "an Approved: line was committed" || pass "nothing like it was committed"
 
 echo "== (d) a broken deploy rolls back"
 id3=$(issue "Add a broken service")
 script <<'EOF'
 {"steps":[{"sh":"mkdir -p services/broken && printf 'NAME=broken\\nPORTS=127.0.0.1:8099\\nHEALTH=http://127.0.0.1:8099/\\n' > services/broken/service.env && printf '[Unit]\\nDescription=broken\\n\\n[Service]\\nUser=broken\\nGroup=broken\\nExecStart=/bin/sleep infinity\\nNoNewPrivileges=yes\\n\\n[Install]\\nWantedBy=multi-user.target\\n' > services/broken/broken.service && git add -A && git commit -qm 'Add broken service'","must":true}],"result":"done"}
 EOF
-head=$(git -C "$R" rev-parse HEAD)
 work "$id3"
 st=$(state "$id3")
 [ "$st" = rolled-back ] && pass "deploy rolled back (state $st)" || fail "state '$st', expected rolled-back"
-git -C "$R" log -5 --format=%s | grep -q '^Roll back agent/' && pass "main has the revert commit" || fail "no revert commit on main: $(git -C "$R" log -5 --format=%s | tr '\n' '|')"
+git -C "$R" log -5 --format=%s | grep '^Roll back agent/' >/dev/null && pass "main has the revert commit" || fail "no revert commit on main: $(git -C "$R" log -5 --format=%s | tr '\n' '|')"
 [ ! -e "$R/services/broken" ] && pass "the broken service is gone from main" || fail "services/broken still on main"
 systemctl cat broken.service >/dev/null 2>&1 && fail "broken.service still installed" || pass "broken.service uninstalled"
 ls "$R"/issues/open/*deploy-of-agent* >/dev/null 2>&1 && pass "monitor issue opened: $(ls "$R"/issues/open/*deploy-of-agent* | head -1 | xargs basename)" || fail "no monitor issue for the rollback"

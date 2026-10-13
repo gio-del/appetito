@@ -130,7 +130,7 @@ git -C "$OPT/repo" config transfer.fsckObjects true
 git -C "$OPT/repo" checkout -q main 2>/dev/null || git -C "$OPT/repo" checkout -q -b main
 chown -R root:root "$OPT/repo"
 chgrp appetito-repo "$OPT/repo" && chmod 750 "$OPT/repo"
-for d in open done; do install -d -o root -g appetito-issues -m 2775 "$OPT/repo/issues/$d"; done
+for d in open 'done'; do install -d -o root -g appetito-issues -m 2775 "$OPT/repo/issues/$d"; done
 chmod -R g+w "$OPT/repo/issues/open" "$OPT/repo/issues/done"
 # Readers that aren't root (worker, tracker, monitor) work in a repo they don't own.
 for u in agent tracker appetito; do
@@ -138,7 +138,7 @@ for u in agent tracker appetito; do
 	runuser -u "$u" -- env HOME="$h" git config --global --add safe.directory "$OPT/repo" 2>/dev/null || true
 done
 for d in "$OPT/repo" "$OPT/repo/.git"; do
-	git config --system --get-all safe.directory | grep -qx "$d" || git config --system --add safe.directory "$d"
+	git config --system --get-all safe.directory | grep -x "$d" >/dev/null || git config --system --add safe.directory "$d"
 done
 
 # ------------------------------------------------------------------ settings

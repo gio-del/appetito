@@ -65,7 +65,7 @@ inbox_drop() { # delete a handled branch from the worker's inbox, as agent
 
 # ---------------------------------------------------------------- issues/ permissions + autocommit
 fix_perms() {
-	for d in open done; do
+	for d in open 'done'; do
 		mkdir -p "$REPO/issues/$d"
 		chgrp appetito-issues "$REPO/issues/$d" 2>/dev/null || true
 		chmod 2775 "$REPO/issues/$d"
@@ -120,7 +120,7 @@ release() { # release SHA → prints its dir
 mget() { sed -n "s/^$2=//p" "$1" | tail -1 | sed "s/^[\"']//; s/[\"']\$//"; }
 
 apply() { # apply SHA LOGFILE: install the release; returns 1 if it could not be applied
-	local sha=$1 out=$2 rel lint units name file user svc kind pkgs p missing changed=() new=()
+	local sha=$1 out=$2 rel name file user svc pkgs p missing changed=() new=()
 	rel=$(release "$sha")
 	if ! node "$rel/guard/checks/unit-lint.js" --json "$rel" > "$ST/lint.json" 2>>"$out"; then
 		echo "unit-lint failed:" >> "$out"; jq -r '.errors[]' "$ST/lint.json" >> "$out" 2>/dev/null || true; return 1
@@ -141,7 +141,7 @@ apply() { # apply SHA LOGFILE: install the release; returns 1 if it could not be
 		install -d -o "$user" -g "$user" -m 750 "/var/lib/$svc"
 		install -d -o root -g "$user" -m 750 "/etc/appetito/services/$svc"
 		pkgs=$(mget "$m" APT); missing=""
-		for p in $pkgs; do dpkg-query -W -f '${Status}' "$p" 2>/dev/null | grep -q 'ok installed' || missing="$missing $p"; done
+		for p in $pkgs; do dpkg-query -W -f '${Status}' "$p" 2>/dev/null | grep 'ok installed' >/dev/null || missing="$missing $p"; done
 		if [ -n "$missing" ]; then
 			echo "apt install:$missing" >> "$out"
 			DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $missing >> "$out" 2>&1 || {
@@ -201,7 +201,8 @@ checks() { # checks LOGFILE: guard/bin/appetito-checks on the current release
 purge_new_packages() { # packages a failed deploy installed
 	local f=$ST/apt-new.$1
 	[ -s "$f" ] || return 0
-	DEBIAN_FRONTEND=noninteractive apt-get purge -y -q $(cat "$f") >> "$2" 2>&1 || true
+	local pkgs; mapfile -t pkgs < "$f"
+	DEBIAN_FRONTEND=noninteractive apt-get purge -y -q "${pkgs[@]}" >> "$2" 2>&1 || true
 	rm -f "$f"
 }
 

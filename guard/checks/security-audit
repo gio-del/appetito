@@ -15,7 +15,7 @@ as() { runuser -u "$1" -- "${@:2}"; }
 echo "== unprivileged users"
 for u in agent brain tracker appetito; do
 	id -u "$u" >/dev/null 2>&1 || { fail "user $u missing"; continue; }
-	if sudo -n -l -U "$u" 2>/dev/null | grep -q 'may run'; then fail "$u has sudo rules"; else pass "$u: no sudo rules"; fi
+	if sudo -n -l -U "$u" 2>/dev/null | grep 'may run' >/dev/null; then fail "$u has sudo rules"; else pass "$u: no sudo rules"; fi
 	if as "$u" sudo -n true >/dev/null 2>&1; then fail "$u can run sudo"; else pass "$u can't sudo"; fi
 	g=$(id -nG "$u" | tr ' ' '\n' | grep -Ex 'sudo|wheel|adm|admin|docker|lxd|libvirt|disk|shadow|root|systemd-journal' | tr '\n' ' ')
 	[ -z "$g" ] && pass "$u: no privileged groups" || fail "$u is in privileged groups: $g"
@@ -85,7 +85,9 @@ if [ "$(sed -n 's/^APPETITO_FIREWALL=//p' /etc/appetito/appetito.env 2>/dev/null
 	warn "per-uid firewall disabled (APPETITO_FIREWALL=off)"
 elif nft list table inet appetito >/dev/null 2>&1; then
 	pass "nftables table inet appetito loaded"
-	for u in agent brain; do nft list table inet appetito 2>/dev/null | grep -q "skuid $(id -u "$u" 2>/dev/null || echo x)" && pass "rules for $u" || fail "no firewall rules for $u"; done
+	fw=$(nft list table inet appetito 2>/dev/null)
+	# nft may print the uid or the user name.
+	for u in agent brain; do grep -E "skuid (\"?$u\"?|$(id -u "$u" 2>/dev/null || echo x))( |$)" <<<"$fw" >/dev/null && pass "rules for $u" || fail "no firewall rules for $u"; done
 else
 	fail "per-uid firewall not loaded (nft table inet appetito)"
 fi

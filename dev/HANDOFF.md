@@ -10,7 +10,7 @@ Read first: `CLAUDE.md`, `docs/PRD.md` (§10 launch gate, §11 autonomy rules), 
 | 2 | Debian 13 + Ubuntu 24.04, amd64 + arm64 | Only Debian 13 amd64 run so far. arm64 emulation works through Docker Desktop (`--platform linux/arm64`, checked). Next: `--distro ubuntu2404`, `--arch arm64`. |
 | 3 | security-audit green + tests (a)-(d) | **Green**: `tests/e2e/run --scenario security` PASS (2 min 32 s), smoke checks green. |
 | 4 | Claude Code full e2e; Ollama honours the contract | Claude: yes (first-issue). Ollama/opencode: contract passes against a mock endpoint (`tests/contract/mock-openai.js`); a real Ollama run on CPU was in progress and then the Ollama container/volume were deleted to free disk. To finish: re-run `tests/contract/agent-run.sh openai` with `CONTRACT_ONLY=1` against a small model (watch the disk). |
-| 5 | Secret scan + personal values, whole history | Tree clean. **History has one hit** (old `auto.js` weekday "giov", false positive): dev issue 019, rewrite history right before publishing. |
+| 5 | Secret scan + personal values, whole history | Tree clean. **History has one hit** (an Italian weekday abbreviation in an old `auto.js`, false positive): dev issue 019, rewrite history right before publishing. |
 | 6 | README | Written. Missing: `docs/media/demo.gif` (from the video). |
 | 7 | Starter issues tested; Vaultwarden closed by the agent | Starter backlog written (`issues/open/001-005`). **Not run yet**: `tests/e2e/run --scenario vaultwarden` (issue 001). |
 | 8 | SECURITY.md | Done. |
