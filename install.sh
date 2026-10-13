@@ -118,8 +118,9 @@ install -d -o appetito -g appetito -m 1733 "$VAR/events"
 # ------------------------------------------------------------------ the server repo
 say "Server repo"
 if [ ! -d "$OPT/repo/.git" ]; then
-	git clone -q --no-hardlinks "$SRC" "$OPT/repo"
-	up=$(git -C "$SRC" remote get-url origin 2>/dev/null || true)
+	# Your clone belongs to you, not root: trust it for this one copy.
+	git -c safe.directory="$SRC" -c safe.directory="$SRC/.git" clone -q --no-hardlinks --upload-pack="git -c safe.directory=$SRC -c safe.directory=$SRC/.git upload-pack" "$SRC" "$OPT/repo"
+	up=$(git -c safe.directory="$SRC" -C "$SRC" remote get-url origin 2>/dev/null || true)
 	git -C "$OPT/repo" remote remove origin
 	[ -z "$up" ] || git -C "$OPT/repo" remote add upstream "$up"
 fi
