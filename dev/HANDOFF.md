@@ -1,4 +1,13 @@
-# Handoff (2026-10-13, end of the first PC session)
+# Handoff (2026-10-13, end of the first PC session; updated at the end of the second)
+
+## Second session (2026-10-13, evening) in short
+
+- Fixed: the brain firewall flake (`| grep -q` under pipefail; lint now refuses it). First-issue 3/3 green on Debian 13 amd64. Brain e2e scenario added and green (dev issue 009 closed). Ollama contract green (`tests/contract/ollama.sh`).
+- Vaultwarden run: the agent's work was fine, but the deploy **conflicted**: the worker started from main before the tracker's move to To do (Status: line) was committed. Fixed in the worker (`issueOnMain`: the issue must be in HEAD and identical to the tracker's copy), unit-tested, **not yet proven by an e2e**. Rerun `--scenario vaultwarden` first.
+- Then the worker stopped on its own quota gate: the Pro five-hour window was at 69% (cap 50%), reset ~02:50. Agent e2e runs wait for it.
+- Ubuntu 24.04 amd64: security PASS. arm64: the image doesn't build, `exec format error` (no binfmt/qemu in Docker Desktop's VM right now). Needs `docker run --privileged --rm tonistiigi/binfmt --install arm64` (owner's call).
+- **Disk**: 2.9 GB free after the Ollama runs (Docker.raw 71 GB, doesn't shrink). No more container work until the owner frees space.
+
 
 Read first: `CLAUDE.md`, `docs/PRD.md` (§10 launch gate, §11 autonomy rules), `docs/architecture.md`, `SECURITY.md`, `dev/issues/open/`. Talk to the owner in Italian; the repo is English; nothing is pushed (no remote); commits use the noreply identity already set in `.git/config`.
 
@@ -43,7 +52,7 @@ Dev issues closed: 001, 002, 006, 007, 008, 011, 016. Open: 003 (agent-run: Olla
 2. `tests/e2e/run --scenario vaultwarden` (timeout 3600); iterate on starter issue 001's text if the agent struggles (gate 7).
 3. Ubuntu 24.04 amd64, then arm64 for both distros (`--arch arm64`, slow: emulated).
 4. ~~Brain e2e~~ done: `--scenario brain` PASS, dev issue 009 closed.
-5. Ollama contract run (small model, `CONTRACT_ONLY=1`, long timeout), then close 003.
+5. ~~Ollama contract~~ green via `tests/contract/ollama.sh`. Left for 003: `tests/contract/agent-run.sh claude-code` once (quota).
 6. Video: real Vaultwarden run recorded with `dev/video/record.js` against a box with fixed ports (add `-p 127.0.0.1:18080:8080 -p 127.0.0.1:18081:8081 -p 127.0.0.1:18222:8222` and set `TRACKER_ORIGINS=http://127.0.0.1:18080`, `TRACKER_CONFIRM_ORIGINS=http://127.0.0.1:18081` in the box, restart the tracker), copy footage+marks to `dev/video/public/`, `npm run render`; judge drafts yourself, show the owner only the final candidate; make `docs/media/demo.gif`.
 7. Screenshots for the post from the sandbox; owner approves video + post (HITL, push notification).
 8. Dev issue 019 (history rewrite) right before the owner says go; then `make check` must be zero hits.
