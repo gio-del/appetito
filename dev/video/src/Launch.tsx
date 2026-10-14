@@ -103,9 +103,9 @@ const Caption: React.FC<{ text: string; sub?: string; start?: number; accent?: s
   return (
     <div style={{ position: 'absolute', left: 0, right: 0, top: 120 }}>
       {text.split('\n').map((line, i, all) => (
-        <Words key={i} text={line} start={start + all.slice(0, i).join(' ').split(' ').filter(Boolean).length * 4} size={60} accent={accent} />
+        <Words key={i} text={line} start={start + all.slice(0, i).join(' ').split(' ').filter(Boolean).length * 4} size={68} accent={accent} />
       ))}
-      {sub ? <div style={{ fontFamily: font, fontSize: 30, color: C.muted, textAlign: 'center', marginTop: 16, padding: '0 70px', opacity: o, letterSpacing: 0.5 }}>{sub}</div> : null}
+      {sub ? <div style={{ fontFamily: font, fontSize: 33, color: C.muted, textAlign: 'center', marginTop: 16, padding: '0 70px', opacity: o, letterSpacing: 0.5 }}>{sub}</div> : null}
     </div>
   );
 };
@@ -126,7 +126,7 @@ const ScenePhone: React.FC = () => (
   <AbsoluteFill>
     <Glow y={900} opacity={0.18} />
     <OldPhone />
-    <div style={{ position: 'absolute', left: 0, right: 0, top: 240 }}><Words text="Avevo un telefono vecchio." start={14} size={76} accent={['vecchio']} /></div>
+    <div style={{ position: 'absolute', left: 0, right: 0, top: 240 }}><Words text="Avevo un telefono vecchio." start={14} size={86} accent={['vecchio']} /></div>
   </AbsoluteFill>
 );
 
@@ -138,9 +138,11 @@ const ScenePromise: React.FC<LaunchProps> = ({ frames, marks }) => {
     <AbsoluteFill>
       <Glow y={1150} opacity={0.3} />
       <div style={{ position: 'absolute', left: 0, right: 0, top: 150 }}>
-        <Words text="Ora è un server" start={4} size={76} />
+        <Words text="Ora è un server" start={4} size={86} />
         <div style={{ height: 6 }} />
-        <Words text="che si costruisce da solo." start={16} size={76} accent={['solo']} />
+        <Words text="che si costruisce" start={16} size={86} />
+        <div style={{ height: 6 }} />
+        <Words text="da solo." start={26} size={86} accent={['solo']} />
       </div>
       <PhoneFrame scale={0.78 + 0.08 * p} y={260 + (1 - p) * 500} rot={(1 - p) * 6}>
         <Clip frames={frames} from={at(marks, 'backlog', 3000) - 0.4} to={at(marks, 'backlog', 3000)} frames_={S(T.ask - T.promise)} />
