@@ -30,16 +30,16 @@ Read first: `CLAUDE.md`, `docs/PRD.md` (§10 launch gate, §11 autonomy rules), 
 
 | # | Item | State |
 |---|---|---|
-| 1 | `make e2e` first issue closed < 30 min, 3 consecutive | **Green on Debian 13 amd64**: 3/3 consecutive PASS at 454939d (1 min 35 s, 1 min 30 s, 1 min 42 s) after the firewall-check fix. Repeat on the other distro/arch (gate 2). Results in `dev/e2e-log.md` and `tests/e2e/out/<run>/`. |
-| 2 | Debian 13 + Ubuntu 24.04, amd64 + arm64 | Only Debian 13 amd64 run so far. arm64 emulation works through Docker Desktop (`--platform linux/arm64`, checked). Next: `--distro ubuntu2404`, `--arch arm64`. |
-| 3 | security-audit green + tests (a)-(d) | **Green**: `tests/e2e/run --scenario security` PASS (2 min 32 s), smoke checks green. |
-| 4 | Claude Code full e2e; Ollama honours the contract | Claude: yes (first-issue). Ollama/opencode: contract passes against a mock endpoint (`tests/contract/mock-openai.js`); a real Ollama run on CPU was in progress and then the Ollama container/volume were deleted to free disk. To finish: re-run `tests/contract/agent-run.sh openai` with `CONTRACT_ONLY=1` against a small model (watch the disk). |
-| 5 | Secret scan + personal values, whole history | Tree clean. **History has one hit** (an Italian weekday abbreviation in an old `auto.js`, false positive): dev issue 019, rewrite history right before publishing. |
-| 6 | README | Written. Missing: `docs/media/demo.gif` (from the video). |
-| 7 | Starter issues tested; Vaultwarden closed by the agent | Starter backlog written (`issues/open/001-005`). **Not run yet**: `tests/e2e/run --scenario vaultwarden` (issue 001). |
+| 1 | first issue < 30 min, 3 consecutive | **Green**: Debian 13 amd64 3/3 (≈1.5 min each); Ubuntu 24.04 too. |
+| 2 | Debian 13 + Ubuntu 24.04, amd64 + arm64 | **Green on amd64** (both distros, many runs). arm64: owner decision, emulation only: install + unit tests pass, services not verified under qemu (README says so). |
+| 3 | security-audit + tests (a)-(d) | **Green** (Debian, Ubuntu). |
+| 4 | Claude Code e2e; Ollama honours the contract | **Green**: contract ok for claude-code and openai/Ollama (dev 003 closed). |
+| 5 | Secret scan + personal values, whole history | Tree clean; history has the known false positive → dev 019, right before the go (owner allowed it, with a bundle backup). |
+| 6 | README | **Done**, with `docs/media/demo.gif` from the video. |
+| 7 | Starter issues; Vaultwarden closed by the agent | **Done** (owner: only Vaultwarden proven; 002-005 marked untested). |
 | 8 | SECURITY.md | Done. |
-| 9 | Disclaimer | Done (README). |
-| 10 | Video + post approved by owner | Post draft `dev/launch/post.md`. Video project `dev/video/` (Remotion 4.0.529 + Playwright 1.63.0 installed, `record.js` + `src/Launch.tsx` written, not rendered with real footage yet). Owner approval needed (HITL). |
+| 9 | Disclaimer | Done. |
+| 10 | Video + post approved by owner | **Final candidates sent 2026-10-14**: `dev/video/out/appetito-launch.mp4` (41 s, real run), `dev/launch/post.md` + `dev/launch/media/`. Waiting for the owner. |
 
 Dev issues closed: 001, 002, 006, 007, 008, 011, 016. Open: 003 (agent-run: Ollama real run left), 004 (tracker: mostly done — close after a last UI pass), 005 (worker: done in practice, close with the e2e), 009 (brain: code done, needs an e2e — a note in Inbox gets sorted and proposes), 010 (calendar: `brain-cal` done, off unless configured), 012 (installer: done, needs ubuntu/arm64), 013 (e2e), 014 (starter backlog: Vaultwarden run), 015 (docs: gif), 017, 018, 019.
 
