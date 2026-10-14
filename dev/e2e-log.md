@@ -32,3 +32,4 @@ One line per `make e2e` run (`tests/e2e/run`).
 | 2026-10-14 12:09 | d9e8c78 | debian13 | amd64 | video | claude-code (sonnet) | 24 min | fail: see tests/e2e/out/20261014-114406-debian13-amd64-video |
 | 2026-10-14 12:36 | a8ef2c3 | debian13 | amd64 | video | claude-code (sonnet) | 15 min | pass |
 | 2026-10-14 12:47 | cc30f8e | debian13 | amd64 | video | claude-code (sonnet) | 7 min | pass |
+| 2026-10-14 12:59 | af0ec0e | ubuntu2404 | amd64 | first-issue | claude-code (sonnet) | 2 min | pass |

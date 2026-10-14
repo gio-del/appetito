@@ -2,7 +2,7 @@
 # make e2e: a disposable systemd container per run, rebuilt from the distro's image, then the real
 # installer and a real scenario. Nothing touches the host system beyond Docker.
 #
-#   tests/e2e/run [--distro debian13|ubuntu2404] [--arch amd64|arm64] [--scenario smoke|first-issue|vaultwarden|brain|security|video]
+#   tests/e2e/run [--distro debian13|ubuntu2404] [--arch amd64|arm64] [--scenario smoke|first-issue|vaultwarden|brain|security|video|contract]
 #                 [--backend claude-code|fake] [--model sonnet] [--repeat N] [--keep]
 #
 # Scenarios:
@@ -97,6 +97,11 @@ one_run() {
 	first-issue) scenario_issue "Add a hello page" tests/e2e/issues/hello.md 1800 || rc=$? ;;
 	vaultwarden) scenario_starter 001 3600 || rc=$? ;;
 	video) scenario_video 3600 || rc=$? ;;
+	contract) # the claude-code adapter's contract, as agent with the worker's environment (egress proxy, firewall)
+		inbox systemd-run --quiet --wait --pipe --collect --uid=agent --gid=agent -p EnvironmentFile=/etc/appetito/appetito.env \
+			-p Environment="HOME=/var/lib/appetito/agent HTTPS_PROXY=http://127.0.0.1:3128 HTTP_PROXY=http://127.0.0.1:3128 NO_PROXY=127.0.0.1,localhost CONTRACT_TIMEOUT=600" \
+			-p WorkingDirectory=/opt/appetito/current sh tests/contract/agent-run.sh claude-code 2>&1 | tee -a "$OUT/run.log"
+		rc=${PIPESTATUS[0]} ;;
 	brain) scenario_brain tests/e2e/brain/rss-idea.md 1200 || rc=$? ;;
 	security) docker cp tests/e2e/security.sh "$NAME:/root/security.sh" >/dev/null; inbox bash /root/security.sh 2>&1 | tee -a "$OUT/run.log"; rc=${PIPESTATUS[0]} ;;
 	*) log "unknown scenario $SCENARIO"; rc=2 ;;
