@@ -24,3 +24,4 @@ One line per `make e2e` run (`tests/e2e/run`).
 | 2026-10-13 22:55 | 2c83795 | ubuntu2404 | amd64 | security | fake (sonnet) | 3 min | pass |
 | 2026-10-13 22:56 | 2c83795 | debian13 | arm64 | security | fake (sonnet) | 0 min | fail: image build failed (no arm64 binfmt in Docker Desktop) |
 | 2026-10-14 06:40 | d7124d2 | debian13 | amd64 | vaultwarden | claude-code (sonnet) | 29 min | fail: no conflict this time (worker fix ok); Vaultwarden deployed but rolled back by a flaky tracker unit test (5 s server start); the agent fixed it on #006, held as waiting-guard (correct); stopped by hand |
+| 2026-10-14 09:28 | 4f31298 | debian13 | arm64 | security | fake (sonnet) | 44 min | fail: emulation limits, not appetito: qemu-user has no netfilter Netlink (`nft`: Protocol not supported) so appetito-fw fails; install 14 min, tracker not up in 60 s; journald empty |
