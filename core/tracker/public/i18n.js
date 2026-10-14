@@ -130,7 +130,7 @@ Object.assign(I18N.en, {
   'st.gate': 'Merge gate', 'st.gate.auto': 'auto: a change that passes the checks is deployed by itself (changes to protections always wait for you).',
   'st.gate.approve': 'approve: every change waits for your tap.', 'st.gate.how': 'Set APPETITO_MERGE_GATE in /etc/appetito/appetito.env on the server (root only, on purpose).',
   'ch.title': 'Changes', 'ch.intro': 'Branches the agent pushed that wait for you, and the latest deploys.', 'ch.none': 'Nothing waits for you.',
-  'ch.waiting': 'Waiting for your tap', 'ch.recent': 'Latest deploys', 'ch.approve': 'Deploy…', 'ch.reject': 'Reject', 'ch.note': 'Why (optional, the agent reads it)',
+  'ch.waiting': 'Waiting for your tap', 'ch.recent': 'Latest deploys', 'ch.recent.none': 'No deploys yet.', 'ch.approve': 'Deploy…', 'ch.reject': 'Reject', 'ch.note': 'Why (optional, the agent reads it)',
   'ch.guard': 'Changes the protections: {0}', 'ch.gate': 'Merge gate set to approve', 'ch.issue': 'issue #{0}', 'ch.rejected': 'Rejected', 'ch.diff': 'Diff',
 });
 Object.assign(I18N.it, {
@@ -140,6 +140,6 @@ Object.assign(I18N.it, {
   'st.gate': 'Merge gate', 'st.gate.auto': 'auto: una modifica che passa i controlli viene applicata da sola (le modifiche alle protezioni aspettano sempre te).',
   'st.gate.approve': 'approve: ogni modifica aspetta il tuo tocco.', 'st.gate.how': 'Si cambia con APPETITO_MERGE_GATE in /etc/appetito/appetito.env sul server (solo root, apposta).',
   'ch.title': 'Modifiche', 'ch.intro': 'I branch dell\'agente che aspettano te, e gli ultimi deploy.', 'ch.none': 'Niente aspetta te.',
-  'ch.waiting': 'Aspettano il tuo tocco', 'ch.recent': 'Ultimi deploy', 'ch.approve': 'Applica…', 'ch.reject': 'Rifiuta', 'ch.note': 'Perché (facoltativo, l\'agente lo legge)',
+  'ch.waiting': 'Aspettano il tuo tocco', 'ch.recent': 'Ultimi deploy', 'ch.recent.none': 'Ancora nessun deploy.', 'ch.approve': 'Applica…', 'ch.reject': 'Rifiuta', 'ch.note': 'Perché (facoltativo, l\'agente lo legge)',
   'ch.guard': 'Cambia le protezioni: {0}', 'ch.gate': 'Merge gate su approve', 'ch.issue': 'issue #{0}', 'ch.rejected': 'Rifiutata', 'ch.diff': 'Diff',
 });

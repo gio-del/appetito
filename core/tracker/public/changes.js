@@ -52,8 +52,10 @@ function render(data) {
           } }, t('ch.approve'))));
     }) : h('p', { class: 'muted' }, t('ch.none')));
   $('#ch-recent').replaceChildren(h('h2', { class: 'st-group' }, t('ch.recent')),
-    h('ul', { class: 'hist' }, (data.recent || []).map(b => h('li', null, h('code', null, b.branch.replace(/^agent\//, '')),
-      h('span', { class: 'bstate s-' + b.state }, t('branch.' + b.state)), h('span', { class: 'when' }, b.at ? when(b.at) : '')))));
+    (data.recent || []).length
+      ? h('ul', { class: 'hist' }, data.recent.map(b => h('li', null, h('code', null, b.branch.replace(/^agent\//, '')),
+        h('span', { class: 'bstate s-' + b.state }, t('branch.' + b.state)), h('span', { class: 'when' }, b.at ? when(b.at) : ''))))
+      : h('p', { class: 'muted' }, t('ch.recent.none')));
 }
 let toastT;
 function toast(m, bad) { const x = $('#toast'); x.textContent = m; x.className = 'toast' + (bad ? ' bad' : ''); x.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { x.hidden = true; }, 3500); }

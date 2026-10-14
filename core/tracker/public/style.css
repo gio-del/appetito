@@ -191,8 +191,9 @@ textarea { width: 100%; resize: vertical; line-height: 1.5; }
 /* phones: one column at a time, chosen with tabs */
 @media (max-width: 760px) {
   .top { flex-wrap: wrap; gap: 8px; padding: 8px 16px; }
-  .filters { order: 3; flex-basis: 100%; }
-  .filters .fsel, .filters > select { max-width: 24%; }
+  .filters { order: 3; flex-basis: 100%; overflow-x: auto; scrollbar-width: none; }
+  .filters input { flex: 0 0 120px; }
+  .filters .fsel, .filters > select { flex: 0 0 auto; max-width: none; }
   .fclear { width: 32px; }
   .fsel select.active { padding-right: 34px; }
   .actions { margin-left: auto; }
