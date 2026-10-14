@@ -1,5 +1,13 @@
 # Handoff (2026-10-13, end of the first PC session; updated at the end of the second)
 
+## Owner decisions (2026-10-14) — work autonomously within these
+
+- **arm64**: emulation (qemu) with the limit stated: install, unit tests and services checked under emulation, firewall checks skipped there; README says arm64 is tested under emulation only.
+- **Quota**: agent e2e runs while the Pro five-hour window is under **80%**; above it, do quota-free work and resume after the reset.
+- **Starter issues**: only Vaultwarden must be proven before launch; the other four stay in the backlog marked "not yet tested".
+- **History rewrite (019)**: allowed at the end, autonomously, after a full `git bundle` backup outside the repo; then `make check` must show zero hits. Never push.
+- Owner approval still needed for: video + post (show only the final candidate), and the go to publish.
+
 ## Third session (2026-10-14, morning) in short
 
 - Disk freed with the owner (19 GB free). arm64 binfmt installed in Docker Desktop (`tonistiigi/binfmt:qemu-v8.1.5 --install arm64`; lost when the VM restarts).

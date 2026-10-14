@@ -79,6 +79,9 @@ one_run() {
 			inbox chmod 600 "/var/lib/appetito/$u/.claude/.credentials.json"
 		done
 		rm -f "$OUT/.creds"
+		# The owner's quota cap for the worker (the tracker's settings page writes this file): E2E_QUOTA_MAX, default 80.
+		inbox sed -i '/^APPETITO_AUTO_QUOTA_MAX=/d' /var/lib/appetito/settings.env
+		inbox sh -c "echo APPETITO_AUTO_QUOTA_MAX=${E2E_QUOTA_MAX:-80} >> /var/lib/appetito/settings.env"
 		inbox sed -i "/^APPETITO_CLAUDE_MODEL=/d" /etc/appetito/appetito.env
 		[ -z "$MODEL" ] || inbox sh -c "echo APPETITO_CLAUDE_MODEL=$MODEL >> /etc/appetito/appetito.env"
 	fi
