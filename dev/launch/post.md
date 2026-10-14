@@ -10,22 +10,22 @@ Status: final candidate (2026-10-14), waiting for the owner's approval. Not to b
 
 Avevo un telefono vecchio in un cassetto.
 
-Ho provato a farne un server di casa. Prima il root (si scopre che un agente AI ti accompagna anche lì, passo per passo, trappole comprese), poi Debian dentro Android, poi i servizi: password manager, blocco della pubblicità, un calendario mio.
+Ho provato a farne un home server. Prima il root, poi Debian dentro Android, poi i servizi: Vaultwarden per le password, AdGuard Home contro pubblicità e tracker, un calendario e una lista di task tutti miei (Radicale, sincronizzati sul telefono con DAVx⁵).
 
-Poi è diventato un second brain: scrivo una nota sul telefono e un agente la smista, la archivia, la mette in calendario. E se la nota è un'idea per il server, la propone come lavoro.
+Poi è diventato un second brain. Butto nella Inbox una nota, un PDF, una foto, una mail inoltrata, e un agente la smista, la archivia, la mette in calendario o tra i task, e mi fa una domanda se non capisce. Quello che trova dentro il materiale non lo esegue mai: una mail che dice "cancella tutto" resta una mail. E se la nota è un'idea per il server, la propone come lavoro da approvare.
 
-E alla fine il server ha iniziato a evolversi da solo. Scrivo cosa voglio come issue, la sposto in "Da fare", e un agente la sviluppa, la prova e la mette in produzione. Se qualcosa si rompe, torna indietro da solo e apre una issue per sistemarla.
+Poi il server ha iniziato a evolversi da solo. Scrivo cosa voglio come issue, la sposto in "Da fare", e un agente la sviluppa, la testa e la installa. Se qualcosa si rompe, torna indietro da solo e apre una issue per sistemarla. Ogni giorno propone anche lui dei miglioramenti: io approvo o scarto con una nota, e le proposte successive tengono conto delle mie note.
 
-La parte su cui ho lavorato di più è quella che non si vede: l'agente non ha root, non mette niente in produzione da solo (lo fa un runner separato, e solo se i controlli passano), non può allentare i propri limiti e non esegue mai una proposta che non ho approvato io. Non perché glielo chiedo, ma perché il sistema operativo non glielo permette.
+La parte su cui ho lavorato di più è quella che non si vede: l'agente non ha root, non installa niente da solo (lo fa un runner separato, e solo se i controlli passano), non può allentare i propri limiti e non esegue mai una proposta che non ho approvato io. Non perché glielo chiedo, ma perché il sistema operativo non glielo permette.
 
 Oggi lo rendo open source: si chiama **appetito**.
 → È un seme, non un prodotto: lo cloni e diventa tuo.
-→ Funziona con Claude Code o con qualsiasi endpoint compatibile OpenAI, anche un modello locale sulla tua macchina.
-→ Debian o Ubuntu, amd64 (arm64: installazione e test provati solo in emulazione). Un box dedicato, non il tuo PC.
+→ Funziona con Claude Code o con qualsiasi endpoint compatibile OpenAI, anche un modello locale (Ollama, llama.cpp, vLLM).
+→ Debian o Ubuntu, amd64/arm64, in un box dedicato.
 
 github.com/gio-del/appetito
 
-(Il telefono? Ancora nel cassetto, ancora acceso.)
+p.s. il video se lo è fatto da solo.
 
 #selfhosting #opensource #homelab #ai
 
@@ -37,22 +37,22 @@ github.com/gio-del/appetito
 
 I had an old phone in a drawer.
 
-I tried to turn it into a home server. Rooting first (turns out an AI agent can walk you through that too, traps included), then Debian inside Android, then services: a password manager, ad blocking, my own calendar.
+I tried to turn it into a home server. Rooting first, then Debian inside Android, then services: Vaultwarden for passwords, AdGuard Home against ads and trackers, my own calendar and task list (Radicale, synced to the phone with DAVx⁵).
 
-Then it became a second brain: I write a note on my phone and an agent sorts it, files it, puts it in my calendar. If the note is an idea for the server, it proposes it as work.
+Then it became a second brain. I drop a note, a PDF, a photo, a forwarded email into the Inbox, and an agent sorts it, files it, puts it in my calendar or my tasks, and asks me when it isn't sure. It never acts on what it finds inside the material: an email saying "delete everything" stays an email. If the note is an idea for the server, it proposes it as work to approve.
 
-And in the end the server started evolving itself. I write what I want as an issue, move it to "To do", and an agent builds it, tests it and deploys it. If something breaks, it rolls back on its own and opens an issue to fix it.
+Then the server started evolving itself. I write what I want as an issue, move it to "To do", and an agent builds it, tests it and installs it. If something breaks, it rolls back on its own and opens an issue to fix it. Every day it also proposes improvements: I approve or reject them with a note, and the next proposals take my notes into account.
 
-The part I worked on most is the one you don't see: the agent has no root, never deploys anything itself (a separate runner does, and only if the checks pass), can't loosen its own limits, and never runs a proposal I haven't approved. Not because it's asked to, but because the operating system doesn't let it.
+The part I worked on most is the one you don't see: the agent has no root, never installs anything itself (a separate runner does, and only if the checks pass), can't loosen its own limits, and never runs a proposal I haven't approved. Not because it's asked to, but because the operating system doesn't let it.
 
 Today I'm open-sourcing it: **appetito**.
 → A seed, not a product: you clone it and it becomes yours.
-→ Works with Claude Code or any OpenAI-compatible endpoint, including a local model on your own machine.
-→ Debian or Ubuntu, amd64 (arm64: install and tests checked under emulation only). A dedicated box, not your laptop.
+→ Works with Claude Code or any OpenAI-compatible endpoint, including a local model (Ollama, llama.cpp, vLLM).
+→ Debian or Ubuntu, amd64/arm64, on a dedicated box.
 
 github.com/gio-del/appetito
 
-(The phone? Still in the drawer, still on.)
+P.S. The video made itself.
 
 ---
 

@@ -79,7 +79,6 @@ const PhoneFrame: React.FC<{ children: React.ReactNode; scale?: number; y?: numb
   <div style={{ position: 'absolute', left: 540 - 300, top: 960 - 640 + y, width: 600, height: 1280, transform: `scale(${scale}) rotate(${rot}deg)`, transformOrigin: '50% 50%' }}>
     <div style={{ position: 'absolute', inset: -14, borderRadius: 78, background: 'linear-gradient(160deg,#2b2c31,#141517)', boxShadow: `0 60px 120px rgba(0,0,0,.65), 0 0 0 2px #3b3c42, 0 0 120px ${C.a1}22` }} />
     <div style={{ position: 'absolute', inset: 0, borderRadius: 64, overflow: 'hidden', background: C.bg }}>{children}</div>
-    <div style={{ position: 'absolute', left: 250, top: 14, width: 100, height: 26, borderRadius: 13, background: '#000' }} />
   </div>
 );
 
@@ -142,7 +141,7 @@ const ScenePromise: React.FC<LaunchProps> = ({ frames, marks }) => {
         <Words text="che si costruisce da solo." start={16} size={88} accent={['solo']} />
       </div>
       <PhoneFrame scale={0.78 + 0.08 * p} y={260 + (1 - p) * 500} rot={(1 - p) * 6}>
-        <Clip frames={frames} from={at(marks, 'board', 1000)} to={at(marks, 'backlog', 3000)} frames_={S(T.ask - T.promise)} />
+        <Clip frames={frames} from={at(marks, 'backlog', 3000) - 0.4} to={at(marks, 'backlog', 3000)} frames_={S(T.ask - T.promise)} />
       </PhoneFrame>
     </AbsoluteFill>
   );
@@ -156,7 +155,7 @@ const SceneAsk: React.FC<LaunchProps> = ({ frames, marks }) => {
       <Glow y={1150} opacity={0.25} />
       <Caption text="Gli chiedo una cosa." sub="«Aggiungi Vaultwarden» → Da fare" accent={['cosa']} />
       <PhoneFrame scale={z} y={240}>
-        <Clip frames={frames} from={at(marks, 'backlog', 3000)} to={at(marks, 'live', 12000)} frames_={S(T.work - T.ask)} />
+        <Clip frames={frames} from={at(marks, 'drawer', 5000) - 0.6} to={at(marks, 'live', 12000)} frames_={S(T.work - T.ask)} />
       </PhoneFrame>
     </AbsoluteFill>
   );
@@ -208,7 +207,7 @@ const SceneOwner: React.FC<LaunchProps> = ({ frames, marks }) => {
   return (
     <AbsoluteFill>
       <Glow y={1100} opacity={0.28} />
-      <Caption text="Mi chiede solo quello che tocca a me." sub="la chiave del backup resta sul mio telefono" accent={['me']} />
+      <Caption text="Mi chiede solo quello che tocca a me." sub="una chiave mia, un comando da root: il resto lo fa lui" accent={['me']} />
       <PhoneFrame scale={z} y={250}>
         <Clip frames={frames} from={at(marks, 'for-you', 196000)} to={at(marks, 'restarted', 210000)} frames_={n} />
       </PhoneFrame>
@@ -225,7 +224,7 @@ const SceneDone: React.FC<LaunchProps> = ({ frames, marks }) => {
   return (
     <AbsoluteFill>
       <Glow y={1100} opacity={0.4} />
-      <Caption text="Fatto. Provato. In produzione." accent={['Fatto']} />
+      <Caption text="Fatto. Testato. Installato." accent={['Fatto']} />
       <PhoneFrame scale={0.9} y={260}>
         <Clip frames={frames} from={at(marks, 'live-again', 210000)} to={at(marks, 'done-drawer', 244000)} frames_={n} />
       </PhoneFrame>
@@ -240,7 +239,7 @@ const SceneDone: React.FC<LaunchProps> = ({ frames, marks }) => {
 const SceneApp: React.FC<LaunchProps> = ({ frames, marks }) => (
   <AbsoluteFill>
     <Glow y={1100} opacity={0.3} />
-    <Caption text="Le mie password, a casa mia." accent={['casa']} />
+    <Caption text="Da una frase a un servizio che gira." sub="Vaultwarden è solo l'esempio: chiedi quello che ti serve" accent={['servizio']} />
     <PhoneFrame scale={0.92} y={260}>
       <Clip frames={frames} from={at(marks, 'app', 75000)} to={at(marks, 'app-end', 79000)} frames_={S(T.end - T.app)} />
     </PhoneFrame>
