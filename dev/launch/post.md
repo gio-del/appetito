@@ -1,6 +1,6 @@
 # LinkedIn post (draft — the owner publishes)
 
-Status: draft, waiting for the video and screenshots from the sandbox. Not to be published before the launch gate is green (docs/PRD.md §10).
+Status: final candidate (2026-10-14), waiting for the owner's approval. Not to be published before the launch gate is green (docs/PRD.md §10).
 
 ---
 
@@ -16,12 +16,12 @@ Poi è diventato un second brain: scrivo una nota sul telefono e un agente la sm
 
 E alla fine il server ha iniziato a evolversi da solo. Scrivo cosa voglio come issue, la sposto in "Da fare", e un agente la sviluppa, la prova e la mette in produzione. Se qualcosa si rompe, torna indietro da solo e apre una issue per sistemarla.
 
-La parte su cui ho lavorato di più è quella che non si vede: l'agente non ha root, non può rilasciare niente da solo, non può allentare i propri limiti e non esegue mai una proposta che non ho approvato io. Non perché glielo chiedo, ma perché il sistema operativo non glielo permette.
+La parte su cui ho lavorato di più è quella che non si vede: l'agente non ha root, non mette niente in produzione da solo (lo fa un runner separato, e solo se i controlli passano), non può allentare i propri limiti e non esegue mai una proposta che non ho approvato io. Non perché glielo chiedo, ma perché il sistema operativo non glielo permette.
 
 Oggi lo rendo open source: si chiama **appetito**.
 → È un seme, non un prodotto: lo cloni e diventa tuo.
 → Funziona con Claude Code o con qualsiasi endpoint compatibile OpenAI, anche un modello locale sulla tua macchina.
-→ Debian o Ubuntu, amd64 o arm64. Un box dedicato, non il tuo PC.
+→ Debian o Ubuntu, amd64 (arm64 provato solo in emulazione). Un box dedicato, non il tuo PC.
 
 github.com/gio-del/appetito
 
@@ -43,12 +43,12 @@ Then it became a second brain: I write a note on my phone and an agent sorts it,
 
 And in the end the server started evolving itself. I write what I want as an issue, move it to "To do", and an agent builds it, tests it and deploys it. If something breaks, it rolls back on its own and opens an issue to fix it.
 
-The part I worked on most is the one you don't see: the agent has no root, can't deploy anything by itself, can't loosen its own limits, and never runs a proposal I haven't approved. Not because it's asked to, but because the operating system doesn't let it.
+The part I worked on most is the one you don't see: the agent has no root, never deploys anything itself (a separate runner does, and only if the checks pass), can't loosen its own limits, and never runs a proposal I haven't approved. Not because it's asked to, but because the operating system doesn't let it.
 
 Today I'm open-sourcing it: **appetito**.
 → A seed, not a product: you clone it and it becomes yours.
 → Works with Claude Code or any OpenAI-compatible endpoint, including a local model on your own machine.
-→ Debian or Ubuntu, amd64 or arm64. A dedicated box, not your laptop.
+→ Debian or Ubuntu, amd64 (arm64 tested under emulation only). A dedicated box, not your laptop.
 
 github.com/gio-del/appetito
 
@@ -57,5 +57,5 @@ github.com/gio-del/appetito
 ---
 
 ## Media
-- Video: `dev/video/out/appetito-launch.mp4` (1080×1920, 30–45 s) — pending (dev issue 017).
-- Screenshots (from the sandbox, never the real system): board with the starter backlog; the live worker page during a run; the confirm page for a proposal; the "Changes" page with a guard change waiting.
+- Video: `dev/video/out/appetito-launch.mp4` (1080×1920, 60 fps, 41 s), composed from a real e2e run (`tests/e2e/run --scenario video`): the agent adds Vaultwarden, hands over the owner's steps, closes it.
+- Screenshots, frames of the same run (sandbox, never the real system), in `dev/launch/media/`: `1-backlog.jpg` the starter backlog; `2-live.jpg` the live worker page mid-run; `3-for-you.jpg` the owner's (HITL) steps ticked; `4-done.jpg` the issue closed, branch merged.
