@@ -55,7 +55,6 @@ one_run() {
 	fi
 	docker rm -f "$NAME" >/dev/null 2>&1 || true
 	PORTS="-p 127.0.0.1::8080 -p 127.0.0.1::8081"
-	[ "$SCENARIO" != video ] || PORTS="-p 127.0.0.1:18080:18080 -p 127.0.0.1:18081:18081 -p 127.0.0.1:18222:18222"
 	docker run -d --name "$NAME" --platform "linux/$ARCH" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
 		--tmpfs /run --tmpfs /run/lock --hostname appetito-box $PORTS "$IMG" >/dev/null || { log "FAIL the box didn't start"; result fail "$(date +%s)" "box didn't start"; return 1; }
 	trap '[ -n "$KEEP" ] || docker rm -f "$NAME" >/dev/null 2>&1 || true' RETURN
@@ -135,15 +134,17 @@ scenario_video() { # TIMEOUT: the launch video's footage (dev/video/record.js): 
 	local tok
 	inbox sed -i 's|^TRACKER_ORIGINS=.*|TRACKER_ORIGINS=http://127.0.0.1:18080,http://127.0.0.1:8080|; s|^TRACKER_CONFIRM_ORIGINS=.*|TRACKER_CONFIRM_ORIGINS=http://127.0.0.1:18081,http://127.0.0.1:8081|' /etc/appetito/appetito.env
 	inbox systemctl restart appetito-tracker
-	docker cp tests/e2e/forward.js "$NAME:/root/forward.js" >/dev/null
 	docker cp tests/e2e/owner/001.sh "$NAME:/root/owner-001.sh" >/dev/null
-	docker exec -d "$NAME" node /root/forward.js 18080:8080 18081:8081 18222:8222
-	sleep 3
+	# The PC's browser reaches the box's loopback through docker exec: nothing extra listens in the box.
+	node tests/e2e/forward.js "$NAME" 18080:8080 18081:8081 18222:8222 & local fwd=$!
+	sleep 2
 	tok=$(grep -o 'setup?token=[A-Za-z0-9_-]*' "$OUT/install.log" | tail -1 | cut -d= -f2)
 	log "recording: the owner moves #001 to To do on the phone; Start now"
 	(cd dev/video && node record.js --main http://127.0.0.1:18080 --confirm http://127.0.0.1:18081 --setup "$tok" --issue 001 \
 		--app http://127.0.0.1:18222 --timeout "$1" --owner "docker exec $NAME sh /root/owner-001.sh") 2>&1 | tee -a "$OUT/run.log"
-	[ "${PIPESTATUS[0]}" = 0 ] && scenario_smoke
+	local rc=${PIPESTATUS[0]}
+	kill "$fwd" 2>/dev/null || true
+	[ "$rc" = 0 ] && scenario_smoke
 }
 scenario_brain() { # NOTE_FILE TIMEOUT
 	docker cp "$1" "$NAME:/root/$(basename "$1")" >/dev/null
