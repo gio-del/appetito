@@ -1,5 +1,7 @@
 # Add a dashboard (Homepage) with system status
 
+> Not yet run end to end in appetito's own e2e sandbox (Vaultwarden, #001, is). It should work; if the agent struggles, refine this text.
+
 Opened: 2026-10-13
 Blocked on: -
 Status: backlog
