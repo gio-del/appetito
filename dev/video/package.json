@@ -4,7 +4,9 @@
   "description": "Launch video: Playwright records a real run in the sandbox, Remotion composes, ffmpeg (bundled with Remotion) encodes.",
   "scripts": {
     "record": "node record.js",
-    "render": "remotion render src/index.ts Launch out/appetito-launch.mp4 --codec=h264 --crf=18"
+    "render": "remotion render src/index.ts Launch out/appetito-launch.mp4 --codec=h264 --crf=18",
+    "footage": "rm -rf public/frames public/frames.json public/marks.json && cp -r out/footage/frames out/footage/frames.json out/footage/marks.json public/",
+    "still": "remotion still src/index.ts Launch out/still.png"
   },
   "dependencies": {
     "@remotion/cli": "4.0.529",

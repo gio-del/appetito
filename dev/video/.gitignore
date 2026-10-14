@@ -1,4 +1,7 @@
 node_modules/
 out/
-public/rec/
 public/footage.webm
+public/frames/
+public/frames.json
+public/marks.json
+public/rec/

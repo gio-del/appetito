@@ -1,16 +1,17 @@
 import React from 'react';
-import { AbsoluteFill, Easing, interpolate, OffthreadVideo, Sequence, spring, useCurrentFrame, useVideoConfig } from 'remotion';
+import { AbsoluteFill, Easing, Img, interpolate, Sequence, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
 
-// appetito launch video, 1080×1920 @ 60 fps, ~41 s. Text carries the story (most people watch muted).
+// appetito launch video, 1080×1920 @ 60 fps, ~43 s. Text carries the story (most people watch muted).
 // Palette = the tracker's: dark #101112, accent #e5623a → #f2a541.
 export const FPS = 60;
 const S = (s: number) => Math.round(s * FPS);
 // Scene boundaries (seconds).
-const T = { phone: 0, promise: 4.2, ask: 8.4, work: 14.2, done: 27.4, app: 32.6, end: 36.4, total: 41.4 };
+const T = { phone: 0, promise: 4.2, ask: 8.4, work: 14.2, owner: 23.6, done: 29.8, app: 34.6, end: 38.2, total: 43.2 };
 export const TOTAL = S(T.total);
 
 type Mark = { name: string; t: number };
-export type LaunchProps = { footage: string; marks: { t0: number; events: Mark[] } };
+type Frame = { f: string; t: number };
+export type LaunchProps = { frames: Frame[]; marks: { t0: number; events: Mark[] } };
 const at = (m: LaunchProps['marks'], name: string, d: number) => (m.events.find(e => e.name === name)?.t ?? d) / 1000;
 
 const C = { bg: '#101112', fg: '#f3f1ee', muted: '#9a9aa0', a1: '#e5623a', a2: '#f2a541', card: '#1c1d20', line: '#2a2c30' };
@@ -81,11 +82,15 @@ const PhoneFrame: React.FC<{ children: React.ReactNode; scale?: number; y?: numb
   </div>
 );
 
-// The footage between two moments of the recording (seconds), stretched to fill the sequence.
-const Clip: React.FC<{ src: string; from: number; to: number; frames: number }> = ({ src, from, to, frames }) => {
-  const rate = Math.max(0.25, (to - from) / (frames / FPS));
-  return <OffthreadVideo src={src} startFrom={Math.round(from * FPS)} playbackRate={rate} muted
-    style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'top' }} />;
+// The footage between two moments of the recording (seconds), stretched to fill the sequence: at
+// each video frame, the last screencast frame shown at that moment of the recording.
+const Clip: React.FC<{ frames: Frame[]; from: number; to: number; frames_: number }> = ({ frames, from, to, frames_ }) => {
+  const f = useCurrentFrame();
+  const t = (from + (to - from) * Math.min(1, f / Math.max(1, frames_ - 1))) * 1000;
+  let lo = 0, hi = frames.length - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (frames[m].t <= t) lo = m; else hi = m - 1; }
+  const fr = frames[lo];
+  return fr ? <Img src={staticFile(`frames/${fr.f}`)} style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'top' }} /> : null;
 };
 
 const Caption: React.FC<{ text: string; sub?: string; start?: number; accent?: string[] }> = ({ text, sub, start = 6, accent }) => {
@@ -119,7 +124,7 @@ const ScenePhone: React.FC = () => (
   </AbsoluteFill>
 );
 
-const ScenePromise: React.FC<LaunchProps> = ({ footage, marks }) => {
+const ScenePromise: React.FC<LaunchProps> = ({ frames, marks }) => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
   const p = spring({ frame: f, fps, config: { damping: 20, stiffness: 90 } });
@@ -132,13 +137,13 @@ const ScenePromise: React.FC<LaunchProps> = ({ footage, marks }) => {
         <Words text="che si costruisce da solo." start={16} size={88} accent={['solo']} />
       </div>
       <PhoneFrame scale={0.78 + 0.08 * p} y={260 + (1 - p) * 500} rot={(1 - p) * 6}>
-        <Clip src={footage} from={at(marks, 'board', 1000)} to={at(marks, 'backlog', 3000)} frames={S(T.ask - T.promise)} />
+        <Clip frames={frames} from={at(marks, 'board', 1000)} to={at(marks, 'backlog', 3000)} frames_={S(T.ask - T.promise)} />
       </PhoneFrame>
     </AbsoluteFill>
   );
 };
 
-const SceneAsk: React.FC<LaunchProps> = ({ footage, marks }) => {
+const SceneAsk: React.FC<LaunchProps> = ({ frames, marks }) => {
   const f = useCurrentFrame();
   const z = interpolate(f, [0, S(T.work - T.ask)], [0.86, 0.98], { easing: Easing.inOut(Easing.cubic) });
   return (
@@ -146,40 +151,58 @@ const SceneAsk: React.FC<LaunchProps> = ({ footage, marks }) => {
       <Glow y={1150} opacity={0.25} />
       <Caption text="Gli chiedo una cosa." sub="«Aggiungi Vaultwarden» → Da fare" accent={['cosa']} />
       <PhoneFrame scale={z} y={240}>
-        <Clip src={footage} from={at(marks, 'backlog', 3000)} to={at(marks, 'live', 12000)} frames={S(T.work - T.ask)} />
+        <Clip frames={frames} from={at(marks, 'backlog', 3000)} to={at(marks, 'live', 12000)} frames_={S(T.work - T.ask)} />
       </PhoneFrame>
     </AbsoluteFill>
   );
 };
 
-const SceneWork: React.FC<LaunchProps> = ({ footage, marks }) => {
+const SceneWork: React.FC<LaunchProps> = ({ frames, marks }) => {
   const f = useCurrentFrame();
-  const frames = S(T.done - T.work);
-  const from = at(marks, 'live', 12000), to = at(marks, 'closed', from + 600);
-  const speed = Math.max(1, Math.round((to - from) / (frames / FPS)));
-  const z = interpolate(f, [0, frames], [0.95, 1.06], { easing: Easing.inOut(Easing.sin) });
+  const n = S(T.owner - T.work);
+  const from = at(marks, 'live', 12000), to = at(marks, 'handed', from + 180000);
+  const speed = Math.max(1, Math.round((to - from) / (n / FPS)));
+  const z = interpolate(f, [0, n], [0.95, 1.06], { easing: Easing.inOut(Easing.sin) });
   return (
     <AbsoluteFill>
       <Glow y={1100} opacity={0.32} />
-      <Caption text="Lui la fa. Da solo." sub="niente root · prova · deploy · rollback se si rompe" accent={['solo']} />
+      <Caption text="Lui la fa. Da solo." sub="niente root · test · deploy · rollback se si rompe" accent={['solo']} />
       <PhoneFrame scale={z} y={250}>
-        <Clip src={footage} from={from} to={to} frames={frames} />
+        <Clip frames={frames} from={from} to={to} frames_={n} />
       </PhoneFrame>
       <Badge text={`×${speed}`} start={S(0.8)} />
     </AbsoluteFill>
   );
 };
 
-const SceneDone: React.FC<LaunchProps> = ({ footage, marks }) => {
+// The handover: the agent asks only what needs the owner (their backup key, a root command).
+const SceneOwner: React.FC<LaunchProps> = ({ frames, marks }) => {
+  const f = useCurrentFrame();
+  const n = S(T.done - T.owner);
+  const z = interpolate(f, [0, n], [0.9, 0.98], { easing: Easing.inOut(Easing.cubic) });
+  return (
+    <AbsoluteFill>
+      <Glow y={1100} opacity={0.28} />
+      <Caption text="Mi chiede solo quello che tocca a me." sub="la chiave del backup resta sul mio telefono" accent={['me']} />
+      <PhoneFrame scale={z} y={250}>
+        <Clip frames={frames} from={at(marks, 'for-you', 196000)} to={at(marks, 'restarted', 210000)} frames_={n} />
+      </PhoneFrame>
+    </AbsoluteFill>
+  );
+};
+
+const SceneDone: React.FC<LaunchProps> = ({ frames, marks }) => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const check = spring({ frame: f - 10, fps, config: { damping: 12, stiffness: 120 } });
+  const n = S(T.app - T.done);
+  const closedAt = (at(marks, 'closed', 235000) - at(marks, 'live-again', 210000)) / (at(marks, 'done-drawer', 244000) - at(marks, 'live-again', 210000));
+  const check = spring({ frame: f - Math.round(closedAt * n), fps, config: { damping: 12, stiffness: 120 } });
   return (
     <AbsoluteFill>
       <Glow y={1100} opacity={0.4} />
       <Caption text="Fatto. Provato. In produzione." accent={['Fatto']} />
       <PhoneFrame scale={0.9} y={260}>
-        <Clip src={footage} from={at(marks, 'closed', 60000)} to={at(marks, 'done-drawer', 70000)} frames={S(T.app - T.done)} />
+        <Clip frames={frames} from={at(marks, 'live-again', 210000)} to={at(marks, 'done-drawer', 244000)} frames_={n} />
       </PhoneFrame>
       <div style={{ position: 'absolute', left: 540 - 90, top: 1580, width: 180, height: 180, borderRadius: '50%', background: `linear-gradient(135deg, ${C.a1}, ${C.a2})`,
         transform: `scale(${check})`, display: 'grid', placeItems: 'center', boxShadow: `0 24px 60px ${C.a1}77` }}>
@@ -189,12 +212,12 @@ const SceneDone: React.FC<LaunchProps> = ({ footage, marks }) => {
   );
 };
 
-const SceneApp: React.FC<LaunchProps> = ({ footage, marks }) => (
+const SceneApp: React.FC<LaunchProps> = ({ frames, marks }) => (
   <AbsoluteFill>
     <Glow y={1100} opacity={0.3} />
     <Caption text="Le mie password, a casa mia." accent={['casa']} />
     <PhoneFrame scale={0.92} y={260}>
-      <Clip src={footage} from={at(marks, 'done-drawer', 70000)} to={at(marks, 'app', 75000)} frames={S(T.end - T.app)} />
+      <Clip frames={frames} from={at(marks, 'done-drawer', 70000)} to={at(marks, 'app', 75000)} frames_={S(T.end - T.app)} />
     </PhoneFrame>
   </AbsoluteFill>
 );
@@ -238,7 +261,8 @@ export const Launch: React.FC<LaunchProps> = props => {
       {seq(T.phone, T.promise, <ScenePhone />)}
       {seq(T.promise, T.ask, <ScenePromise {...props} />)}
       {seq(T.ask, T.work, <SceneAsk {...props} />)}
-      {seq(T.work, T.done, <SceneWork {...props} />)}
+      {seq(T.work, T.owner, <SceneWork {...props} />)}
+      {seq(T.owner, T.done, <SceneOwner {...props} />)}
       {seq(T.done, T.app, <SceneDone {...props} />)}
       {seq(T.app, T.end, <SceneApp {...props} />)}
       {seq(T.end, T.total, <SceneEnd />, true)}

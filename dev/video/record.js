@@ -1,8 +1,9 @@
 'use strict';
 // Records the launch video's footage: a phone-sized browser (Playwright, Chromium) driving the real
 // tracker of an e2e box while the worker closes "Add Vaultwarden". A real run, not a replay.
-// Output: out/footage/*.webm (one per phase) + out/footage/marks.json (when things happened), which
-// the Remotion composition time-lapses.
+// Output: out/footage/frames/*.jpg (the DevTools screencast: real phone resolution, a frame on every
+// change) + frames.json (when each was shown) + marks.json (when things happened), all in ms since t0;
+// the Remotion composition picks frames by time and time-lapses.
 //
 //   node record.js --main http://127.0.0.1:18080 --confirm http://127.0.0.1:18081 --setup TOKEN
 //                  [--issue 001] [--app http://127.0.0.1:18222] [--timeout 3600] [--owner 'CMD']
@@ -61,9 +62,22 @@ async function ownerTurn(page) {
 (async () => {
 	const browser = await chromium.launch();
 	const phone = devices['Pixel 7'];
-	const ctx = await browser.newContext({ ...phone, deviceScaleFactor: 3, colorScheme: 'dark', locale: 'en-GB',
-		recordVideo: { dir: OUT, size: { width: 1080, height: Math.round(1080 * phone.viewport.height / phone.viewport.width) } } });
+	const ctx = await browser.newContext({ ...phone, deviceScaleFactor: 3, colorScheme: 'dark', locale: 'en-GB' });
 	const page = await ctx.newPage();
+	// Screencast: Playwright's recordVideo is low-bitrate and unscaled; this gives JPEGs at the
+	// phone's real resolution. Restarted after each navigation (a new origin is a new renderer).
+	const FR = path.join(OUT, 'frames'); fs.mkdirSync(FR, { recursive: true });
+	const frames = [];
+	const cdp = await ctx.newCDPSession(page);
+	cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
+		const f = `f${String(frames.length).padStart(5, '0')}.jpg`;
+		fs.writeFileSync(path.join(FR, f), Buffer.from(data, 'base64'));
+		frames.push({ f, t: Date.now() - marks.t0 });
+		cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+	});
+	const cast = () => cdp.send('Page.startScreencast', { format: 'jpeg', quality: 85, maxWidth: 1080, maxHeight: 2400 }).catch(() => {});
+	page.on('load', cast);
+	await cast();
 	// Sign in once (setup link), off camera time-wise: the composition cuts it.
 	await page.goto(`${CONF}/setup?token=${SETUP}`);
 	await page.fill('input[name=password]', PW);
@@ -121,11 +135,10 @@ async function ownerTurn(page) {
 		await sleep(5000);
 		mark('app');
 	}
+	await cdp.send('Page.stopScreencast').catch(() => {});
 	await ctx.close();
 	await browser.close();
-	const vids = fs.readdirSync(OUT).filter(f => f.endsWith('.webm'));
-	marks.video = vids[vids.length - 1];
-	fs.writeFileSync(path.join(OUT, 'marks.json'), JSON.stringify(marks, null, 1));
-	console.log(`video: ${marks.video}`);
+	fs.writeFileSync(path.join(OUT, 'frames.json'), JSON.stringify(frames));
+	console.log(`frames: ${frames.length}`);
 	process.exit(closed ? 0 : 1);
 })().catch(e => { console.error(e); process.exit(1); });
