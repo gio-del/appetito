@@ -1,12 +1,13 @@
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, Sequence, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
 
-// appetito launch video, 1080×1920 @ 60 fps, ~46 s. Text carries the story (most people watch muted).
+// appetito launch video, 1080×1920 @ 60 fps, ~41 s. Text carries the story (most people watch muted).
 // Palette = the tracker's: dark #101112, accent #e5623a → #f2a541.
 export const FPS = 60;
 const S = (s: number) => Math.round(s * FPS);
 // Scene boundaries (seconds).
-const T = { phone: 0, promise: 4.2, ask: 7.8, work: 12.8, repair: 19.8, owner: 27.3, done: 33.3, app: 38.1, end: 41.7, total: 46.3 };
+// A take with a rollback gets the repair scene: work: 12.8, repair: 19.8, owner: 27.3, … total 46.3.
+const T = { phone: 0, promise: 4.2, ask: 7.8, work: 12.8, repair: 21.8, owner: 21.8, done: 27.8, app: 32.6, end: 36.2, total: 40.8 };
 export const TOTAL = S(T.total);
 
 type Mark = { name: string; t: number };
@@ -164,7 +165,7 @@ const SceneAsk: React.FC<LaunchProps> = ({ frames, marks }) => {
 const SceneWork: React.FC<LaunchProps> = ({ frames, marks }) => {
   const f = useCurrentFrame();
   const n = S(T.repair - T.work);
-  const from = at(marks, 'live', 12000), to = at(marks, 'rolled-back', at(marks, 'handed', from + 180000));
+  const from = at(marks, 'live', 12000), to = at(marks, 'rolled-back', at(marks, 'handed', from * 1000 + 180000) * 1000);
   const speed = Math.max(1, Math.round((to - from) / (n / FPS)));
   const z = interpolate(f, [0, n], [0.95, 1.06], { easing: Easing.inOut(Easing.sin) });
   return (
@@ -288,7 +289,7 @@ export const Launch: React.FC<LaunchProps> = props => {
       {seq(T.promise, T.ask, <ScenePromise {...props} />)}
       {seq(T.ask, T.work, <SceneAsk {...props} />)}
       {seq(T.work, T.repair, <SceneWork {...props} />)}
-      {marks_has(props, 'repair-start') ? seq(T.repair, T.owner, <SceneRepair {...props} />) : null}
+      {marks_has(props, 'repair-start') && T.owner > T.repair ? seq(T.repair, T.owner, <SceneRepair {...props} />) : null}
       {seq(T.owner, T.done, <SceneOwner {...props} />)}
       {seq(T.done, T.app, <SceneDone {...props} />)}
       {seq(T.app, T.end, <SceneApp {...props} />)}
