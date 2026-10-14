@@ -161,6 +161,8 @@ APPETITO_BACKEND=$BACKEND
 # Per job, e.g. a local model for the second brain: APPETITO_BACKEND_BRAIN_SORT=openai
 APPETITO_MERGE_GATE=auto
 APPETITO_FIREWALL=on
+# Seconds a service may take to answer after a deploy (raise on slow boards)
+APPETITO_HEALTH_WAIT=60
 APPETITO_EGRESS_PORT=3128
 APPETITO_TAILSCALE=$TAILSCALE
 TRACKER_PORT=8080

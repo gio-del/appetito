@@ -33,15 +33,17 @@ while IFS= read -r u; do
 done < <(cat "$ST/units" 2>/dev/null)
 
 echo "== health"
+# How long a service may take to answer after a deploy (slow boards: raise APPETITO_HEALTH_WAIT).
+WAIT=$(sed -n 's/^APPETITO_HEALTH_WAIT=//p' "${APPETITO_ENV_FILE:-/etc/appetito/appetito.env}" 2>/dev/null | tail -1 | tr -dc 0-9); WAIT=${WAIT:-60}
 urls() {
 	for m in "$CUR"/services/*/service.env; do [ -f "$m" ] && sed -n 's/^HEALTH=//p' "$m" | tr -d "\"'"; done
 	[ -f "$CUR/core/health.list" ] && grep -v '^#' "$CUR/core/health.list" | sed 's/[[:space:]]*#.*//' | grep .
 }
 for url in $(urls | envsubst 2>/dev/null || urls); do
 	case $url in http://127.0.0.1:[0-9]*/*|http://127.0.0.1:[0-9]*) ;; *) fail "health URL $url (only http://127.0.0.1:PORT/…)"; continue ;; esac
-	ok=0
-	for _ in $(seq 1 30); do curl -fsS -o /dev/null -m 5 "$url" 2>/dev/null && { ok=1; break; }; sleep 2; done
-	[ $ok = 1 ] && pass "$url" || fail "$url not healthy after 60 s"
+	ok=0 end=$(( $(date +%s) + WAIT ))
+	while :; do curl -fsS -o /dev/null -m 5 "$url" 2>/dev/null && { ok=1; break; }; [ "$(date +%s)" -lt "$end" ] || break; sleep 2; done
+	[ $ok = 1 ] && pass "$url" || fail "$url not healthy after $WAIT s"
 done
 
 echo "== security-audit"

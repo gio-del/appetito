@@ -18,7 +18,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
-DISTRO=debian13 ARCH=$(docker info --format '{{.Architecture}}' | sed 's/x86_64/amd64/; s/aarch64/arm64/') SCENARIO=smoke BACKEND=claude-code MODEL=${E2E_MODEL:-sonnet} REPEAT=1 KEEP=""
+HOST_ARCH=$(docker info --format '{{.Architecture}}' | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+DISTRO=debian13 ARCH=$HOST_ARCH SCENARIO=smoke BACKEND=claude-code MODEL=${E2E_MODEL:-sonnet} REPEAT=1 KEEP=""
 while [ $# -gt 0 ]; do
 	case $1 in
 	--distro) DISTRO=$2; shift ;; --arch) ARCH=$2; shift ;; --scenario) SCENARIO=$2; shift ;;
@@ -85,6 +86,11 @@ one_run() {
 		inbox sh -c "echo APPETITO_AUTO_QUOTA_MAX=${E2E_QUOTA_MAX:-80} >> /var/lib/appetito/settings.env"
 		inbox sed -i "/^APPETITO_CLAUDE_MODEL=/d" /etc/appetito/appetito.env
 		[ -z "$MODEL" ] || inbox sh -c "echo APPETITO_CLAUDE_MODEL=$MODEL >> /etc/appetito/appetito.env"
+	fi
+	if [ "$ARCH" != "$HOST_ARCH" ]; then # emulated (qemu): no netfilter Netlink, everything slow; stated in the README
+		log "emulated $ARCH: per-user firewall off, health wait 600 s"
+		inbox sh -c 'sed -i "/^APPETITO_FIREWALL=/d; /^APPETITO_HEALTH_WAIT=/d" /etc/appetito/appetito.env && printf "APPETITO_FIREWALL=off\nAPPETITO_HEALTH_WAIT=600\n" >> /etc/appetito/appetito.env'
+		inbox systemctl restart appetito-fw.service || true
 	fi
 	case $SCENARIO in
 	smoke) scenario_smoke || rc=$? ;;
