@@ -35,3 +35,5 @@ One line per `make e2e` run (`tests/e2e/run`).
 | 2026-10-14 12:59 | af0ec0e | ubuntu2404 | amd64 | first-issue | claude-code (sonnet) | 2 min | pass |
 | 2026-10-14 13:02 | ac3f71e | debian13 | amd64 | contract | claude-code (sonnet) | 2 min | pass |
 | 2026-10-14 13:03 | 8711809 | debian13 | arm64 | smoke | fake (sonnet) | 1 min | fail: install failed |
+| 2026-10-14 13:31 | df2b36a | debian13 | arm64 | smoke | fake (sonnet) | 27 min | fail: see tests/e2e/out/20261014-130406-debian13-arm64-smoke |
+| 2026-10-14 13:33 | df2b36a | ubuntu2404 | amd64 | smoke | fake (sonnet) | 2 min | pass |

@@ -21,7 +21,7 @@ La parte su cui ho lavorato di più è quella che non si vede: l'agente non ha r
 Oggi lo rendo open source: si chiama **appetito**.
 → È un seme, non un prodotto: lo cloni e diventa tuo.
 → Funziona con Claude Code o con qualsiasi endpoint compatibile OpenAI, anche un modello locale sulla tua macchina.
-→ Debian o Ubuntu, amd64 (arm64 provato solo in emulazione). Un box dedicato, non il tuo PC.
+→ Debian o Ubuntu, amd64 (arm64: installazione e test provati solo in emulazione). Un box dedicato, non il tuo PC.
 
 github.com/gio-del/appetito
 
@@ -48,7 +48,7 @@ The part I worked on most is the one you don't see: the agent has no root, never
 Today I'm open-sourcing it: **appetito**.
 → A seed, not a product: you clone it and it becomes yours.
 → Works with Claude Code or any OpenAI-compatible endpoint, including a local model on your own machine.
-→ Debian or Ubuntu, amd64 (arm64 tested under emulation only). A dedicated box, not your laptop.
+→ Debian or Ubuntu, amd64 (arm64: install and tests checked under emulation only). A dedicated box, not your laptop.
 
 github.com/gio-del/appetito
 
