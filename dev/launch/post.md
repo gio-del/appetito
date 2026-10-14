@@ -1,6 +1,6 @@
 # LinkedIn post (draft — the owner publishes)
 
-Status: final candidate (2026-10-14), waiting for the owner's approval. Not to be published before the launch gate is green (docs/PRD.md §10).
+Status: approved by the owner (2026-10-14). Not to be published before the launch gate is green (docs/PRD.md §10).
 
 ---
 
@@ -25,7 +25,7 @@ Oggi lo rendo open source: si chiama **appetito**.
 
 github.com/gio-del/appetito
 
-p.s. il video se lo è fatto da solo.
+p.s. anche il video è stato una issue: l'ha montato un agente con Remotion, partendo da un run vero registrato in una sandbox.
 
 🎵 Musica: “Inspired”, Kevin MacLeod (incompetech.com), CC BY 4.0
 
@@ -54,7 +54,7 @@ Today I'm open-sourcing it: **appetito**.
 
 github.com/gio-del/appetito
 
-P.S. The video made itself.
+P.S. The video was an issue too: an agent edited it with Remotion, from a real run recorded in a sandbox.
 
 🎵 Music: “Inspired”, Kevin MacLeod (incompetech.com), CC BY 4.0
 

@@ -39,7 +39,7 @@ Read first: `CLAUDE.md`, `docs/PRD.md` (§10 launch gate, §11 autonomy rules), 
 | 7 | Starter issues; Vaultwarden closed by the agent | **Done** (owner: only Vaultwarden proven; 002-005 marked untested). |
 | 8 | SECURITY.md | Done. |
 | 9 | Disclaimer | Done. |
-| 10 | Video + post approved by owner | **Final candidates sent 2026-10-14**: `dev/video/out/appetito-launch.mp4` (41 s, real run), `dev/launch/post.md` + `dev/launch/media/`. Waiting for the owner. |
+| 10 | Video + post approved by owner | **Approved 2026-10-14.** |
 
 Dev issues closed: 001, 002, 006, 007, 008, 011, 016. Open: 003 (agent-run: Ollama real run left), 004 (tracker: mostly done — close after a last UI pass), 005 (worker: done in practice, close with the e2e), 009 (brain: code done, needs an e2e — a note in Inbox gets sorted and proposes), 010 (calendar: `brain-cal` done, off unless configured), 012 (installer: done, needs ubuntu/arm64), 013 (e2e), 014 (starter backlog: Vaultwarden run), 015 (docs: gif), 017, 018, 019.
 
