@@ -102,8 +102,10 @@ const Caption: React.FC<{ text: string; sub?: string; start?: number; accent?: s
   const o = interpolate(f, [start + 18, start + 40], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   return (
     <div style={{ position: 'absolute', left: 0, right: 0, top: 120 }}>
-      <Words text={text} start={start} size={74} accent={accent} />
-      {sub ? <div style={{ fontFamily: font, fontSize: 36, color: C.muted, textAlign: 'center', marginTop: 18, opacity: o, letterSpacing: 0.5 }}>{sub}</div> : null}
+      {text.split('\n').map((line, i, all) => (
+        <Words key={i} text={line} start={start + all.slice(0, i).join(' ').split(' ').filter(Boolean).length * 4} size={60} accent={accent} />
+      ))}
+      {sub ? <div style={{ fontFamily: font, fontSize: 30, color: C.muted, textAlign: 'center', marginTop: 16, padding: '0 70px', opacity: o, letterSpacing: 0.5 }}>{sub}</div> : null}
     </div>
   );
 };
@@ -124,7 +126,7 @@ const ScenePhone: React.FC = () => (
   <AbsoluteFill>
     <Glow y={900} opacity={0.18} />
     <OldPhone />
-    <div style={{ position: 'absolute', left: 0, right: 0, top: 240 }}><Words text="Avevo un telefono vecchio." start={14} size={96} accent={['vecchio']} /></div>
+    <div style={{ position: 'absolute', left: 0, right: 0, top: 240 }}><Words text="Avevo un telefono vecchio." start={14} size={76} accent={['vecchio']} /></div>
   </AbsoluteFill>
 );
 
@@ -136,9 +138,9 @@ const ScenePromise: React.FC<LaunchProps> = ({ frames, marks }) => {
     <AbsoluteFill>
       <Glow y={1150} opacity={0.3} />
       <div style={{ position: 'absolute', left: 0, right: 0, top: 150 }}>
-        <Words text="Ora è un server" start={4} size={88} />
+        <Words text="Ora è un server" start={4} size={76} />
         <div style={{ height: 6 }} />
-        <Words text="che si costruisce da solo." start={16} size={88} accent={['solo']} />
+        <Words text="che si costruisce da solo." start={16} size={76} accent={['solo']} />
       </div>
       <PhoneFrame scale={0.78 + 0.08 * p} y={260 + (1 - p) * 500} rot={(1 - p) * 6}>
         <Clip frames={frames} from={at(marks, 'backlog', 3000) - 0.4} to={at(marks, 'backlog', 3000)} frames_={S(T.ask - T.promise)} />
@@ -190,7 +192,7 @@ const SceneRepair: React.FC<LaunchProps> = ({ frames, marks }) => {
   return (
     <AbsoluteFill>
       <Glow y={1100} opacity={0.3} />
-      <Caption text="Se si rompe, torna indietro. E si ripara." sub="test fallito · rollback · issue · riparato" accent={['ripara']} />
+      <Caption text={"Se si rompe, torna indietro.\nE si ripara."} sub="test fallito · rollback · issue · riparato" accent={['ripara']} />
       <PhoneFrame scale={z} y={260}>
         <Clip frames={frames} ranges={ranges} frames_={n} />
       </PhoneFrame>
@@ -207,7 +209,7 @@ const SceneOwner: React.FC<LaunchProps> = ({ frames, marks }) => {
   return (
     <AbsoluteFill>
       <Glow y={1100} opacity={0.28} />
-      <Caption text="Mi chiede solo quello che tocca a me." sub="una chiave mia, un comando da root: il resto lo fa lui" accent={['me']} />
+      <Caption text={"Mi chiede solo\nquello che tocca a me."} sub="una chiave mia, un comando da root: il resto lo fa lui" accent={['me']} />
       <PhoneFrame scale={z} y={250}>
         <Clip frames={frames} from={at(marks, 'for-you', 196000)} to={at(marks, 'restarted', 210000)} frames_={n} />
       </PhoneFrame>
@@ -239,7 +241,7 @@ const SceneDone: React.FC<LaunchProps> = ({ frames, marks }) => {
 const SceneApp: React.FC<LaunchProps> = ({ frames, marks }) => (
   <AbsoluteFill>
     <Glow y={1100} opacity={0.3} />
-    <Caption text="Da una frase a un servizio che gira." sub="Vaultwarden è solo l'esempio: chiedi quello che ti serve" accent={['servizio']} />
+    <Caption text={"Da una frase\na un servizio che gira."} sub="Vaultwarden è solo l'esempio: chiedi quello che ti serve" accent={['servizio']} />
     <PhoneFrame scale={0.92} y={260}>
       <Clip frames={frames} from={at(marks, 'app', 75000)} to={at(marks, 'app-end', 79000)} frames_={S(T.end - T.app)} />
     </PhoneFrame>
