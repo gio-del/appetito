@@ -1,5 +1,9 @@
 # Handoff (2026-10-13, end of the first PC session; updated at the end of the second)
 
+## Published (2026-10-14)
+
+https://github.com/gio-del/appetito, public, `main` pushed after the owner's go. All dev issues closed; launch gate 10/10. The owner publishes the LinkedIn post (`dev/launch/post.md`, video `dev/video/out/appetito-launch.mp4`, not in git: rebuild with `tests/e2e/run --scenario video`, `npm run music`, `npm run footage`, `npm run render` in `dev/video`). History backup before the rewrite: `../appetito-history-backup-20261014.bundle`.
+
 ## Owner decisions (2026-10-14) — work autonomously within these
 
 - **arm64**: emulation (qemu) with the limit stated: install, unit tests and services checked under emulation, firewall checks skipped there; README says arm64 is tested under emulation only.

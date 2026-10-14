@@ -5,7 +5,7 @@
 ## Rules for working on this repo
 
 - Repo language is **English** (code, docs, prompts, issues). Talk to the owner in **Italian**.
-- **Nothing is pushed anywhere** until the owner says go. No remote is configured on purpose.
+- **Published** at github.com/gio-del/appetito (2026-10-14, owner's go). Push only when the owner asks; `make check` must be green first (it scans the whole history).
 - **No personal values** (tailnet names, IPs, usernames, Wi-Fi names, device serials, emails) anywhere in the repo. `make check` runs `scripts/check-personal` (hashed denylist) and a secret scanner over the whole history.
 - The owner's `home-server` repo is a **read-only source**: extract and generalize, never modify it, never touch the Edge.
 - Everything runs and is tested in **disposable containers on the PC** (`make e2e`), never on the host system and never on the Edge.
