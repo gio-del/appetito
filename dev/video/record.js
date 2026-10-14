@@ -25,10 +25,15 @@ const mark = (name, extra = {}) => { marks.events.push({ name, t: Date.now() - m
 const PW = 'video-password-not-secret-1';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let goto; // navigate and restart the screencast (set once the browser is up)
+// Disk: ~45 kB a frame. At most one every 33 ms while things happen, one a second while the worker
+// only waits (quota, idle: the live page animates forever), and a hard cap.
+let gap = 33;
+const MAX_FRAMES = 12000;
 
 // The owner's turn: open the handed-over issue, read "For you", do the server part, tick the
 // (HITL) steps one by one, comment, move it back to To do and start it.
 async function ownerTurn(page) {
+	gap = 33;
 	mark('handed');
 	await goto(`${MAIN}/?tab=blocked`);
 	await page.click(`.col.active .card[data-id="${ISSUE}"]`);
@@ -77,10 +82,12 @@ async function ownerTurn(page) {
 		if (old) await old.detach().catch(() => {});
 		const s = await ctx.newCDPSession(page);
 		s.on('Page.screencastFrame', ({ data, sessionId }) => {
+			s.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+			const t = Date.now() - marks.t0;
+			if (frames.length >= MAX_FRAMES || (frames.length && t - frames[frames.length - 1].t < gap)) return;
 			const f = `f${String(frames.length).padStart(5, '0')}.jpg`;
 			fs.writeFileSync(path.join(FR, f), Buffer.from(data, 'base64'));
-			frames.push({ f, t: Date.now() - marks.t0 });
-			s.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+			frames.push({ f, t });
 		});
 		await s.send('Page.startScreencast', { format: 'jpeg', quality: 85, maxWidth: 1080, maxHeight: 2400 });
 		cdp = s;
@@ -119,6 +126,7 @@ async function ownerTurn(page) {
 		const st = await page.evaluate(async () => (await (await fetch('/api/auto')).json()).status);
 		const r = await page.evaluate(async id => { const x = await (await fetch(`/api/issues/${id}`)).json(); return { state: x.state, column: x.column }; }, ISSUE);
 		if (st && st.code === 'deploying' && !marks.events.some(e => e.name === 'deploying')) mark('deploying');
+		gap = ['working', 'deploying'].includes(st?.code) ? 33 : 1000;
 		if (r.state === 'done') { closed = true; break; }
 		if (r.column === 'blocked' && OWNER && !owned && !['working', 'deploying'].includes(st?.code)) {
 			owned = true;
@@ -129,6 +137,7 @@ async function ownerTurn(page) {
 		}
 		await sleep(5000);
 	}
+	gap = 33;
 	mark(closed ? 'closed' : 'timeout');
 	await sleep(4000);
 	// Back to the board: the issue in Done.
