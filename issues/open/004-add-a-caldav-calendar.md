@@ -1,12 +1,12 @@
 # Add a CalDAV calendar (Radicale) wired to the second brain
 
-> Not yet run end to end in appetito's own e2e sandbox (Vaultwarden, #001, is). It should work; if the agent struggles, refine this text.
-
 Opened: 2026-10-13
 Blocked on: -
 Status: backlog
 Priority: medium
 Labels: service, brain
+
+> Not yet run end to end in appetito's own e2e sandbox (Vaultwarden, #001, is). It should work; if the agent struggles, refine this text.
 
 A private calendar and task list that sync to the phone (DAVx⁵ on Android, the built-in Calendar on iOS), and that the second brain fills from notes in the vault's Inbox.
 

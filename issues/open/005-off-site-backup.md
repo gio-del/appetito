@@ -1,12 +1,12 @@
 # Off-site backup of the vault and service data
 
-> Not yet run end to end in appetito's own e2e sandbox (Vaultwarden, #001, is). It should work; if the agent struggles, refine this text.
-
 Opened: 2026-10-13
 Blocked on: -
 Status: backlog
 Priority: high
 Labels: backup, security
+
+> Not yet run end to end in appetito's own e2e sandbox (Vaultwarden, #001, is). It should work; if the agent struggles, refine this text.
 
 If this box dies, nothing important should die with it: the vault and every service's data get an encrypted copy somewhere else.
 
