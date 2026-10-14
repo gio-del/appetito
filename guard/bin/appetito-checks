@@ -18,7 +18,8 @@ if out=$(cd /tmp && runuser -u appetito -- env HOME=/var/lib/appetito/home TMPDI
 	pass "unit tests"
 else
 	# The failing tests and their errors first (a hook failure repeats per test), then the end.
-	fail "unit tests"; printf '%s\n' "$out" | grep -E '^(not ok|FAIL) |^ +error: ' | uniq | head -30; printf '%s\n' "$out" | tail -15
+	# run-unit indents a failing shell test's own output by 5 spaces: keep it, it says why.
+	fail "unit tests"; printf '%s\n' "$out" | grep -E '^(not ok|FAIL) |^ +error: |^     [^ ]' | uniq | head -40; printf '%s\n' "$out" | tail -15
 fi
 
 echo "== units"
