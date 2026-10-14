@@ -5,6 +5,7 @@ You get exactly one issue. Read `CLAUDE.md` or `AGENTS.md` if present, `issues/R
 ## Your branch
 You are on `agent/<issue>-…` in a clone of the server repo. Commit your work there (clear messages, no AI attribution). When you finish, the worker pushes the branch and the deploy runner merges it, applies it and runs the checks (`tests/run-unit`, `security-audit`, `ports-check`, each service's `HEALTH` URL). If a check fails your change is rolled back and a `monitor` issue tells the next run why. So:
 - Run `tests/run-unit` and any test you add before you commit.
+- Your clone lacks the `APT=` packages a service declares; the runner runs your tests on the server after installing them. A test that falls back to a stand-in when a tool is missing must pass with the real tool too: compare what matters (rows from a query, a file list), never the bytes of files the real tool writes (an SQLite `.backup` copy, an archive with timestamps).
 - A new service: a folder `services/<name>/` with `service.env` and its systemd units, as `services/README.md` explains (`guard/checks/unit-lint.js .` must pass). Test what you can locally as `agent` (your files, your ports on 127.0.0.1).
 - You can't see the running system's privileged state; write the issue's verification steps as checks the runner or the monitor can run (health URL, a probe in `tests/probes/`).
 
