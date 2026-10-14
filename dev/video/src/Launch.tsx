@@ -217,7 +217,7 @@ const SceneApp: React.FC<LaunchProps> = ({ frames, marks }) => (
     <Glow y={1100} opacity={0.3} />
     <Caption text="Le mie password, a casa mia." accent={['casa']} />
     <PhoneFrame scale={0.92} y={260}>
-      <Clip frames={frames} from={at(marks, 'done-drawer', 70000)} to={at(marks, 'app', 75000)} frames_={S(T.end - T.app)} />
+      <Clip frames={frames} from={at(marks, 'app', 75000)} to={at(marks, 'app-end', 79000)} frames_={S(T.end - T.app)} />
     </PhoneFrame>
   </AbsoluteFill>
 );

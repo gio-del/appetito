@@ -14,7 +14,7 @@ process.env.APPETITO_SETTINGS_FILE = path.join(T, 'settings.env');
 process.env.APPETITO_ENV_FILE = path.join(T, 'none.env');
 fs.mkdirSync(path.join(VAR, 'worker'), { recursive: true });
 fs.mkdirSync(path.join(VAR, 'deploy', 'branches'), { recursive: true });
-const { queue, gates, issueOnMain } = require('./worker.js');
+const { queue, gates, issueOnMain, refreshLive } = require('./worker.js');
 
 function issue(state, file, fields, body = '') {
 	fs.mkdirSync(path.join(MAIN, 'issues', state), { recursive: true });
@@ -76,5 +76,19 @@ test('issueOnMain: committed and with no tracker edit still waiting for the runn
 	assert.strictEqual(issueOnMain('001-x.md', R), false, 'the owner moved it and the runner has not committed it yet');
 	g('commit', '-qam', 'y');
 	assert.strictEqual(issueOnMain('001-x.md', R), true);
+});
+test('refreshLive: the tracker sees the steps while the agent runs (status.json, not only live.json)', () => {
+	const W = path.join(VAR, 'worker'), out = path.join(T, 'run-out');
+	fs.mkdirSync(path.join(W, 'lock'), { recursive: true });
+	fs.writeFileSync(path.join(W, 'lock', 'pid'), String(process.pid));
+	fs.writeFileSync(path.join(W, 'current.json'), JSON.stringify({ id: '001', run: 'r1', start: 1 }));
+	fs.mkdirSync(out, { recursive: true });
+	fs.writeFileSync(path.join(out, 'transcript.jsonl'), [{ t: 1000, kind: 'tool', category: 'shell', status: 'started' }, { t: 2000, kind: 'tool', category: 'edit', status: 'started' }].map(x => JSON.stringify(x)).join('\n') + '\n');
+	refreshLive('r1', '001', out);
+	const st = JSON.parse(fs.readFileSync(path.join(W, 'status.json'), 'utf8'));
+	assert.strictEqual(st.code, 'working');
+	assert.strictEqual(st.current.live.total, 2);
+	assert.deepStrictEqual(st.current.live.tools, ['shell', 'edit']);
+	fs.rmSync(path.join(W, 'lock'), { recursive: true }); fs.rmSync(path.join(W, 'current.json'));
 });
 test.after(() => fs.rmSync(T, { recursive: true, force: true }));

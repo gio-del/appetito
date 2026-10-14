@@ -238,6 +238,13 @@ function liveOf(out) {
 	return { tools: tools.slice(-80), counts, total: tools.length, denied: recs.filter(r => r.kind === 'denied').length, lastAt: last };
 }
 
+// Every few seconds during a run: the steps so far, and status.json (the only file the tracker
+// reads), so the live page moves while the agent works and not only when it finishes.
+function refreshLive(run, id, out) {
+	writeJson(path.join(ST, 'live.json'), { run, id, ...liveOf(out) });
+	status();
+}
+
 // The tracker writes issues into main's working tree and the deploy runner commits them on its next
 // pass: an issue the owner just wrote or moved may not be in main's history yet, and the agent's
 // clone only sees history. Working on an older version makes the branch conflict with the tracker's
@@ -274,7 +281,7 @@ async function workIssue(pick, attempt, manual) {
 	log(`#${id}: attempt ${attempt}${manual ? ' (manual)' : ''}, run ${run}`);
 	status();
 	const r = await runAgent(['--prompt', prompt, '--system', system, '--dir', WORK, '--profile', 'edit-repo', '--job', 'worker', '--out', out, '--timeout', String(TIMEOUT)],
-		() => { writeJson(path.join(ST, 'live.json'), { run, id, ...liveOf(out) }); });
+		() => refreshLive(run, id, out));
 	const usage = readJson(path.join(out, 'usage.json'), {});
 	const recs = transcript(out);
 	// Usage windows (generic: whatever the backend reports) feed the quota gate.
@@ -488,5 +495,5 @@ async function main() {
 	return round(manual, only);
 }
 
-module.exports = { queue, gates, rounds, nextSlot, issueOnMain };
+module.exports = { queue, gates, rounds, nextSlot, issueOnMain, refreshLive };
 if (require.main === module) main().then(c => process.exit(c || 0), e => { console.error(e.stack || e); try { log(`crash: ${e.message}`); } catch {} process.exit(1); });

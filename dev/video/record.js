@@ -132,8 +132,11 @@ async function ownerTurn(page) {
 	mark('done-drawer');
 	if (APP && closed) {
 		await page.goto(APP);
-		await sleep(5000);
+		await page.waitForSelector('input', { timeout: 60000 }).catch(() => {}); // the web vault's login form, not its spinner
+		await sleep(800);
 		mark('app');
+		await sleep(4000);
+		mark('app-end');
 	}
 	await cdp.send('Page.stopScreencast').catch(() => {});
 	await ctx.close();
