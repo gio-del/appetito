@@ -27,6 +27,8 @@ github.com/gio-del/appetito
 
 p.s. il video se lo è fatto da solo.
 
+🎵 Musica: “Inspired”, Kevin MacLeod (incompetech.com), CC BY 4.0
+
 #selfhosting #opensource #homelab #ai
 
 ---
@@ -54,8 +56,10 @@ github.com/gio-del/appetito
 
 P.S. The video made itself.
 
+🎵 Music: “Inspired”, Kevin MacLeod (incompetech.com), CC BY 4.0
+
 ---
 
 ## Media
-- Video: `dev/video/out/appetito-launch.mp4` (1080×1920, 60 fps, 41 s), composed from a real e2e run (`tests/e2e/run --scenario video`): the agent adds Vaultwarden, hands over the owner's steps, closes it.
+- Video: `dev/video/out/appetito-launch.mp4` (1080×1920, 60 fps, 41 s), composed from a real e2e run (`tests/e2e/run --scenario video`), with music (`npm run music`, CC BY 4.0, credited in the video and the post): the agent adds Vaultwarden, hands over the owner's steps, closes it.
 - Screenshots, frames of the same run (sandbox, never the real system), in `dev/launch/media/`: `1-backlog.jpg` the starter backlog; `2-live.jpg` the live worker page mid-run; `3-for-you.jpg` the owner's (HITL) steps ticked; `4-done.jpg` the issue closed, branch merged.

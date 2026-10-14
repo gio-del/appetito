@@ -6,7 +6,8 @@
     "record": "node record.js",
     "render": "remotion render src/index.ts Launch out/appetito-launch.mp4 --codec=h264 --crf=18",
     "footage": "rm -rf public/frames public/frames.json public/marks.json && cp -r out/footage/frames out/footage/frames.json out/footage/marks.json public/",
-    "still": "remotion still src/index.ts Launch out/still.png"
+    "still": "remotion still src/index.ts Launch out/still.png",
+    "music": "curl -fsSL -o public/music.mp3 https://incompetech.com/music/royalty-free/mp3-royaltyfree/Inspired.mp3"
   },
   "dependencies": {
     "@remotion/cli": "4.0.529",

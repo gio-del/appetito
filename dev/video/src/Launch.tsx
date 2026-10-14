@@ -1,5 +1,5 @@
 import React from 'react';
-import { AbsoluteFill, Easing, Img, interpolate, Sequence, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
+import { AbsoluteFill, Audio, Easing, Img, interpolate, Sequence, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
 
 // appetito launch video, 1080×1920 @ 60 fps, ~41 s. Text carries the story (most people watch muted).
 // Palette = the tracker's: dark #101112, accent #e5623a → #f2a541.
@@ -265,6 +265,7 @@ const SceneEnd: React.FC = () => {
       <div style={{ fontFamily: font, fontSize: 48, color: C.a2, marginTop: 4, opacity: o(24), fontWeight: 600 }}>open source</div>
       <div style={{ fontFamily: font, fontSize: 40, color: C.muted, marginTop: 70, opacity: o(40) }}>github.com/gio-del/appetito</div>
       <div style={{ fontFamily: font, fontSize: 32, color: C.muted, marginTop: 22, opacity: o(56) }}>Claude Code o un modello locale</div>
+      <div style={{ position: 'absolute', bottom: 70, fontFamily: font, fontSize: 22, color: C.muted, opacity: 0.7 * o(56) }}>Musica: “Inspired”, Kevin MacLeod (incompetech.com), CC BY 4.0</div>
     </AbsoluteFill>
   );
 };
@@ -284,6 +285,8 @@ export const Launch: React.FC<LaunchProps> = props => {
   );
   return (
     <AbsoluteFill style={{ background: C.bg }}>
+      {/* Background music (CC BY 4.0, credited on the last scene): `npm run music` fetches it. */}
+      <Audio src={staticFile('music.mp3')} volume={f => 0.45 * interpolate(f, [0, FPS, TOTAL - 2.5 * FPS, TOTAL], [0, 1, 1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })} />
       {seq(T.phone, T.promise, <ScenePhone />)}
       {seq(T.promise, T.ask, <ScenePromise {...props} />)}
       {seq(T.ask, T.work, <SceneAsk {...props} />)}
