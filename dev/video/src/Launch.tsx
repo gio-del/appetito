@@ -1,12 +1,12 @@
 import React from 'react';
 import { AbsoluteFill, Easing, Img, interpolate, Sequence, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
 
-// appetito launch video, 1080×1920 @ 60 fps, ~43 s. Text carries the story (most people watch muted).
+// appetito launch video, 1080×1920 @ 60 fps, ~46 s. Text carries the story (most people watch muted).
 // Palette = the tracker's: dark #101112, accent #e5623a → #f2a541.
 export const FPS = 60;
 const S = (s: number) => Math.round(s * FPS);
 // Scene boundaries (seconds).
-const T = { phone: 0, promise: 4.2, ask: 8.4, work: 14.2, owner: 23.6, done: 29.8, app: 34.6, end: 38.2, total: 43.2 };
+const T = { phone: 0, promise: 4.2, ask: 7.8, work: 12.8, repair: 19.8, owner: 27.3, done: 33.3, app: 38.1, end: 41.7, total: 46.3 };
 export const TOTAL = S(T.total);
 
 type Mark = { name: string; t: number };
@@ -82,11 +82,15 @@ const PhoneFrame: React.FC<{ children: React.ReactNode; scale?: number; y?: numb
   </div>
 );
 
-// The footage between two moments of the recording (seconds), stretched to fill the sequence: at
-// each video frame, the last screencast frame shown at that moment of the recording.
-const Clip: React.FC<{ frames: Frame[]; from: number; to: number; frames_: number }> = ({ frames, from, to, frames_ }) => {
+// The footage between moments of the recording (seconds), stretched to fill the sequence: at each
+// video frame, the last screencast frame shown at that moment. `ranges` strings several cuts together.
+const Clip: React.FC<{ frames: Frame[]; from?: number; to?: number; ranges?: [number, number][]; frames_: number }> = ({ frames, from = 0, to = 0, ranges, frames_ }) => {
   const f = useCurrentFrame();
-  const t = (from + (to - from) * Math.min(1, f / Math.max(1, frames_ - 1))) * 1000;
+  const rs = ranges ?? [[from, to]];
+  let pos = rs.reduce((n, [a, b]) => n + (b - a), 0) * Math.min(1, f / Math.max(1, frames_ - 1));
+  let t = rs[rs.length - 1][1];
+  for (const [a, b] of rs) { if (pos <= b - a) { t = a + pos; break; } pos -= b - a; }
+  t *= 1000;
   let lo = 0, hi = frames.length - 1;
   while (lo < hi) { const m = (lo + hi + 1) >> 1; if (frames[m].t <= t) lo = m; else hi = m - 1; }
   const fr = frames[lo];
@@ -159,8 +163,8 @@ const SceneAsk: React.FC<LaunchProps> = ({ frames, marks }) => {
 
 const SceneWork: React.FC<LaunchProps> = ({ frames, marks }) => {
   const f = useCurrentFrame();
-  const n = S(T.owner - T.work);
-  const from = at(marks, 'live', 12000), to = at(marks, 'handed', from + 180000);
+  const n = S(T.repair - T.work);
+  const from = at(marks, 'live', 12000), to = at(marks, 'rolled-back', at(marks, 'handed', from + 180000));
   const speed = Math.max(1, Math.round((to - from) / (n / FPS)));
   const z = interpolate(f, [0, n], [0.95, 1.06], { easing: Easing.inOut(Easing.sin) });
   return (
@@ -169,6 +173,26 @@ const SceneWork: React.FC<LaunchProps> = ({ frames, marks }) => {
       <Caption text="Lui la fa. Da solo." sub="niente root · test · deploy · rollback se si rompe" accent={['solo']} />
       <PhoneFrame scale={z} y={250}>
         <Clip frames={frames} from={from} to={to} frames_={n} />
+      </PhoneFrame>
+      <Badge text={`×${speed}`} start={S(0.8)} />
+    </AbsoluteFill>
+  );
+};
+
+// A check failed: the change was rolled back, the monitor opened an issue, the agent fixed it.
+const SceneRepair: React.FC<LaunchProps> = ({ frames, marks }) => {
+  const f = useCurrentFrame();
+  const n = S(T.owner - T.repair);
+  const rb = at(marks, 'rolled-back', 0), rs = at(marks, 'repair-start', 0), hd = at(marks, 'handed', 0);
+  const ranges: [number, number][] = [[rb - 2, rb + 6], [rs, hd]];
+  const speed = Math.max(1, Math.round((8 + hd - rs) / (n / FPS)));
+  const z = interpolate(f, [0, n], [0.95, 1.04], { easing: Easing.inOut(Easing.sin) });
+  return (
+    <AbsoluteFill>
+      <Glow y={1100} opacity={0.3} />
+      <Caption text="Se si rompe, torna indietro. E si ripara." sub="test fallito · rollback · issue · riparato" accent={['ripara']} />
+      <PhoneFrame scale={z} y={260}>
+        <Clip frames={frames} ranges={ranges} frames_={n} />
       </PhoneFrame>
       <Badge text={`×${speed}`} start={S(0.8)} />
     </AbsoluteFill>
@@ -252,6 +276,8 @@ const Fade: React.FC<{ children: React.ReactNode; dur: number }> = ({ children, 
   return <AbsoluteFill style={{ opacity: o }}>{children}</AbsoluteFill>;
 };
 
+const marks_has = (p: LaunchProps, n: string) => p.marks.events.some(e => e.name === n);
+
 export const Launch: React.FC<LaunchProps> = props => {
   const seq = (a: number, b: number, el: React.ReactNode, last = false) => (
     <Sequence from={S(a)} durationInFrames={S(b - a)}><Fade dur={last ? S(b - a) + 999 : S(b - a)}>{el}</Fade></Sequence>
@@ -261,7 +287,8 @@ export const Launch: React.FC<LaunchProps> = props => {
       {seq(T.phone, T.promise, <ScenePhone />)}
       {seq(T.promise, T.ask, <ScenePromise {...props} />)}
       {seq(T.ask, T.work, <SceneAsk {...props} />)}
-      {seq(T.work, T.owner, <SceneWork {...props} />)}
+      {seq(T.work, T.repair, <SceneWork {...props} />)}
+      {marks_has(props, 'repair-start') ? seq(T.repair, T.owner, <SceneRepair {...props} />) : null}
       {seq(T.owner, T.done, <SceneOwner {...props} />)}
       {seq(T.done, T.app, <SceneDone {...props} />)}
       {seq(T.app, T.end, <SceneApp {...props} />)}

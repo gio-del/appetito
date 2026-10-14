@@ -155,8 +155,15 @@ async function ownerTurn(page) {
 		await goto(APP);
 		await page.waitForSelector('input', { timeout: 60000 }).catch(() => {}); // the web vault's login form, not its spinner
 		await sleep(800);
+		// The screencast goes quiet on this page (no frame after the navigation), so screenshots here.
 		mark('app');
-		await sleep(4000);
+		const FR = path.join(OUT, 'frames');
+		for (const end = Date.now() + 4500; Date.now() < end && frames.length < MAX_FRAMES;) {
+			const f = `f${String(frames.length).padStart(5, '0')}.jpg`;
+			await page.screenshot({ path: path.join(FR, f), type: 'jpeg', quality: 85 });
+			frames.push({ f, t: Date.now() - marks.t0 });
+			await sleep(60);
+		}
 		mark('app-end');
 	}
 	if (cdp) await cdp.send('Page.stopScreencast').catch(() => {});
