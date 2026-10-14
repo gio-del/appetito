@@ -27,8 +27,6 @@ github.com/gio-del/appetito
 
 p.s. anche il video è stato una issue: l'ha montato un agente con Remotion, partendo da un run vero registrato in una sandbox.
 
-🎵 Musica: “Inspired”, Kevin MacLeod (incompetech.com), CC BY 4.0
-
 #selfhosting #opensource #homelab #ai
 
 ---
@@ -55,8 +53,6 @@ Today I'm open-sourcing it: **appetito**.
 github.com/gio-del/appetito
 
 P.S. The video was an issue too: an agent edited it with Remotion, from a real run recorded in a sandbox.
-
-🎵 Music: “Inspired”, Kevin MacLeod (incompetech.com), CC BY 4.0
 
 ---
 
