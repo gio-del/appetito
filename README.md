@@ -62,6 +62,7 @@ The full threat model, and what appetito does **not** protect against, is in [SE
 - It doesn't promise quality from small local models: they honour the same contract and limits, but closing real issues needs a capable model.
 - It doesn't manage your accounts, DNS, router or payments: those steps become `(HITL)` steps the agent writes for you.
 - It doesn't run on macOS or Windows, or without systemd.
+- arm64 is tested under emulation only (qemu on an amd64 PC): install, services and unit tests, but not the per-user firewall, which qemu can't run. If you try it on a real arm64 board, an issue with what you saw is welcome.
 - It doesn't do multi-user, high availability or anything you'd call production.
 
 ## Running it on an old phone
