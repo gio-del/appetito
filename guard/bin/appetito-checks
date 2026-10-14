@@ -17,7 +17,8 @@ echo "== tests (as appetito)"
 if out=$(cd /tmp && runuser -u appetito -- env HOME=/var/lib/appetito/home TMPDIR=/tmp timeout 900 sh -c "cd '$CUR' && tests/run-unit" 2>&1); then
 	pass "unit tests"
 else
-	fail "unit tests"; printf '%s\n' "$out" | tail -40
+	# The failing tests and their errors first (a hook failure repeats per test), then the end.
+	fail "unit tests"; printf '%s\n' "$out" | grep -E '^(not ok|FAIL) |^ +error: ' | uniq | head -30; printf '%s\n' "$out" | tail -15
 fi
 
 echo "== units"

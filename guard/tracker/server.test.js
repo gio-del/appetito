@@ -50,9 +50,12 @@ test.before(async () => {
       TRACKER_WORKER_STATUS: path.join(T, 'status.json'), TRACKER_WORKER_REQUEST: path.join(T, 'req.json'), TRACKER_DEPLOY: path.join(T, 'deploy'), TRACKER_REQUESTS: path.join(T, 'requests') },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  srv.stderr.on('data', d => process.stderr.write(d));
-  for (let i = 0; i < 50; i++) { try { await fetch(`${MAIN}/healthz`); await fetch(`${CONF}/healthz`); return; } catch { await new Promise(r => setTimeout(r, 100)); } }
-  throw new Error('server did not start');
+  // Up to 30 s: the checks run this on a box that may be busy starting a newly deployed service.
+  let errs = '', exited = null;
+  srv.stderr.on('data', d => { errs += d; process.stderr.write(d); });
+  srv.on('exit', c => { exited = c; });
+  for (let i = 0; i < 300 && exited === null; i++) { try { await fetch(`${MAIN}/healthz`); await fetch(`${CONF}/healthz`); return; } catch { await new Promise(r => setTimeout(r, 100)); } }
+  throw new Error(`server did not start (${exited === null ? 'no answer in 30 s' : `exited ${exited}`}): ${errs.trim().slice(-500) || 'no stderr'}`);
 });
 test.after(() => { srv?.kill(); fs.rmSync(T, { recursive: true, force: true }); });
 
