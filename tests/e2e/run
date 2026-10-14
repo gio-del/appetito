@@ -18,6 +18,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
+BASE_PROBE=debian:trixie
 HOST_ARCH=$(docker info --format '{{.Architecture}}' | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 DISTRO=debian13 ARCH=$HOST_ARCH SCENARIO=smoke BACKEND=claude-code MODEL=${E2E_MODEL:-sonnet} REPEAT=1 KEEP=""
 while [ $# -gt 0 ]; do
@@ -28,6 +29,9 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+if [ "$ARCH" != "$HOST_ARCH" ] && [ "$(docker run --rm --platform "linux/$ARCH" "$BASE_PROBE" uname -m 2>/dev/null)" = "" ]; then
+	echo "no $ARCH emulation in Docker (lost when its VM restarts): docker run --privileged --rm tonistiigi/binfmt:qemu-v8.1.5 --install $ARCH" >&2; exit 2
+fi
 case $DISTRO in debian13) BASE=debian:trixie ;; ubuntu2404) BASE=ubuntu:24.04 ;; *) echo "distro: debian13 or ubuntu2404" >&2; exit 2 ;; esac
 [ "$SCENARIO" = security ] && BACKEND=fake
 IMG=appetito-e2e-$DISTRO-$ARCH
