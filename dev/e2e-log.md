@@ -28,3 +28,4 @@ One line per `make e2e` run (`tests/e2e/run`).
 | 2026-10-14 10:02 | 3df1c8c | debian13 | amd64 | vaultwarden | claude-code (sonnet) | 31 min | pass: agent run 2.5 min, merged, handed with 2 (HITL) steps; owner part played by hand (throwaway age key, no Tailscale), then the agent closed #001 in 18 s; checks green. Harness now plays the owner itself (tests/e2e/owner/001.sh) |
 | 2026-10-14 11:20 | 95b9f8b | debian13 | amd64 | video | claude-code (sonnet) | 6 min | pass |
 | 2026-10-14 11:31 | a8cb503 | debian13 | amd64 | video | claude-code (sonnet) | 7 min | pass |
+| 2026-10-14 11:41 | 2085e17 | debian13 | amd64 | video | claude-code (sonnet) | 6 min | pass |

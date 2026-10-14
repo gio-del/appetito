@@ -24,12 +24,13 @@ const marks = { t0: Date.now(), events: [] };
 const mark = (name, extra = {}) => { marks.events.push({ name, t: Date.now() - marks.t0, ...extra }); fs.writeFileSync(path.join(OUT, 'marks.json'), JSON.stringify(marks, null, 1)); console.log(`${((Date.now() - marks.t0) / 1000).toFixed(1)}s ${name}`); };
 const PW = 'video-password-not-secret-1';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+let goto; // navigate and restart the screencast (set once the browser is up)
 
 // The owner's turn: open the handed-over issue, read "For you", do the server part, tick the
 // (HITL) steps one by one, comment, move it back to To do and start it.
 async function ownerTurn(page) {
 	mark('handed');
-	await page.goto(`${MAIN}/?tab=blocked`);
+	await goto(`${MAIN}/?tab=blocked`);
 	await page.click(`.col.active .card[data-id="${ISSUE}"]`);
 	await page.waitForSelector('#d-title');
 	await sleep(2000);
@@ -68,18 +69,26 @@ async function ownerTurn(page) {
 	// phone's real resolution. Restarted after each navigation (a new origin is a new renderer).
 	const FR = path.join(OUT, 'frames'); fs.mkdirSync(FR, { recursive: true });
 	const frames = [];
-	const cdp = await ctx.newCDPSession(page);
-	cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
-		const f = `f${String(frames.length).padStart(5, '0')}.jpg`;
-		fs.writeFileSync(path.join(FR, f), Buffer.from(data, 'base64'));
-		frames.push({ f, t: Date.now() - marks.t0 });
-		cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
-	});
-	const cast = () => cdp.send('Page.startScreencast', { format: 'jpeg', quality: 85, maxWidth: 1080, maxHeight: 2400 }).catch(() => {});
-	page.on('load', cast);
+	let cdp = null;
+	// A new CDP session each time: a cross-origin navigation moves the page to a new renderer and
+	// the old session's screencast silently stops.
+	const cast = async () => {
+		const old = cdp; cdp = null;
+		if (old) await old.detach().catch(() => {});
+		const s = await ctx.newCDPSession(page);
+		s.on('Page.screencastFrame', ({ data, sessionId }) => {
+			const f = `f${String(frames.length).padStart(5, '0')}.jpg`;
+			fs.writeFileSync(path.join(FR, f), Buffer.from(data, 'base64'));
+			frames.push({ f, t: Date.now() - marks.t0 });
+			s.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+		});
+		await s.send('Page.startScreencast', { format: 'jpeg', quality: 85, maxWidth: 1080, maxHeight: 2400 });
+		cdp = s;
+	};
+	goto = async url => { await page.goto(url); await cast(); };
 	await cast();
 	// Sign in once (setup link), off camera time-wise: the composition cuts it.
-	await page.goto(`${CONF}/setup?token=${SETUP}`);
+	await goto(`${CONF}/setup?token=${SETUP}`);
 	await page.fill('input[name=password]', PW);
 	await page.fill('input[name=password2]', PW);
 	await Promise.all([page.waitForURL(`${MAIN}/**`), page.click('button[type=submit]')]);
@@ -101,7 +110,7 @@ async function ownerTurn(page) {
 	await sleep(1500);
 	mark('started');
 	// The live page for the whole run.
-	await page.goto(`${MAIN}/auto.html`);
+	await goto(`${MAIN}/auto.html`);
 	await page.waitForSelector('.au-hero');
 	mark('live');
 	const end = Date.now() + TIMEOUT * 1000;
@@ -114,7 +123,7 @@ async function ownerTurn(page) {
 		if (r.column === 'blocked' && OWNER && !owned && !['working', 'deploying'].includes(st?.code)) {
 			owned = true;
 			await ownerTurn(page);
-			await page.goto(`${MAIN}/auto.html`);
+			await goto(`${MAIN}/auto.html`);
 			await page.waitForSelector('.au-hero');
 			mark('live-again');
 		}
@@ -123,7 +132,7 @@ async function ownerTurn(page) {
 	mark(closed ? 'closed' : 'timeout');
 	await sleep(4000);
 	// Back to the board: the issue in Done.
-	await page.goto(`${MAIN}/?tab=done`);
+	await goto(`${MAIN}/?tab=done`);
 	await page.waitForSelector(`.col.active .card[data-id="${ISSUE}"]`);
 	await sleep(1500);
 	await page.click(`.col.active .card[data-id="${ISSUE}"]`);
@@ -131,14 +140,14 @@ async function ownerTurn(page) {
 	await sleep(3000);
 	mark('done-drawer');
 	if (APP && closed) {
-		await page.goto(APP);
+		await goto(APP);
 		await page.waitForSelector('input', { timeout: 60000 }).catch(() => {}); // the web vault's login form, not its spinner
 		await sleep(800);
 		mark('app');
 		await sleep(4000);
 		mark('app-end');
 	}
-	await cdp.send('Page.stopScreencast').catch(() => {});
+	if (cdp) await cdp.send('Page.stopScreencast').catch(() => {});
 	await ctx.close();
 	await browser.close();
 	fs.writeFileSync(path.join(OUT, 'frames.json'), JSON.stringify(frames));
