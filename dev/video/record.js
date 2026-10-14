@@ -6,7 +6,8 @@
 // the Remotion composition picks frames by time and time-lapses.
 //
 //   node record.js --main http://127.0.0.1:18080 --confirm http://127.0.0.1:18081 --setup TOKEN
-//                  [--issue 001] [--app http://127.0.0.1:18222] [--timeout 3600] [--owner 'CMD']
+//                  [--issue 001] [--app http://127.0.0.1:18222] [--timeout 3600] [--owner 'CMD'] [--tick 'CMD']
+// --tick CMD starts the worker's next round when it sits idle (the e2e doesn't wait for :07/:37).
 // When the agent hands the issue over (Blocked on: user, (HITL) steps), --owner CMD runs on the PC
 // (the owner's part on the server; prints the owner's comment) and the phone ticks the steps,
 // comments, moves the issue back to To do and starts it again: the owner's turn is part of the film.
@@ -16,7 +17,7 @@ const path = require('node:path');
 
 const arg = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ? process.argv[i + 1] : d; };
 const MAIN = arg('main'), CONF = arg('confirm'), SETUP = arg('setup'), ISSUE = arg('issue', '001');
-const APP = arg('app', ''), TIMEOUT = Number(arg('timeout', '3600')), OWNER = arg('owner', '');
+const APP = arg('app', ''), TIMEOUT = Number(arg('timeout', '3600')), OWNER = arg('owner', ''), TICK = arg('tick', '');
 const { execSync } = require('node:child_process');
 const OUT = path.join(__dirname, 'out', 'footage');
 fs.mkdirSync(OUT, { recursive: true });
@@ -127,6 +128,8 @@ async function ownerTurn(page) {
 		const r = await page.evaluate(async id => { const x = await (await fetch(`/api/issues/${id}`)).json(); return { state: x.state, column: x.column }; }, ISSUE);
 		if (st && st.code === 'deploying' && !marks.events.some(e => e.name === 'deploying')) mark('deploying');
 		gap = ['working', 'deploying'].includes(st?.code) ? 33 : 1000;
+		// The worker timer's next slot (:07/:37), now: after a rollback the monitor issue is waiting.
+		if (st?.code === 'idle' && TICK) { try { execSync(TICK); } catch {} }
 		if (r.state === 'done') { closed = true; break; }
 		if (r.column === 'blocked' && OWNER && !owned && !['working', 'deploying'].includes(st?.code)) {
 			owned = true;

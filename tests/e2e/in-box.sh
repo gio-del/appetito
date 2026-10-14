@@ -32,7 +32,9 @@ wait-closed) # wait-closed ID TIMEOUT_S: closed on main and its branch merged (e
 		if ls /opt/appetito/repo/issues/done/"$id"-*.md >/dev/null 2>&1; then echo "closed"; exit 0; fi
 		s=$(api GET /api/auto 2>/dev/null | jq -r '.status.code // "?"' 2>/dev/null || echo '?')
 		case $s in working|deploying) ;; *)
-			if grep -E '^Blocked on: user' /opt/appetito/repo/issues/open/"$id"-*.md >/dev/null 2>&1; then echo "handed to the owner"; exit 3; fi ;;
+			if grep -E '^Blocked on: user' /opt/appetito/repo/issues/open/"$id"-*.md >/dev/null 2>&1; then echo "handed to the owner"; exit 3; fi
+			# The timer's next slot (:07/:37), now: a rollback's monitor issue or a retry is waiting.
+			[ "$s" = idle ] && systemctl start --no-block appetito-worker.service ;;
 		esac
 		d=$(cat /var/lib/appetito/deploy/branches/agent_"$id"-*.json 2>/dev/null | jq -r .state 2>/dev/null | tail -1 || true)
 		now="worker=$s deploy=${d:-none}"

@@ -147,7 +147,7 @@ scenario_video() { # TIMEOUT: the launch video's footage (dev/video/record.js): 
 	tok=$(grep -o 'setup?token=[A-Za-z0-9_-]*' "$OUT/install.log" | tail -1 | cut -d= -f2)
 	log "recording: the owner moves #001 to To do on the phone; Start now"
 	(cd dev/video && node record.js --main http://127.0.0.1:18080 --confirm http://127.0.0.1:18081 --setup "$tok" --issue 001 \
-		--app http://127.0.0.1:18222 --timeout "$1" --owner "docker exec $NAME sh /root/owner-001.sh") 2>&1 | tee -a "$OUT/run.log"
+		--app http://127.0.0.1:18222 --timeout "$1" --owner "docker exec $NAME sh /root/owner-001.sh" --tick "docker exec $NAME systemctl start --no-block appetito-worker.service") 2>&1 | tee -a "$OUT/run.log"
 	local rc=${PIPESTATUS[0]}
 	kill "$fwd" 2>/dev/null || true
 	[ "$rc" = 0 ] && scenario_smoke
