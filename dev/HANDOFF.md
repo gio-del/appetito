@@ -34,7 +34,7 @@ Read first: `CLAUDE.md`, `docs/PRD.md` (§10 launch gate, §11 autonomy rules), 
 | 2 | Debian 13 + Ubuntu 24.04, amd64 + arm64 | **Green on amd64** (both distros, many runs). arm64: owner decision, emulation only: install + unit tests pass, services not verified under qemu (README says so). |
 | 3 | security-audit + tests (a)-(d) | **Green** (Debian, Ubuntu). |
 | 4 | Claude Code e2e; Ollama honours the contract | **Green**: contract ok for claude-code and openai/Ollama (dev 003 closed). |
-| 5 | Secret scan + personal values, whole history | Tree clean; history has the known false positive → dev 019, right before the go (owner allowed it, with a bundle backup). |
+| 5 | Secret scan + personal values, whole history | **Green**: history rewritten 2026-10-14 (bundle backup next to the repo); `make check` 0 hits, no leaks. |
 | 6 | README | **Done**, with `docs/media/demo.gif` from the video. |
 | 7 | Starter issues; Vaultwarden closed by the agent | **Done** (owner: only Vaultwarden proven; 002-005 marked untested). |
 | 8 | SECURITY.md | Done. |
