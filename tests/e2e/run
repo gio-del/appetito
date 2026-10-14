@@ -57,7 +57,7 @@ one_run() {
 	PORTS="-p 127.0.0.1::8080 -p 127.0.0.1::8081"
 	[ "$SCENARIO" != video ] || PORTS="-p 127.0.0.1:18080:18080 -p 127.0.0.1:18081:18081 -p 127.0.0.1:18222:18222"
 	docker run -d --name "$NAME" --platform "linux/$ARCH" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-		--tmpfs /run --tmpfs /run/lock --hostname appetito-box $PORTS "$IMG" >/dev/null
+		--tmpfs /run --tmpfs /run/lock --hostname appetito-box $PORTS "$IMG" >/dev/null || { log "FAIL the box didn't start"; result fail "$(date +%s)" "box didn't start"; return 1; }
 	trap '[ -n "$KEEP" ] || docker rm -f "$NAME" >/dev/null 2>&1 || true' RETURN
 	for _ in $(seq 1 60); do inbox systemctl is-system-running 2>/dev/null | grep -E 'running|degraded' >/dev/null && break; sleep 1; done
 	# A stranger's clone: the current commit, nothing else.
