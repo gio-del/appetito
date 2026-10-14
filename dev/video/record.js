@@ -5,20 +5,58 @@
 // the Remotion composition time-lapses.
 //
 //   node record.js --main http://127.0.0.1:18080 --confirm http://127.0.0.1:18081 --setup TOKEN
-//                  [--issue 001] [--app http://127.0.0.1:18222] [--timeout 3600]
+//                  [--issue 001] [--app http://127.0.0.1:18222] [--timeout 3600] [--owner 'CMD']
+// When the agent hands the issue over (Blocked on: user, (HITL) steps), --owner CMD runs on the PC
+// (the owner's part on the server; prints the owner's comment) and the phone ticks the steps,
+// comments, moves the issue back to To do and starts it again: the owner's turn is part of the film.
 const { chromium, devices } = require('playwright');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const arg = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i > 0 ? process.argv[i + 1] : d; };
 const MAIN = arg('main'), CONF = arg('confirm'), SETUP = arg('setup'), ISSUE = arg('issue', '001');
-const APP = arg('app', ''), TIMEOUT = Number(arg('timeout', '3600'));
+const APP = arg('app', ''), TIMEOUT = Number(arg('timeout', '3600')), OWNER = arg('owner', '');
+const { execSync } = require('node:child_process');
 const OUT = path.join(__dirname, 'out', 'footage');
 fs.mkdirSync(OUT, { recursive: true });
 const marks = { t0: Date.now(), events: [] };
 const mark = (name, extra = {}) => { marks.events.push({ name, t: Date.now() - marks.t0, ...extra }); fs.writeFileSync(path.join(OUT, 'marks.json'), JSON.stringify(marks, null, 1)); console.log(`${((Date.now() - marks.t0) / 1000).toFixed(1)}s ${name}`); };
 const PW = 'video-password-not-secret-1';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// The owner's turn: open the handed-over issue, read "For you", do the server part, tick the
+// (HITL) steps one by one, comment, move it back to To do and start it.
+async function ownerTurn(page) {
+	mark('handed');
+	await page.goto(`${MAIN}/?tab=blocked`);
+	await page.click(`.col.active .card[data-id="${ISSUE}"]`);
+	await page.waitForSelector('#d-title');
+	await sleep(2000);
+	const forYou = page.locator('.md :is(h2, h3, h4)', { hasText: 'For you' }).last();
+	if (await forYou.count()) { await forYou.scrollIntoViewIfNeeded(); await sleep(3000); }
+	mark('for-you');
+	const comment = execSync(OWNER, { encoding: 'utf8' }).trim();
+	for (let i = 0; i < 10; i++) {
+		const step = page.locator('li.task:not(.done)', { hasText: '(HITL)' }).first();
+		if (!await step.count()) break;
+		await step.scrollIntoViewIfNeeded();
+		await step.locator('input[type=checkbox]').click();
+		await sleep(1500);
+	}
+	mark('ticked');
+	const box = page.locator('textarea').last();
+	await box.scrollIntoViewIfNeeded();
+	await box.pressSequentially(comment, { delay: 15 });
+	await box.press('Control+Enter');
+	await sleep(2000);
+	mark('commented');
+	await page.locator('#d-title').scrollIntoViewIfNeeded();
+	await page.selectOption('.props select >> nth=0', 'todo');
+	await sleep(1500);
+	await page.click('.auto-go');
+	await sleep(1500);
+	mark('restarted');
+}
 
 (async () => {
 	const browser = await chromium.launch();
@@ -53,12 +91,19 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 	await page.waitForSelector('.au-hero');
 	mark('live');
 	const end = Date.now() + TIMEOUT * 1000;
-	let closed = false;
+	let closed = false, owned = false;
 	while (Date.now() < end) {
 		const st = await page.evaluate(async () => (await (await fetch('/api/auto')).json()).status);
 		const r = await page.evaluate(async id => { const x = await (await fetch(`/api/issues/${id}`)).json(); return { state: x.state, column: x.column }; }, ISSUE);
 		if (st && st.code === 'deploying' && !marks.events.some(e => e.name === 'deploying')) mark('deploying');
 		if (r.state === 'done') { closed = true; break; }
+		if (r.column === 'blocked' && OWNER && !owned && !['working', 'deploying'].includes(st?.code)) {
+			owned = true;
+			await ownerTurn(page);
+			await page.goto(`${MAIN}/auto.html`);
+			await page.waitForSelector('.au-hero');
+			mark('live-again');
+		}
 		await sleep(5000);
 	}
 	mark(closed ? 'closed' : 'timeout');
