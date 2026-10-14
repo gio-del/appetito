@@ -2,7 +2,7 @@
 
 ## Published (2026-10-14)
 
-https://github.com/gio-del/appetito, public, `main` pushed after the owner's go. All dev issues closed; launch gate 10/10. The owner publishes the LinkedIn post (`dev/launch/post.md`, video `dev/video/out/appetito-launch.mp4`, not in git: rebuild with `tests/e2e/run --scenario video`, `npm run music`, `npm run footage`, `npm run render` in `dev/video`). History backup before the rewrite: `../appetito-history-backup-20261014.bundle`.
+https://github.com/gio-del/appetito, public, `main` pushed after the owner's go. All dev issues closed; launch gate 10/10. The owner publishes the LinkedIn post (`dev/launch/post.md`, video `dev/video/out/appetito-launch.mp4`, not in git: rebuild with `tests/e2e/run --scenario video`, `npm run music`, `npm run footage`, `npm run render` in `dev/video`). The pre-rewrite history bundle was deleted by the owner on 2026-10-14.
 
 ## Owner decisions (2026-10-14) — work autonomously within these
 
@@ -38,7 +38,7 @@ Read first: `CLAUDE.md`, `docs/PRD.md` (§10 launch gate, §11 autonomy rules), 
 | 2 | Debian 13 + Ubuntu 24.04, amd64 + arm64 | **Green on amd64** (both distros, many runs). arm64: owner decision, emulation only: install + unit tests pass, services not verified under qemu (README says so). |
 | 3 | security-audit + tests (a)-(d) | **Green** (Debian, Ubuntu). |
 | 4 | Claude Code e2e; Ollama honours the contract | **Green**: contract ok for claude-code and openai/Ollama (dev 003 closed). |
-| 5 | Secret scan + personal values, whole history | **Green**: history rewritten 2026-10-14 (bundle backup next to the repo); `make check` 0 hits, no leaks. |
+| 5 | Secret scan + personal values, whole history | **Green**: history rewritten 2026-10-14 (backup bundle since deleted); `make check` 0 hits, no leaks. |
 | 6 | README | **Done**, with `docs/media/demo.gif` from the video. |
 | 7 | Starter issues; Vaultwarden closed by the agent | **Done** (owner: only Vaultwarden proven; 002-005 marked untested). |
 | 8 | SECURITY.md | Done. |
