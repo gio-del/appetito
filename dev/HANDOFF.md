@@ -1,5 +1,12 @@
 # Handoff (2026-10-13, end of the first PC session; updated at the end of the second)
 
+## Third session (2026-10-14, morning) in short
+
+- Disk freed with the owner (19 GB free). arm64 binfmt installed in Docker Desktop (`tonistiigi/binfmt:qemu-v8.1.5 --install arm64`; lost when the VM restarts).
+- **Vaultwarden closed by the agent** (gate 7): the worker fix held (no conflict); a flaky tracker test (5 s server start) rolled back one deploy — fixed (30 s, reports why); the issue was handed with (HITL) steps, the harness now plays the owner (`tests/e2e/owner/001.sh`, `in-box.sh owner-done`) and the agent then closed it.
+- Ubuntu 24.04 amd64 security PASS. **arm64 can't be proven under qemu**: no netfilter Netlink (`nft`: Protocol not supported), installs take 14 min. Owner to choose: real arm64 hardware (not the Edge), a cloud arm64 VM, or emulation with the firewall checks skipped and the limit stated.
+- Next: video run (step 6) = the full uninterrupted vaultwarden run with the owner turn; first-issue on Ubuntu (gate 2, uses quota).
+
 ## Second session (2026-10-13, evening) in short
 
 - Fixed: the brain firewall flake (`| grep -q` under pipefail; lint now refuses it). First-issue 3/3 green on Debian 13 amd64. Brain e2e scenario added and green (dev issue 009 closed). Ollama contract green (`tests/contract/ollama.sh`).
@@ -49,7 +56,7 @@ Dev issues closed: 001, 002, 006, 007, 008, 011, 016. Open: 003 (agent-run: Olla
 ## Next steps, in order
 
 1. Fix the brain firewall check; rerun `tests/e2e/run --scenario first-issue --repeat 3` until 3 consecutive PASS; close 005/012 partially.
-2. `tests/e2e/run --scenario vaultwarden` (timeout 3600); iterate on starter issue 001's text if the agent struggles (gate 7).
+2. ~~Vaultwarden~~ closed by the agent (gate 7 core). Left in dev issue 014: the other four starter issues in the sandbox.
 3. Ubuntu 24.04 amd64, then arm64 for both distros (`--arch arm64`, slow: emulated).
 4. ~~Brain e2e~~ done: `--scenario brain` PASS, dev issue 009 closed.
 5. ~~Ollama contract~~ green via `tests/contract/ollama.sh`. Left for 003: `tests/contract/agent-run.sh claude-code` once (quota).

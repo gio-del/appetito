@@ -26,11 +26,14 @@ start) # start [ID]
 	api POST /api/auto/run "$b" | jq -c . ;;
 status)
 	api GET /api/auto | jq -c '.status | {code, current: (.current.id // null), queue: .queueTotal, gates: {quotaUntil: .gates.quotaUntil, budget: .gates.budget}}' ;;
-wait-closed) # wait-closed ID TIMEOUT_S: closed on main and its branch merged
+wait-closed) # wait-closed ID TIMEOUT_S: closed on main and its branch merged (exit 0); handed to the owner (exit 3)
 	id=$2 end=$(( $(date +%s) + $3 )) last=""
 	while [ "$(date +%s)" -lt "$end" ]; do
 		if ls /opt/appetito/repo/issues/done/"$id"-*.md >/dev/null 2>&1; then echo "closed"; exit 0; fi
 		s=$(api GET /api/auto 2>/dev/null | jq -r '.status.code // "?"' 2>/dev/null || echo '?')
+		case $s in working|deploying) ;; *)
+			if grep -E '^Blocked on: user' /opt/appetito/repo/issues/open/"$id"-*.md >/dev/null 2>&1; then echo "handed to the owner"; exit 3; fi ;;
+		esac
 		d=$(cat /var/lib/appetito/deploy/branches/agent_"$id"-*.json 2>/dev/null | jq -r .state 2>/dev/null | tail -1 || true)
 		now="worker=$s deploy=${d:-none}"
 		[ "$now" = "$last" ] || { echo "$(date +%T) $now"; last=$now; }
@@ -38,6 +41,10 @@ wait-closed) # wait-closed ID TIMEOUT_S: closed on main and its branch merged
 		sleep 10
 	done
 	echo "timeout"; exit 1 ;;
+owner-done) # owner-done ID COMMENT: the owner did the (HITL) steps: ticks them, comments, moves to To do
+	j=$(api GET "/api/issues/$2")
+	jq -n --argjson i "$j" --arg c "$3" '{version: $i.version, desc: ($i.desc | gsub("(?m)^(?<a>\\s*[-*]) \\[ \\] \\(HITL\\)"; "\(.a) [x] (HITL)")), comment: $c, column: "todo"}' > /tmp/body.json
+	api PATCH "/api/issues/$2" "$(cat /tmp/body.json)" | jq -r '"#\(.id) → \(.column), steps \(.tasks.done)/\(.tasks.total)"' ;;
 brain-note) # brain-note FILE: the owner's phone syncs a note into the vault's Inbox; the sort job runs
 	install -o brain -g brain -m 640 "$2" "/var/lib/appetito/brain/vault/Inbox/$(basename "$2")"
 	systemctl start --no-block appetito-brain-sort.service; echo "note in Inbox" ;;

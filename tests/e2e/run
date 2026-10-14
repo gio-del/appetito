@@ -113,7 +113,17 @@ scenario_starter() { # ID TIMEOUT
 	inbox /root/in-box.sh move "$1" todo | tee -a "$OUT/run.log"
 	inbox /root/in-box.sh start "$1" | tee -a "$OUT/run.log"
 	inbox /root/in-box.sh wait-closed "$1" "$2" 2>&1 | tee -a "$OUT/run.log"
-	[ "${PIPESTATUS[0]}" = 0 ] && scenario_smoke
+	local rc=${PIPESTATUS[0]} c
+	if [ "$rc" = 3 ] && [ -f "tests/e2e/owner/$1.sh" ]; then # the owner does the (HITL) steps, once
+		docker cp "tests/e2e/owner/$1.sh" "$NAME:/root/owner-$1.sh" >/dev/null
+		c=$(inbox sh "/root/owner-$1.sh") || return 1
+		log "owner did the (HITL) steps of #$1: $c"
+		inbox /root/in-box.sh owner-done "$1" "$c" | tee -a "$OUT/run.log"
+		inbox /root/in-box.sh start "$1" | tee -a "$OUT/run.log"
+		inbox /root/in-box.sh wait-closed "$1" "$2" 2>&1 | tee -a "$OUT/run.log"
+		rc=${PIPESTATUS[0]}
+	fi
+	[ "$rc" = 0 ] && scenario_smoke
 }
 scenario_brain() { # NOTE_FILE TIMEOUT
 	docker cp "$1" "$NAME:/root/$(basename "$1")" >/dev/null
