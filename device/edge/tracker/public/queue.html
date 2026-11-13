@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101112">
+<title>Strategia della coda</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="queue.js" defer></script>
+</head>
+<body>
+<main class="pa qs">
+  <p class="muted small"><a href="/auto.html">← Sviluppo automatico</a></p>
+  <h1>Strategia della coda</h1>
+  <p class="muted small">Come il lavoro automatico sceglie la prossima issue fra home-server e i Projects. Le issue con CI rossa e gli errori rilevati restano sempre in testa. Vale dal prossimo giro.</p>
+  <form id="qs-form" hidden>
+    <fieldset class="qs-box"><legend>Strategia</legend><div id="qs-strategies"></div></fieldset>
+    <label class="qs-line"><input type="checkbox" id="qs-urgent"><span><b>Urgenti prima</b><small class="muted">Una issue urgent di qualunque fonte passa davanti alla rotazione.</small></span></label>
+    <fieldset class="qs-box"><legend>Fonti</legend><div id="qs-sources"></div></fieldset>
+    <div class="qs-box"><div class="qs-h">Anteprima delle prossime voci <span id="qs-total" class="muted small"></span></div><ol id="qs-preview" class="qs-prev"></ol></div>
+    <div class="st-actions"><button class="btn primary" type="submit">Salva</button><span id="qs-ok" class="pa-ok" role="status"></span></div>
+  </form>
+  <p id="qs-msg" class="err" role="alert"></p>
+</main>
+</body>
+</html>

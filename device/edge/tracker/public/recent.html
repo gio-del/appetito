@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101112">
+<title>Cosa è successo</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="recent.js" defer></script>
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand"><img src="icon.svg" alt="" width="20" height="20"><span>Cosa è successo</span></div>
+    <div class="actions"><a class="auto-pill" href="/" title="Torna alla board"><span class="lbl">Board</span><span aria-hidden="true">←</span></a></div>
+  </header>
+  <main class="pj-main">
+    <p class="muted small">Ultimi 7 giorni: issue chiuse, proposte scartate ed esito dei deploy. Sola lettura.</p>
+    <div id="rc-list"></div>
+    <p id="rc-msg" class="muted small" role="status"></p>
+  </main>
+</div>
+</body>
+</html>

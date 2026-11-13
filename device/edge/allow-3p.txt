@@ -1,0 +1,6 @@
+# Third-party apps allowed on the Edge; anything else installed is removed by
+# debloat-watchdog.sh. Add an app here (and re-run the installer) BEFORE installing it.
+com.topjohnwu.magisk
+com.termux
+com.termux.boot
+com.tailscale.ipn

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Deterministic checks on the staged files (issues 127, 355): syntax, shellcheck errors, issue lint, tests naming them.
+# Commits that touch only issues/ (issues-autocommit, the tracker) skip it. Installed by the deploy
+# with `git config core.hooksPath device/edge/git-hooks`. Emergency bypass: git commit --no-verify.
+files=$(git diff --cached --name-only --diff-filter=ACMR -- . ':!issues')
+[ -n "$files" ] || exit 0
+# shellcheck disable=SC2086 # repo paths have no spaces
+exec "$(git rev-parse --show-toplevel)/device/edge/check" --changed $files

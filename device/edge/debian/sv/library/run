@@ -1,0 +1,20 @@
+#!/bin/sh
+exec 2>&1
+# library, the app of the Gateway Project "library" (issues 191, 194; installed by library-setup):
+# unprivileged user library, no capabilities, on 127.0.0.1:3006 behind Caddy (https://$HS_TS_HOST:8447).
+# /etc/library.env holds AUTH_USER and AUTH_PASSWORD (the server does not start without a password).
+set -a; . /etc/home-server.env; . /etc/library.env
+# Optional Google Books key (issue 386, root:library 640, outside the repo); without it the source stays off.
+[ -r /etc/hs-secrets/library.env ] && . /etc/hs-secrets/library.env
+set +a
+L=/var/lib/library
+export HOME=$L PATH=/usr/local/bin:/usr/bin:/bin LISTEN_HOST=127.0.0.1 PORT=3006 DATA_DIR=$L
+cd "$L"
+# Cover reading (issue 316, library#60) only when Claude Code is installed for this user; the app
+# invokes it with fixed flags (--strict-mcp-config, --tools Read), no MCP, no web.
+if [ -x $L/.local/bin/claude ]; then
+	mkdir -p $L/.cache/claude-tmp
+	export CLAUDE_BIN=$L/.local/bin/claude CLAUDE_CODE_TMPDIR=$L/.cache/claude-tmp
+fi
+exec setpriv --reuid=library --regid=library --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all \
+	/usr/local/bin/node /opt/library/server.js

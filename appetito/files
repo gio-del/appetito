@@ -1,0 +1,56 @@
+# Elenco dei file pubblici di Appetito (issue 485, epic 476).
+# Un file è pubblico solo se una riga qui sotto lo nomina; tutto il resto resta privato
+# (issues/, docs/, DIREZIONE.md, README.md, CLAUDE.md, cloudflare/, public-site/, device/watch/ ...).
+#
+# Formato, una voce per riga:
+#   percorso        un file tracciato da git
+#   cartella/       tutti i file tracciati sotto la cartella
+#   modello*        schema con * (come `case` di sh: * vale anche per /)
+#   !voce           esclude quello che le voci precedenti hanno incluso
+# Righe vuote e righe con # iniziale sono ignorate. Una voce positiva che non trova nessun file
+# è un errore (elenco rimasto indietro). Solo file nella classe G di docs/appetito-inventario.md:
+# i gruppi R (#508, #509, #510) entrano quando sono resi generali.
+
+# Installazione e verifica
+device/edge/deploy
+device/edge/check
+device/edge/render-schedule
+device/edge/projects-check
+device/edge/install*.sh
+device/edge/brain-fw.sh
+device/edge/studio-fw.sh
+device/edge/debloat-watchdog.sh
+device/edge/allow-3p.txt
+device/edge/home-server.env.example
+device/edge/debian/projects.example
+device/edge/git-hooks/
+
+# Servizi runit
+device/edge/debian/sv/
+
+# Tracker e dashboard
+device/edge/tracker/
+
+# Test (ops-auto-log.sh usa un percorso personale come dato: R-1)
+device/edge/tests/
+!device/edge/tests/ops-auto-log.sh
+!device/edge/tests/appetito-check.sh
+!device/edge/tests/hs-secrets.sh
+!device/edge/tests/hs-protect-guard.sh
+
+# Policy della tailnet (solo il modello)
+tailscale/policy.template.hujson
+tailscale/render-policy
+
+# Strumenti
+scripts/security-audit
+scripts/restore-backup
+scripts/appetito-build
+scripts/appetito-propose
+scripts/appetito-check
+appetito/files
+appetito/private
+
+# Configurazione dell'agente e git
+.claude/settings.json
+.gitignore

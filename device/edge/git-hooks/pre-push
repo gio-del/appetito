@@ -1,0 +1,23 @@
+#!/bin/sh
+# Refuse a push carrying Claude/AI attribution (issues 202, 474): commit messages, Claude/Anthropic authors and
+# committers of the commits the remote doesn't have yet, branch names. Old history already on the remote is not
+# re-checked (it is reported by the issue, not blocked here).
+. "$(dirname "$0")/attribution-common.sh"
+z=0000000000000000000000000000000000000000
+input=$(cat)
+rc=0
+while read -r lref lsha rref rsha; do
+	[ -n "$lsha" ] && [ "$lsha" != "$z" ] || continue
+	if ! out=$(printf '%s\n' "${rref#refs/heads/}" | "$A" ident); then echo "push rifiutato (issue 474), ramo $rref: $out" >&2; rc=1; fi
+	set -- "$lsha" --not --remotes
+	[ "$rsha" != "$z" ] && git cat-file -e "$rsha" 2> /dev/null && set -- "$@" "$rsha"
+	if ! out=$("$A" commits "$@"); then echo "push rifiutato (issue 474): $out" >&2; rc=1; fi
+	# secrets and personal values in the same commits (issue 529); the message says where, never the value
+	[ -n "$SEC" ] || { echo "hs-secrets non trovato: push bloccato (issue 529)" >&2; exit 1; }
+	out=$($SEC history . "$@" 2>&1 | grep -v '^INFO') || true
+	if [ -n "$out" ]; then echo "push rifiutato (issue 529): $out" >&2; rc=1; fi
+done <<IN
+$input
+IN
+[ $rc = 0 ] || exit 1
+printf '%s\n' "$input" | chain pre-push "$@"

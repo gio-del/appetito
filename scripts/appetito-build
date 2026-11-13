@@ -1,0 +1,71 @@
+#!/bin/sh
+# Appetito: copia filtrata di home-server (issue 485, epic 476).
+# Copia nella cartella di lavoro OUT i soli file tracciati e nell'elenco, dal commit HEAD di REPO
+# (mai il working tree, mai file gitignored), e fa UN commit per pubblicazione nella storia di OUT.
+# La storia di REPO non entra mai in OUT. Non pubblica: il push e' un'altra issue (#489).
+# Uso: scripts/appetito-build (OUT | --files)  [--repo REPO] [--list FILE] [--message TESTO] [--env FILE]...
+# Prima del commit esegue scripts/appetito-check (valori personali, segreti, attribuzione): se trova qualcosa esce 1.
+# Esce 0 anche se non c'e' nulla di nuovo (nessun commit). Elenco: appetito/files.
+set -eu
+repo=$(cd "$(dirname "$0")/.." && pwd); list=''; out=''; msg=''
+envs=''
+show=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --repo) repo=$2; shift 2 ;;
+    --list) list=$2; shift 2 ;;
+    --message) msg=$2; shift 2 ;;
+    --files) show=1; shift ;;
+    --env) envs="$envs --env $2"; shift 2 ;;
+    -*) echo "opzione sconosciuta: $1" >&2; exit 2 ;;
+    *) [ -z "$out" ] || { echo "una sola cartella di lavoro" >&2; exit 2; }; out=$1; shift ;;
+  esac
+done
+[ -n "$out" ] || [ "$show" = 1 ] || { echo "uso: appetito-build OUT [--repo REPO] [--list FILE] [--message TESTO] [--env FILE]..." >&2; exit 2; }
+[ -n "$list" ] || list=$repo/appetito/files
+# L'elenco si legge dal commit HEAD, come i file: una modifica non committata non pubblica nulla.
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+if [ "${list#"$repo"/}" != "$list" ] && git -C "$repo" cat-file -e "HEAD:${list#"$repo"/}" 2>/dev/null; then
+  git -C "$repo" show "HEAD:${list#"$repo"/}" > "$tmp/list"
+else
+  cp "$list" "$tmp/list"
+fi
+git -C "$repo" ls-tree -r --name-only HEAD > "$tmp/all"
+: > "$tmp/sel"; rc=0
+while IFS= read -r line || [ -n "$line" ]; do
+  case $line in ''|'#'*) continue ;; esac
+  neg=0; pat=$line
+  case $pat in '!'*) neg=1; pat=${pat#!} ;; esac
+  case $pat in */) glob="$pat*" ;; *) glob=$pat ;; esac
+  : > "$tmp/m"
+  while IFS= read -r f; do
+    # shellcheck disable=SC2254
+    case $f in $glob) printf '%s\n' "$f" >> "$tmp/m" ;; esac
+  done < "$tmp/all"
+  if [ "$neg" = 1 ]; then
+    grep -vxFf "$tmp/m" "$tmp/sel" > "$tmp/sel2" || true; mv "$tmp/sel2" "$tmp/sel"
+  else
+    [ -s "$tmp/m" ] || { echo "voce senza file: $line" >&2; rc=1; }
+    cat "$tmp/m" >> "$tmp/sel"
+  fi
+done < "$tmp/list"
+[ "$rc" = 0 ] || exit 1
+sort -u "$tmp/sel" > "$tmp/files"
+[ -s "$tmp/files" ] || { echo "elenco vuoto: niente da pubblicare" >&2; exit 1; }
+# --files: stampa i file selezionati ed esce (usato da appetito-propose), senza copiare nulla.
+[ "$show" = 0 ] || { cat "$tmp/files"; exit 0; }
+
+mkdir -p "$out"
+[ -d "$out/.git" ] || git -C "$out" init -q -b main
+# Svuota la copia (tranne .git) e riscrive solo i file dell'elenco.
+find "$out" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+xargs -d '\n' git -C "$repo" archive HEAD -- < "$tmp/files" | tar -x --no-same-owner -C "$out"
+# Controllo prima della pubblicazione (#486): se trova qualcosa la copia non viene committata.
+# shellcheck disable=SC2086
+sh "$(dirname "$0")/appetito-check" "$out" $envs || { echo "pubblicazione bloccata dal controllo" >&2; exit 1; }
+git -C "$out" add -A
+if git -C "$out" diff --cached --quiet; then echo "nessuna modifica: nessun commit"; exit 0; fi
+[ -n "$msg" ] || msg="Pubblicazione $(date +%Y-%m-%d)"
+git -C "$out" -c user.name="${APPETITO_AUTHOR_NAME:-Appetito}" -c user.email="${APPETITO_AUTHOR_EMAIL:-appetito@localhost}" \
+  commit -q -m "$msg"
+echo "commit $(git -C "$out" rev-parse --short HEAD): $(wc -l < "$tmp/files") file"

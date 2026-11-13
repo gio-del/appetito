@@ -1,0 +1,271 @@
+#!/bin/sh
+# Deploy the repo's chroot config to the server: locally when run on the server itself
+# (the normal case: Claude Code on the Edge), over SSH when run from the PC.
+# Personal values come from device/edge/home-server.env (gitignored; template:
+# home-server.env.example), installed as /etc/home-server.env. Idempotent; restarts
+# only services whose files changed. Usage: device/edge/deploy [--skip-tests] [ssh-host, PC only]
+set -eu
+HERE=$(cd "$(dirname "$0")" && pwd)
+D=$HERE/debian
+ENVF=$HERE/home-server.env
+[ -s "$ENVF" ] || { echo "missing $ENVF (copy home-server.env.example)" >&2; exit 1; }
+. "$ENVF"
+# Deterministic checks first (issue 127): syntax, shellcheck errors, tests. --skip-tests only for
+# emergencies, and it is logged. Also points git at the versioned hooks (pre-commit runs check --fast).
+SKIP=""
+[ "${1:-}" = --skip-tests ] && { SKIP=1; shift; }
+HOST=${1:-$HS_TS_NAME}
+# Security enabled (issue 512): the agent has no sudo, so a separate worker deploys for it and returns to the
+# previous version when the verification fails (deploy-request/deploy-worker). Off, or on the PC: as ever.
+if [ -z "${HS_DEPLOY_WORKER:-}" ] && [ -f /etc/home-server.env ] && command -v hs-security-enabled >/dev/null && hs-security-enabled; then
+	exec "$HERE/deploy-request" ${SKIP:+--skip-tests}
+fi
+# Absolute path: a relative one breaks pre-receive, which runs inside the .git folder (issue 474).
+[ -n "${HS_DEPLOY_ROLLBACK:-}" ] || git -C "$HERE/../.." config core.hooksPath "$HERE/git-hooks"
+# One line per outcome (issue 128, counted by ops-suggest-signals as sig-deploy-failed):
+# "DATE TIME ok", "DATE TIME failed check" (stopped before installing) or "DATE TIME failed install", each failed
+# one with a fixed short reason after a colon (issue 279): "failed check: syntax|shellcheck|lint|test:NAME.sh|step:<first FAIL words>|nofail",
+# "failed install: projects|caddy|sshd|other". Older lines without a reason stay valid.
+STAGE=""; PHASE=check; REASON=other
+trap 'rc=$?; [ -z "$STAGE" ] || rm -rf "$STAGE"
+	{ mkdir -p "$HOME/.local/state" && echo "$(date "+%F %T") $([ "$rc" = 0 ] && echo ok || echo "failed $PHASE: $REASON")" >> "$HOME/.local/state/deploy.log"; tail -n 500 "$HOME/.local/state/deploy.log" > /var/lib/edge-status/deploy.log 2>/dev/null; } || true
+	exit "$rc"' EXIT
+if [ -n "${HS_DEPLOY_ROLLBACK:-}" ]; then
+	echo "deploy: returning to the previous version, checks not repeated" >&2
+elif [ -n "$SKIP" ]; then
+	mkdir -p "$HOME/.local/state" && echo "$(date "+%F %T") deploy --skip-tests" >> "$HOME/.local/state/deploy-skip-tests.log"
+	echo "deploy: checks skipped (--skip-tests), logged in ~/.local/state/deploy-skip-tests.log" >&2
+else
+	CK=$(mktemp)
+	"$HERE/check" > "$CK" 2>&1 && ck=0 || ck=$?
+	cat "$CK"
+	if [ "$ck" != 0 ]; then
+		# First "FAIL ..." line of check -> fixed reason (no log text).
+		REASON=$(sed -n 's/^FAIL //p' "$CK" | head -1 | sed -e 's/^shellcheck.*/shellcheck/' -e 's/^issues-lint.*/lint/' \
+			-e 's#^test .*/\([A-Za-z0-9._-]*\)$#test:\1#' -e 's/^\(sh -n\|bash -n\|node --check\|jq\) .*/syntax/')
+		case $REASON in syntax|shellcheck|lint|test:*) ;; *) REASON=$(printf "%s" "$REASON" | tr -c "A-Za-z0-9._-" "_" | cut -c1-34); [ -n "$REASON" ] && REASON=step:$REASON || REASON=nofail ;; esac
+		rm -f "$CK"; echo "deploy stopped: check failed, nothing installed" >&2; exit 1
+	fi
+	rm -f "$CK"
+fi
+PHASE=install
+STAGE=$(mktemp -d)
+REASON=stage
+"$HERE/projects-check" "$D/projects" || { REASON=projects; echo "deploy stopped: Projects list refused, nothing installed" >&2; exit 1; }
+
+mkdir -p "$STAGE/questions" "$STAGE/sv" "$STAGE/bin" "$STAGE/sbin" "$STAGE/lbin" "$STAGE/brain" "$STAGE/sumisura" "$STAGE/gateway"
+cp -r "$HERE/tracker" "$STAGE/tracker"
+cp "$ENVF" "$STAGE/home-server.env"
+cp "$D/Caddyfile" "$D/projects" "$D/cron.d-home-server" "$D/crontab-user" "$D/crontab-brain" "$D/bash_aliases" "$D/phone-apps" "$STAGE/"
+sed "s/@HS_USER@/$HS_USER/g" "$D/sshd-home-server.conf" > "$STAGE/sshd-home-server.conf"
+cp -r "$D"/sv/* "$STAGE/sv/"
+cp "$D/sv-log-run" "$STAGE/sv-log-run"
+mkdir -p "$STAGE/ntfy"; cp "$D"/ntfy/* "$STAGE/ntfy/"
+mkdir -p "$STAGE/mail"; cp "$D"/mail/* "$STAGE/mail/"
+mkdir -p "$STAGE/studio"; cp "$D"/studio/* "$STAGE/studio/"
+REASON=schedule
+# "#@" lines of the cron files -> catalog and categories of the dashboard (the deploy fails on a job without one).
+HS_USER="$HS_USER" "$HERE/render-schedule" --json "$D/crontab-user" "$D/crontab-brain" "$D/cron.d-home-server" > "$STAGE/hs-jobs.json"
+HS_USER="$HS_USER" "$HERE/render-schedule" --schedule "$D/crontab-user" "$D/crontab-brain" "$D/cron.d-home-server" > "$STAGE/schedule.json"
+REASON=stage
+cp "$D/jobs-status" "$D/projects-issues-sync" "$D/projects-issue-apply" "$D/projects-publish-pending" "$D/projects-ci-watch" "$D/release-gate" "$D/owner-notify" "$D/app-upgrade" "$D/edge-watch" "$D/dashboard-stats" "$D/disk-eta" "$D/issues-autocommit" "$D/rotate-secrets" "$D/phone-apps-check" "$D/hs-monitor" "$D/ops-auto" "$D/ops-auto-model" "$D/ops-auto-card" "$D/ops-auto-log" "$D/ops-auto-request" "$D/proposals-card" \
+	"$D/ops-suggest" "$D/ops-suggest-index" "$D/ops-suggest-signals" "$D/attriti-signals" "$D/attriti" "$D/attriti-card" "$D/issues-triage" "$D/gateway-sync" "$D/claude-usage" "$D/check-nightly" "$D/ai-run" "$D/ai-api" "$D/ai-delegate" "$D/questions-suggest" "$D/questions-recheck" "$D/questions-recheck-ai" "$D/ops-refresh" "$STAGE/bin/"
+cp "$D/tls-renew" "$D/caddy-reload" "$D/vaultwarden-backup" "$D/radicale-backup" "$D/library-backup" "$D/sumisura-backup" "$D/state-backup" "$D/repo-backup" "$D/vaultwarden-fetch" "$D/hs-skill-fetch" \
+	"$D/apt-autoupdate" "$D/restart-stale" "$D/restart-tailscaled" "$D/update-apps" "$D/hs-advisories" "$D/claude-update-all" "$D/brain-refresh" "$D/backup-all" "$D/sessions-refresh" "$D/log-trim-system" "$D/android-sh" \
+	"$D/tracker-setup" "$D/tracker-passwd" "$D/brain-setup" "$D/radicale-setup" "$D/owners-check" "$D/ports-check" "$D/ssh-login-watch" "$D/uptime-kuma-install" "$D/sumisura-setup" "$D/library-setup" "$D/ntfy-setup" "$D/mail-setup" "$D/mail-fetch" "$D/mail-send" "$D/mail-digest" "$D/sumisura-vault" "$D/sumisura-tailor" "$D/hs-docs-fetch" "$D/hs-scanner-fetch" "$D/project-run" "$D/project-tools" "$D/project-cd" "$D/apps-idle" "$D/studio-setup" "$D/studio-vault" "$D/studio-app-setup" "$D/studio-backup" "$D/studio-autocommit" "$D/studio-calendar-sync" "$D/studio-leetcode" "$D/studio-week" "$D/deploy-worker" "$STAGE/sbin/"
+cp "$D/hs-run" "$D/hs-notify" "$D/hs-runlog" "$D/hs-setting" "$D/hs-security-enabled" "$D/vault-autocommit" "$D/brain-sort" "$D/brain-digest" "$D/brain-cal" "$D/brain-propose" "$D/mail-inbox-move" "$D/issues-housekeep" "$D/issues-lint" "$D/issues-next-id" "$D/issues-similar" "$D/issues-new" "$D/issues-context" "$D/gateway-projects" "$D/projects-publish" "$D/hs-attribution" "$D/hs-secrets" "$D/projects-git" "$D/project-worktree" "$D/project-issue-body" "$D/brain-usage" "$D/log-trim" "$D/ai-run" "$D/ai-api" "$D/ai-delegate" "$D/sumisura-fetch-url" "$STAGE/lbin/"
+cp "$D"/brain/* "$STAGE/brain/"
+cp "$D"/questions/* "$STAGE/questions/"
+cp "$D"/sumisura/* "$STAGE/sumisura/"
+cp "$D"/gateway/* "$STAGE/gateway/"
+mkdir -p "$STAGE/git-hooks"
+cp "$HERE/git-hooks/attribution-common.sh" "$HERE/git-hooks/commit-msg" "$HERE/git-hooks/pre-push" "$HERE/git-hooks/pre-receive" "$STAGE/git-hooks/"
+cp -r "$D/tasks-web" "$STAGE/tasks-web"
+cp -r "$D/dashboard-web" "$STAGE/dashboard-web"
+mkdir -p "$STAGE/radicale"
+cp "$D/radicale/config" "$STAGE/radicale/"
+sed "s/@HS_USER@/$HS_USER/g" "$D/radicale/rights" > "$STAGE/radicale/rights"
+cp "$D/policy-rc.d" "$D/apt-unattended.conf" "$D/hs-docs.list" "$STAGE/"
+
+REMOTE='set -eu
+at() { echo "deploy-step: $1" >&2; }
+S=$(mktemp -d); trap "rm -rf $S" EXIT; tar -C "$S" -xf -
+# Optional services (issue 230), decided here where /etc/hs-service is: the Caddy site only while enabled
+# (the dashboard card comes from health.json).
+[ -e /etc/hs-service/ntfy ] && cat "$S/ntfy/Caddyfile" >> "$S/Caddyfile"
+changed=""
+# put SRC DEST MODE OWNER [service-to-restart]
+put() {
+	if ! sudo cmp -s "$1" "$2" 2>/dev/null; then
+		sudo install -D -m "$3" -o "${4%:*}" -g "${4#*:}" "$1" "$2"
+		echo "updated $2"; [ -n "${5:-}" ] && changed="$changed $5"
+	fi
+	return 0
+}
+# prune SRC DEST [service]: delete what DEST (a directory only the deploy fills) holds and SRC does
+# not (issue 084), so a file dropped from the repo stops being served. DEST is fixed by this script.
+prune() {
+	case $2 in /opt/hs-tracker|/usr/local/share/tasks-web|/usr/local/share/dashboard-web) ;; *) echo "prune: refusing $2" >&2; exit 1 ;; esac
+	sudo find "$2" -mindepth 1 ! -type d -printf "%P\n" > "$S/prune.list"
+	while IFS= read -r f; do
+		[ -n "$f" ] && [ -f "$1/$f" ] && continue
+		sudo rm -f -- "$2/$f"; echo "removed stale $2/$f"
+		if [ -n "${3:-}" ]; then changed="$changed $3"; fi
+	done < "$S/prune.list"
+	sudo find "$2" -mindepth 1 -type d -empty -delete
+}
+# Same for the Caddyfile and the sshd config (issue 095): a broken file would leave Caddy restarting in a
+# loop (every site down) or sshd unable to start at the next boot. Checked in staging, as root (the
+# certs are caddy-only), with {$HS_*} from the staged env and Caddy storage inside $S.
+if command -v caddy >/dev/null; then
+	mkdir -p "$S/caddyhome"
+	out=$(sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME="$S/caddyhome" XDG_DATA_HOME="$S/caddyhome" XDG_CONFIG_HOME="$S/caddyhome" \
+		sh -c "set -a; . \"$S/home-server.env\"; set +a; caddy validate --config \"$S/Caddyfile\" --adapter caddyfile" 2>&1) \
+		|| { printf "%s\n" "$out" | grep -v "^{\"level\":\"info\"" | sed "s/^/Caddyfile: /" >&2
+			echo "deploy stopped: invalid Caddyfile, nothing installed" >&2; exit 1; }
+fi
+# sshd: a copy of sshd_config whose Include of sshd_config.d lists the other files plus the staged one.
+inc=""; for f in /etc/ssh/sshd_config.d/*.conf; do
+	[ -e "$f" ] && [ "$f" != /etc/ssh/sshd_config.d/home-server.conf ] && inc="$inc $f"; done
+inc="$inc $S/sshd-home-server.conf"
+if grep -q "^Include /etc/ssh/sshd_config.d/" /etc/ssh/sshd_config; then
+	sed "s#^Include /etc/ssh/sshd_config.d/.*#Include$inc#" /etc/ssh/sshd_config > "$S/sshd_test"
+else { echo "Include$inc"; cat /etc/ssh/sshd_config; } > "$S/sshd_test"; fi
+out=$(sudo sshd -t -f "$S/sshd_test" 2>&1) \
+	|| { printf "%s\n" "$out" | sed "s/^/sshd-home-server.conf: /" >&2
+		echo "deploy stopped: invalid sshd config, nothing installed" >&2; exit 1; }
+at install-files
+put "$S/home-server.env" /etc/home-server.env 644 root:root "caddyconf syncthing vaultwarden tracker"
+put "$S/Caddyfile" /etc/caddy/Caddyfile 644 root:root caddyconf
+put "$S/projects" /etc/hs-projects 644 root:root
+put "$S/hs-jobs.json" /etc/hs-jobs.json 644 root:root
+put "$S/schedule.json" /var/lib/edge-status/schedule.json 644 root:root
+put "$S/cron.d-home-server" /etc/cron.d/home-server 644 root:root
+put "$S/policy-rc.d" /usr/sbin/policy-rc.d 755 root:root
+put "$S/apt-unattended.conf" /etc/apt/apt.conf.d/52home-server-unattended 644 root:root
+put "$S/sshd-home-server.conf" /etc/ssh/sshd_config.d/home-server.conf 644 root:root sshd
+for f in "$S"/sv/*/run; do n=$(basename "$(dirname "$f")"); put "$f" "/etc/hs-sv/$n/run" 755 root:root "$n"; done
+# Service output -> /var/log/hs/<name> (issue 031; tailscaled keeps its own log file). runsv only
+# notices a new log/ dir when it starts: "newlog" makes it restart (sv exit, runsvdir respawns it).
+for f in "$S"/sv/*/run; do n=$(basename "$(dirname "$f")"); [ "$n" = tailscaled ] && continue
+	if [ -e "/etc/hs-sv/$n/log/run" ]; then put "$S/sv-log-run" "/etc/hs-sv/$n/log/run" 755 root:root "log:$n"
+	else put "$S/sv-log-run" "/etc/hs-sv/$n/log/run" 755 root:root "newlog:$n"; fi; done
+for f in "$S"/bin/*; do put "$f" "$HOME/bin/$(basename "$f")" 755 "$(id -un):$(id -gn)"; done
+for f in "$S"/sbin/*; do put "$f" "/usr/local/sbin/$(basename "$f")" 755 root:root; done
+for f in "$S"/lbin/*; do put "$f" "/usr/local/bin/$(basename "$f")" 755 root:root; done
+# Security enabled (issue 512): the deploy worker must be running for the agent to be able to deploy.
+/usr/local/bin/hs-security-enabled && [ ! -e /etc/hs-service/deploy-worker ] && { sudo ln -s /etc/hs-sv/deploy-worker /etc/hs-service/deploy-worker; echo "enabled deploy-worker"; }
+# claude-usage as a root-owned module for brain-usage, which brain runs (issue 130).
+put "$S/bin/claude-usage" /usr/local/lib/hs/claude-usage.js 644 root:root
+install -d "$HOME/projects"  # as $HS_USER: put would create it as root
+# No Claude/AI attribution in commits and PRs from any session of $HS_USER, whatever the cwd (issue 202): only
+# attribution.commit/pr are set in the user settings, the rest of the file (autoMode, ...) is kept.
+install -d -m 700 "$HOME/.claude"
+S_CL=$HOME/.claude/settings.json; [ -s "$S_CL" ] || echo "{}" > "$S_CL"
+jq -e ".attribution.commit == \"\" and .attribution.pr == \"\"" "$S_CL" > /dev/null 2>&1 || {
+	jq ".attribution = ((.attribution // {}) + {commit: \"\", pr: \"\"})" "$S_CL" > "$S_CL.new" && chmod --reference="$S_CL" "$S_CL.new" && mv "$S_CL.new" "$S_CL"; echo "claude settings: attribution off"; }
+for f in "$S"/gateway/*; do put "$f" "$HOME/projects/$(basename "$f")" 644 "$(id -un):$(id -gn)"; done
+# Attribution hooks for every repo of the server (issue 474): system-wide core.hooksPath. Repos that turn hooks off on
+# purpose (vault-autocommit, studio-autocommit) pass -c core.hooksPath=/dev/null; home-server sets its own path.
+for f in "$S"/git-hooks/*; do put "$f" "/usr/local/share/hs-git-hooks/$(basename "$f")" 755 root:root; done
+sudo git config --system core.hooksPath /usr/local/share/hs-git-hooks
+# Claude Code hook: blocks Bash commands that would commit/push AI attribution, in every session of $HS_USER.
+jq -e "[.hooks.PreToolUse[]?.hooks[]?.command] | index(\"/usr/local/bin/hs-attribution claude-hook\")" "$S_CL" > /dev/null 2>&1 || {
+	jq ".hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{matcher: \"Bash\", hooks: [{type: \"command\", command: \"/usr/local/bin/hs-attribution claude-hook\"}]}])" "$S_CL" > "$S_CL.new" && chmod --reference="$S_CL" "$S_CL.new" && mv "$S_CL.new" "$S_CL"; echo "claude settings: attribution hook"; }
+for f in "$S"/brain/*; do put "$f" "/usr/local/share/brain/$(basename "$f")" 644 root:root; done
+for f in "$S"/questions/*; do put "$f" "/usr/local/share/questions/$(basename "$f")" 644 root:root; done
+for f in "$S"/sumisura/*; do put "$f" "/usr/local/share/sumisura/$(basename "$f")" 644 root:root; done
+# Issue tracker app (read-only for its service user) and its user/permissions/password.
+for f in $(cd "$S/tracker" && find . -type f); do put "$S/tracker/$f" "/opt/hs-tracker/${f#./}" 644 root:root tracker; done
+prune "$S/tracker" /opt/hs-tracker tracker
+# tailscaled under runit (issue 006): one-time switch from the unsupervised daemon.
+[ -e /etc/hs-service/tailscaled ] || { sudo /usr/local/sbin/restart-tailscaled; echo "moved tailscaled under runit"
+	changed=$(echo " $changed " | sed "s/ tailscaled / /"); }
+at tracker-setup; sudo /usr/local/sbin/tracker-setup
+/usr/local/bin/issues-housekeep "$HOME/home-server" || true
+# Failure events from hs-run (any user drops, only the hs-monitor of HS_USER lists them; issue 021).
+[ -d /var/lib/hs-events ] || { sudo install -d -m 1733 -o "$(id -un)" -g "$(id -gn)" /var/lib/hs-events; echo "created /var/lib/hs-events"; }
+# Last result of each job (hs-run writes, jobs-status reads; issue 224). Same mode as hs-events.
+[ -d /var/lib/hs-jobs ] || { sudo install -d -m 1733 -o "$(id -un)" -g "$(id -gn)" /var/lib/hs-jobs; echo "created /var/lib/hs-jobs"; }
+# Second brain: user brain, shared vault, its Claude Code and crontab (sorting job, autocommit).
+at owners-check; sudo /usr/local/sbin/owners-check
+at brain-setup; sudo /usr/local/sbin/brain-setup
+# Study session (issue 448): no-op unless enabled with studio-setup --enable; its firewall is install-studio-fw.sh.
+for f in "$S"/studio/*; do put "$f" "/usr/local/share/studio/$(basename "$f")" 644 root:root; done
+at studio-setup; sudo /usr/local/sbin/studio-setup
+# CalDAV: package, users/passwords, calendars (after brain-setup: brain gets an account).
+for f in config rights; do put "$S/radicale/$f" "/etc/radicale/$f" 644 root:root radicale; done
+at radicale-setup; sudo /usr/local/sbin/radicale-setup
+# Tasks/calendar web app (issue 019): static files that Caddy serves on the Radicale site under /app/.
+for f in "$S"/tasks-web/*; do put "$f" "/usr/local/share/tasks-web/$(basename "$f")" 644 root:root; done
+prune "$S/tasks-web" /usr/local/share/tasks-web
+# Static dashboard (issue 109): installed now, served by Caddy once its sites switch over (next step).
+for f in "$S"/dashboard-web/*; do put "$f" "/usr/local/share/dashboard-web/$(basename "$f")" 644 root:root; done
+prune "$S/dashboard-web" /usr/local/share/dashboard-web
+# Gateway (issue 018): ~/projects with one folder per Project of /etc/hs-projects, then the apps.
+at gateway-sync; "$HOME/bin/gateway-sync"
+at sumisura-setup; sudo /usr/local/sbin/sumisura-setup
+at library-setup; sudo /usr/local/sbin/library-setup
+# Study app (issue 461): no-op unless /etc/hs-projects lists studio with the service studio-app (and studio-setup --enable ran).
+at studio-app-setup; sudo /usr/local/sbin/studio-app-setup
+# Study folder in the vault (issue 491): no-op unless the studio service is enabled.
+at studio-vault; sudo /usr/local/sbin/studio-vault
+# ntfy (issue 230): no-op unless enabled with ntfy-setup --enable; then pin, config and users.
+at ntfy-setup; sudo /usr/local/sbin/ntfy-setup
+# Mail bridge (issue 015): no-op unless enabled with mail-setup --enable (after tracker-setup and brain-setup: their groups).
+put "$S/mail/edge-mail.gs" /usr/local/share/mail/edge-mail.gs 644 root:root
+put "$S/mail/mail-import.js" /usr/local/lib/hs/mail-import.js 644 root:root
+put "$S/mail/mail-call.sh" /usr/local/lib/hs/mail-call.sh 644 root:root
+at mail-setup; sudo /usr/local/sbin/mail-setup
+# Docs/changelogs of the installed versions (issue 125): no-op unless a version or the list changed.
+put "$S/hs-docs.list" /etc/hs-docs.list 644 root:root
+at hs-docs-fetch; sudo /usr/local/sbin/hs-docs-fetch || echo "hs-docs-fetch FAILED: local docs not updated"
+# Design skill for every UI change (issue 499): pinned commit + sha256, no-op when already installed; linked for the interactive session.
+at hs-skill-fetch; if sudo /usr/local/sbin/hs-skill-fetch; then mkdir -p "$HOME/.claude/skills" && ln -sfn /usr/local/share/hs-skills/ui-ux-pro-max "$HOME/.claude/skills/ui-ux-pro-max"; else echo "hs-skill-fetch FAILED: design skill not updated"; fi
+# Secrets scanner gitleaks (issue 529): pinned version + sha256, read-only in /usr/local/lib/hs, no-op when installed.
+at hs-scanner-fetch; sudo /usr/local/sbin/hs-scanner-fetch || echo "hs-scanner-fetch FAILED: secrets scanner not installed"
+sudo crontab -u brain -l 2>/dev/null | cmp -s - "$S/crontab-brain" || { sudo crontab -u brain "$S/crontab-brain"; echo "updated brain crontab"; }
+cmp -s "$S/bash_aliases" "$HOME/.bash_aliases" 2>/dev/null || { install -m 644 "$S/bash_aliases" "$HOME/.bash_aliases"; echo "updated ~/.bash_aliases"; }
+cmp -s "$S/phone-apps" "$HOME/.config/phone-apps" 2>/dev/null ||
+	{ install -D -m 644 "$S/phone-apps" "$HOME/.config/phone-apps"; echo "updated ~/.config/phone-apps"; "$HOME/bin/phone-apps-check" || true; }
+crontab -l 2>/dev/null | cmp -s - "$S/crontab-user" || { crontab "$S/crontab-user"; echo "updated crontab"; }
+# shellcheck for device/edge/check (issue 127; check skips it where it is missing, e.g. the PC).
+at shellcheck; command -v shellcheck >/dev/null || { sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends shellcheck >/dev/null; echo "installed shellcheck"; }
+# The server must reach its own HTTPS name (e.g. bw CLI -> Vaultwarden) via localhost:
+# public DNS gives no usable answer and userspace tailscaled cannot loop back to its own IP.
+. /etc/home-server.env
+grep -Eq "^127\.0\.0\.1[[:space:]]+$HS_TS_HOST\$" /etc/hosts ||
+	{ printf "127.0.0.1\t%s\n" "$HS_TS_HOST" | sudo tee -a /etc/hosts >/dev/null; echo "updated /etc/hosts"; }
+
+at restart
+for n in $(printf "%s\n" $changed | sort -u); do
+	case $n in
+	sshd) sudo sshd -t && sudo pkill -HUP -x sshd && echo "reloaded sshd" ;;
+	log:*) [ -e "/etc/hs-service/${n#log:}" ] && sudo sv restart "/etc/hs-service/${n#log:}/log" >/dev/null && echo "restarted ${n#log:} logger" ;;
+	newlog:*) [ -e "/etc/hs-service/${n#newlog:}" ] && sudo sv exit "/etc/hs-service/${n#newlog:}" >/dev/null && echo "restarted runsv of ${n#newlog:} (logger added)" ;;
+	# Caddyfile/env change -> reload; run-file change ("caddy") -> full restart instead.
+	caddyconf) printf "%s\n" $changed | grep -qx caddy && continue
+		[ -e /etc/hs-service/caddy ] && { sudo /usr/local/sbin/caddy-reload >/dev/null 2>&1 && echo "reloaded caddy" || { sudo sv restart /etc/hs-service/caddy >/dev/null; echo "restarted caddy (reload failed)"; }; } ;;
+	*) [ -e "/etc/hs-service/$n" ] && sudo sv restart "/etc/hs-service/$n" >/dev/null && echo "restarted $n" ;;
+	esac
+done
+at ports-check; sudo /usr/local/sbin/ports-check
+echo "deploy done"'
+# Remote stderr goes to a file first so the reason of a stop can be logged (issue 279), then is shown.
+run() {
+	if [ -f /etc/home-server.env ]; then
+		# Running on the server itself (Claude Code/SSH on the Edge): apply locally.
+		tar -C "$STAGE" -cf - . | sh -c "$REMOTE"
+	else
+		tar -C "$STAGE" -cf - . | ssh "$HOST" "$REMOTE"
+	fi
+}
+run 2> "$STAGE/err" && rc=0 || rc=$?
+grep -v "^deploy-step: " "$STAGE/err" >&2 || true
+if [ "$rc" != 0 ]; then
+	step=$(sed -n "s/^deploy-step: //p" "$STAGE/err" | tail -1)
+	[ -z "$step" ] || REASON=$step
+	if grep -q "invalid Caddyfile" "$STAGE/err"; then REASON=caddy
+	elif grep -q "invalid sshd config" "$STAGE/err"; then REASON=sshd; fi
+	exit "$rc"
+fi

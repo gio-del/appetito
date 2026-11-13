@@ -1,0 +1,11 @@
+#!/bin/sh
+exec 2>&1
+# ntfy, push notifications (issue 230; optional service, installed and enabled by `ntfy-setup --enable`):
+# unprivileged user ntfy, no capabilities, on 127.0.0.1:3007 behind Caddy (https://$HS_TS_HOST:8448).
+# Config /etc/ntfy/server.yml (rendered by ntfy-setup): deny-all by default, every client signs in.
+set -a; . /etc/home-server.env; set +a
+L=/var/lib/ntfy
+export HOME=$L PATH=/usr/local/bin:/usr/bin:/bin
+cd "$L"
+exec setpriv --reuid=ntfy --regid=ntfy --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all \
+	/opt/ntfy/ntfy serve -c /etc/ntfy/server.yml

@@ -1,0 +1,10 @@
+{
+  "name": "Issue home-server",
+  "short_name": "Issue",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#101112",
+  "theme_color": "#101112",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

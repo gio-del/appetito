@@ -1,0 +1,51 @@
+// Tailscale policy for home-server. Render with tailscale/render-policy (fills ${HS_*}
+// from device/edge/home-server.env into tailscale/policy.hujson, gitignored), then paste
+// it in https://login.tailscale.com/admin/acls/file and tag the server `tag:server`
+// (Machines -> server -> Edit ACL tags). The `tests` make the console refuse any future
+// edit that reopens a closed port.
+//
+// tailscaled on the server runs in userspace mode and forwards every allowed port to
+// 127.0.0.1, so THIS file is the server's tailnet firewall: anything not granted here
+// is unreachable from the tailnet, even if a service listens on it.
+{
+	"tagOwners": {"tag:server": ["autogroup:admin"]},
+	"hosts": {
+		"admin-pc": "${HS_PC_TS_IP}",
+		"phone":    "${HS_PHONE_TS_IP}",
+	},
+	"grants": [
+		// Personal devices talk to each other as before.
+		{"src": ["autogroup:member"], "dst": ["autogroup:member"], "ip": ["*"]},
+		// Port ranges are pre-opened so a new HTTPS site needs no edit here: only Caddy may listen
+		// in 8440-8459 (device/edge/debian/ports-check, run by every deploy, warns otherwise).
+		// Every device: dashboard (80 redirects to 443, HTTPS so it can be installed as an app),
+		// Vaultwarden on 8443, free slots 8440-8442 for future sites meant for every device.
+		{"src": ["autogroup:member"], "dst": ["tag:server"], "ip": ["tcp:80", "tcp:443", "tcp:8440-8443"]},
+		// Owner devices only, 8444-8459: issue tracker on 8444 (it can steer the ops session, which
+		// reads issues as work), CalDAV on 8445 (Radicale: the owner's calendar and tasks), Sumisura on
+		// 8446 (app of a Gateway Project, issue 018), free slots 8447-8459 for future owner-only sites.
+		{"src": ["admin-pc", "phone"], "dst": ["tag:server"], "ip": ["tcp:8444-8459"]},
+		// Owner phone: Syncthing sync only (vault in Obsidian on the phone); its GUI stays on the phone itself.
+		{"src": ["phone"], "dst": ["tag:server"], "ip": ["tcp:22000"]},
+		// Admin PC only: SSH, AdGuard UI, Syncthing GUI and sync.
+		// Uptime Kuma (optional, disabled): add "tcp:3001" here when enabling it.
+		{"src": ["admin-pc"], "dst": ["tag:server"], "ip": ["tcp:22", "tcp:3000", "tcp:8384", "tcp:22000"]},
+		// @guest Library guest (shared node, not a tailnet member): only the Library app on 8447.
+		{"src": ["${HS_LIBRARY_GUEST}"], "dst": ["tag:server"], "ip": ["tcp:8447"]}, // @guest
+		// Nothing else: 53 (DNS is for the home LAN only), 1055 (tailscaled proxy),
+		// 8222 (Vaultwarden behind Caddy), 3004 (tracker behind Caddy), 5232 (Radicale behind Caddy) stay closed.
+	],
+	"tests": [
+		{
+			"src": "admin-pc",
+			"accept": ["tag:server:22", "tag:server:80", "tag:server:443", "tag:server:8443", "tag:server:8444", "tag:server:8459", "tag:server:8445", "tag:server:3000", "tag:server:8384", "tag:server:22000"],
+			"deny": ["tag:server:53", "tag:server:1055", "tag:server:8222", "tag:server:3002", "tag:server:3004", "tag:server:3001", "tag:server:2019", "tag:server:5232", "tag:server:8439", "tag:server:8460"],
+		},
+			{"src": "${HS_LIBRARY_GUEST}", "accept": ["tag:server:8447"], "deny": ["tag:server:22", "tag:server:80", "tag:server:443", "tag:server:8443", "tag:server:8444", "tag:server:8445", "tag:server:8446", "tag:server:8448", "tag:server:8459", "tag:server:3000", "tag:server:8384", "tag:server:22000"]}, // @guest
+	{
+			"src": "phone",
+			"accept": ["tag:server:80", "tag:server:443", "tag:server:8443", "tag:server:8444", "tag:server:8445", "tag:server:8459", "tag:server:22000"],
+			"deny": ["tag:server:8460", "tag:server:22", "tag:server:3000", "tag:server:8384", "tag:server:53", "tag:server:1055", "tag:server:8222", "tag:server:3004", "tag:server:5232"],
+		},
+	],
+}

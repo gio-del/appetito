@@ -1,0 +1,17 @@
+#!/bin/sh
+# brain: the second brain's interactive Claude Code session (user brain, no sudo, cwd the
+# vault), kept alive in tmux session "brain" for Remote Control from the phone (session
+# "brain"). Attach over SSH with the `brain` alias. Idles until the owner has run /login
+# as brain once (sudo -iu brain claude).
+exec 2>&1
+H=$(getent passwd brain | cut -d: -f6)
+[ -s "$H/.claude/.credentials.json" ] || { echo "brain: waiting for /login"; sleep 300; exit 0; }
+export HOME=$H USER=brain LOGNAME=brain SHELL=/bin/bash TERM=xterm-256color LANG=C.UTF-8 \
+  PATH=$H/.local/bin:/usr/local/bin:/usr/bin:/bin CLAUDE_CODE_TMPDIR=$H/.cache/claude-tmp
+exec setpriv --reuid=brain --regid=brain --init-groups --no-new-privs sh -c '
+  # brain-refresh (issue 445) leaves the id of the conversation it closed: resume it once.
+  R=$HOME/.local/state/brain-resume-id; a=""
+  if [ -s "$R" ]; then a="--resume $(tr -dc 0-9a-f- < "$R") "; fi; rm -f "$R"
+  tmux has-session -t brain 2>/dev/null ||
+    tmux new-session -d -s brain -c "$HOME/vault" "claude ${a}--remote-control brain" || exit 1
+  while tmux has-session -t brain 2>/dev/null; do sleep 20; done'

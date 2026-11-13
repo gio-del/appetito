@@ -1,0 +1,9 @@
+#!/bin/sh
+# No Claude/AI attribution in commit messages, in any repo of this server (issues 202, 474): the one pattern list
+# is hs-attribution. Bypass only by the owner, knowingly: git commit --no-verify.
+. "$(dirname "$0")/attribution-common.sh"
+if ! out=$(grep -v '^#' "$1" | "$A" text); then
+	echo "commit rifiutato (issue 474): $out" >&2
+	exit 1
+fi
+chain commit-msg "$@"

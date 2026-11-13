@@ -1,0 +1,68 @@
+#!/bin/sh
+# Appetito: proposte di aggiunta all'elenco (issue 487, epic 476). Deterministico, nessuna chiamata all'AI.
+# Un file tracciato (commit HEAD) che non e' in appetito/files ne' in appetito/private e' «nuovo fuori
+# elenco»: ne esce UNA proposta nel tracker (Approva/Scarta) con la riga `Appetito: <percorso>`.
+#  - Approva: la proposta diventa una issue con il passo «aggiungi il file a appetito/files».
+#  - Scarta: la proposta scartata resta in issues/done: il file e' privato, non si ripropone mai.
+# Una issue (proposta, aperta o chiusa) con `Appetito: <percorso>` vale «gia' deciso/in corso».
+# Uso: scripts/appetito-propose [--repo REPO] [--dry-run] [--max N] [--pending-max N]
+#   --max: nuove proposte per giro (5); --pending-max: proposte Appetito in attesa al massimo (5).
+# Prova: APPETITO_POST=CMD riceve il JSON della proposta su stdin invece del tracker.
+set -eu
+repo=$(cd "$(dirname "$0")/.." && pwd); dry=0; max=5; pmax=5
+while [ $# -gt 0 ]; do
+  case $1 in
+    --repo) repo=$2; shift 2 ;;
+    --dry-run) dry=1; shift ;;
+    --max) max=$2; shift 2 ;;
+    --pending-max) pmax=$2; shift 2 ;;
+    *) echo "opzione sconosciuta: $1" >&2; exit 2 ;;
+  esac
+done
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+here=$(dirname "$0")
+sh "$here/appetito-build" --files --repo "$repo" > "$tmp/public"
+git -C "$repo" ls-tree -r --name-only HEAD > "$tmp/all"
+git -C "$repo" show HEAD:appetito/private > "$tmp/private" 2>/dev/null || : > "$tmp/private"
+# Percorsi gia' nominati da una issue (proposta, aperta o chiusa).
+for d in proposed open done; do
+  [ -d "$repo/issues/$d" ] && grep -h '^Appetito: ' "$repo/issues/$d"/*.md 2>/dev/null || true
+done | sed 's/^Appetito: //' | sort -u > "$tmp/seen"
+# Proposte Appetito ancora in attesa.
+pending=0
+if [ -d "$repo/issues/proposed" ]; then
+  pending=$(grep -l '^Appetito: ' "$repo/issues/proposed"/*.md 2>/dev/null | wc -l)
+fi
+: > "$tmp/cand"
+while IFS= read -r f; do
+  grep -qxF -- "$f" "$tmp/public" && continue
+  grep -qxF -- "$f" "$tmp/seen" && continue
+  priv=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in ''|'#'*) continue ;; esac
+    case $line in */) glob="$line*" ;; *) glob=$line ;; esac
+    # shellcheck disable=SC2254
+    case $f in $glob) priv=1; break ;; esac
+  done < "$tmp/private"
+  [ "$priv" = 1 ] || printf '%s\n' "$f" >> "$tmp/cand"
+done < "$tmp/all"
+n=$(wc -l < "$tmp/cand")
+room=$((pmax - pending)); [ "$room" -le "$max" ] || room=$max; [ "$room" -ge 0 ] || room=0
+echo "fuori elenco: $n file, proposte in attesa: $pending, nuove in questo giro: $([ "$n" -lt "$room" ] && echo "$n" || echo "$room")"
+made=0
+while IFS= read -r f && [ "$made" -lt "$room" ]; do
+  [ -n "$f" ] || continue
+  desc=$(printf 'Appetito: %s\n\n## Problema\nIl file `%s` e'"'"' nel repo ma non e'"'"' in `appetito/files` ne'"'"' in `appetito/private`: Appetito non sa se serve a tutti.\n\n## Proposta\nAggiungerlo all'"'"'elenco dei file pubblici (la copia filtrata lo pubblica) se non contiene valori personali o segreti. Se e'"'"' solo tuo, scartala: il file resta privato e non viene riproposto.\n\n## Criteri di accettazione\n- `scripts/appetito-check` passa sulla copia con il file dentro.\n\n## Piano\nUna riga in `appetito/files`, poi `scripts/appetito-check` sulla copia filtrata.\n\n## Esecuzione\n- [ ] Aggiungere `%s` a `appetito/files` (nella sezione giusta) e verificare con `scripts/appetito-build` su una cartella temporanea e `device/edge/check`.\n' "$f" "$f" "$f")
+  body=$(jq -cn --arg t "Appetito: pubblicare $f?" --arg d "$desc" '{title:$t, desc:$d, labels:["afk","release"]}')
+  if [ "$dry" = 1 ]; then echo "proposta: $f"; made=$((made + 1)); continue; fi
+  if [ -n "${APPETITO_POST:-}" ]; then printf '%s\n' "$body" | sh -c "$APPETITO_POST" || { echo "invio fallito: $f" >&2; continue; }
+  else
+    r=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$HOME/.secrets/tracker-suggest")" |
+      curl -sS -K - -w '\n%{http_code}' -X POST -H "Host: ${HS_TS_HOST:-localhost}:8444" -H 'Content-Type: application/json' \
+        --data-binary "$body" http://127.0.0.1:3004/api/propose) || r="curl failed
+000"
+    code=$(printf '%s' "$r" | tail -1)
+    [ "$code" = 201 ] || { echo "invio fallito ($code): $f" >&2; [ "$code" = 429 ] && break; continue; }
+  fi
+  echo "proposto: $f"; made=$((made + 1))
+done < "$tmp/cand"

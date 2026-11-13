@@ -1,0 +1,91 @@
+#!/bin/sh
+# Deterministic checks before a deploy or a commit (issue 127): shell syntax (sh -n / bash -n),
+# errors of shellcheck on every shell script, node --check on JavaScript, jq on JSON, the issue shape
+# lint (violations are only printed: hs-monitor turns them into issues), then every
+# device/edge/tests/*.sh. No network. Exit 1 with the list of failures.
+# Usage (from anywhere): device/edge/check [--fast|--changed] [FILE...]
+#   --fast  skip the tests; --changed  run only the tests whose text names one of the files (FILE... or,
+#   without them, staged + uncommitted files): git pre-commit hook (issue 355); FILE...  check only these files (repo-relative)
+set -u
+cd "$(dirname "$0")/../.." || exit 1
+FAST=""
+CHANGED=""
+[ "${1:-}" = --fast ] && { FAST=1; shift; }
+[ "${1:-}" = --changed ] && { FAST=1; CHANGED=1; shift; }
+[ -n "$CHANGED" ] && [ $# -eq 0 ] && set -- $(git diff --cached --name-only --diff-filter=ACMR; git diff --name-only --diff-filter=ACMR)
+unset GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE GIT_PREFIX # set by git hooks, they would leak into the repos the tests build
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+fails=0
+fail() { echo "FAIL $1"; [ -s "$T/out" ] && sed 's/^/    /' "$T/out" | head -20; fails=$((fails + 1)); }
+
+if [ $# -gt 0 ]; then printf '%s\n' "$@"; else git ls-files -co --exclude-standard; fi | while IFS= read -r f; do
+	[ -f "$f" ] || continue
+	case $f in
+	*.js) echo "js $f" ;;
+	*.json) echo "json $f" ;;
+	*) case $(head -n 1 "$f" 2>/dev/null) in
+		'#!/bin/sh'* | '#!/system/bin/sh'*) echo "sh $f" ;;
+		'#!/bin/bash'* | '#!/usr/bin/env bash'*) echo "bash $f" ;;
+		'#!/usr/bin/env node'*) echo "js $f" ;;
+		esac ;;
+	esac
+done > "$T/files"
+
+while read -r kind f; do
+	case $kind in
+	sh) sh -n "$f" > "$T/out" 2>&1 || fail "sh -n $f"; echo "$f" >> "$T/shell" ;;
+	bash) bash -n "$f" > "$T/out" 2>&1 || fail "bash -n $f"; echo "$f" >> "$T/shell" ;;
+	js) node --check "$f" > "$T/out" 2>&1 || fail "node --check $f" ;;
+	json) jq empty "$f" > "$T/out" 2>&1 || fail "jq $f" ;;
+	esac
+done < "$T/files"
+
+if [ -s "$T/shell" ]; then
+	if command -v shellcheck > /dev/null; then
+		tr '\n' '\0' < "$T/shell" | xargs -0 shellcheck -S error -f gcc > "$T/out" 2>&1 || fail "shellcheck (errors)"
+	else
+		echo "skip shellcheck: not installed"
+	fi
+fi
+
+[ -s DIREZIONE.md ] || { echo "FAIL DIREZIONE.md manca (issue 472)"; fails=$((fails + 1)); }
+
+# An executable file must start with its shebang (issue 502: a line pasted above it broke three scripts).
+git ls-files -s | awk '$1 == "100755" { print $4 }' | while IFS= read -r f; do
+	[ -f "$f" ] || continue
+	case $* in '') ;; *) case " $* " in *" $f "*) ;; *) continue ;; esac ;; esac
+	[ "$(head -c 2 "$f")" = '#!' ] || echo "$f"
+done > "$T/noshebang"
+if [ -s "$T/noshebang" ]; then sed 's/^/    senza shebang in prima riga: /' "$T/noshebang" > "$T/out"; fail "shebang (file eseguibili)"; fi
+
+if node device/edge/tracker/issues.js --lint . > "$T/lint" 2> "$T/out"; then
+	n=$(jq length "$T/lint" 2>/dev/null || echo 0)
+	[ "$n" = 0 ] || { echo "note issues-lint: $n violazioni (le gestisce hs-monitor)"; jq -r '.[] | "    #\(.id) \(.rule): \(.msg)"' "$T/lint" | head -10; }
+else
+	fail "issues-lint"
+fi
+
+if [ -z "$FAST" ]; then
+	for t in device/edge/tests/*.sh; do
+		sh "$t" > "$T/out" 2>&1 || { grep -i 'fail' "$T/out" > "$T/out.f" && mv "$T/out.f" "$T/out"; fail "test $t"; }
+	done
+fi
+
+if [ -n "$CHANGED" ]; then
+	for f in "$@"; do
+		case $f in
+		device/edge/tests/*.sh) echo "$f" ;;
+		*) grep -lF -- "${f##*/}" device/edge/tests/*.sh 2> /dev/null ;;
+		esac
+	done | sort -u > "$T/sel"
+	while read -r t; do
+		[ -f "$t" ] || continue
+		sh "$t" > "$T/out" 2>&1 || { grep -i fail "$T/out" > "$T/out.f"; mv "$T/out.f" "$T/out"; fail "test $t"; }
+	done < "$T/sel"
+fi
+
+n=$(wc -l < "$T/files")
+[ "$fails" -eq 0 ] && { echo "check ok ($n file${FAST:+, test solo dei file toccati})"; exit 0; }
+echo "check failed: $fails"
+exit 1

@@ -1,0 +1,15 @@
+#!/bin/sh
+# tailscaled, supervised by runit (restarted on crash). Userspace networking: no kernel
+# routes, so it doesn't fight Android's netd; inbound tailnet TCP is forwarded to local
+# listeners. SOCKS5/HTTP proxy on localhost:1055 for outbound tailnet traffic.
+# Root on purpose (one of the unavoidable root daemons). Log: /var/log/tailscaled.log,
+# previous run kept as .log.1 so a crash leaves a trace; trimmed daily by log-trim (cron.d).
+mkdir -p /run/tailscale /var/lib/tailscale
+[ -f /var/log/tailscaled.log ] && mv -f /var/log/tailscaled.log /var/log/tailscaled.log.1
+# Append (>>): log-trim (issue 129) rewrites the file in place, a plain > would leave it sparse.
+rm -f /run/tailscale/tailscaled.sock
+exec /usr/sbin/tailscaled --tun=userspace-networking \
+	--state=/var/lib/tailscale/tailscaled.state \
+	--socket=/run/tailscale/tailscaled.sock \
+	--socks5-server=localhost:1055 --outbound-http-proxy-listen=localhost:1055 \
+	>>/var/log/tailscaled.log 2>&1

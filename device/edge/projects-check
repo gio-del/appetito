@@ -1,0 +1,32 @@
+#!/bin/sh
+# Check the Projects list before a deploy installs it (issue 180): every row needs a git URL
+# (column 2; "-" only for home-server) that `git ls-remote` can read as the current user, because
+# the Gateway's rule is that each Project lives on a remote the server can reach.
+# Usage: device/edge/projects-check [FILE]   (default: device/edge/debian/projects)
+# HS_PROJECTS_NO_REMOTE=1 skips ls-remote (tests). Exit 1 naming the Project and why; no write access = warning only.
+set -u
+F=${1:-$(dirname "$0")/debian/projects}
+PUB=$(dirname "$0")/debian/projects-publish
+GIT=$(dirname "$0")/debian/projects-git
+rc=0
+while read -r name url _ _ _ _ rel; do
+	case ${rel:--} in auto | -) ;; *) echo "projects-check: $name: release column (7) must be auto or -, not '$rel'" >&2; rc=1 ;; esac
+	# a clone without git identity makes every commit there fail or need it by hand (issue 536): warning, the fix is one git config
+	pd=${HS_PROJECTS_DIR:-$HOME/projects}/$name
+	if [ -d "$pd/.git" ] || [ -f "$pd/.git" ]; then
+		[ -n "$(git -C "$pd" config user.name 2>/dev/null)" ] && [ -n "$(git -C "$pd" config user.email 2>/dev/null)" ] \
+			|| echo "projects-check: warning: $name: no git user.name/user.email in $pd (git -C $pd config user.name/user.email)" >&2
+	fi
+	if [ "$url" = - ]; then
+		[ "$name" = home-server ] || { echo "projects-check: $name has no git URL (column 2): every Project needs a remote" >&2; rc=1; }
+	elif [ -z "${HS_PROJECTS_NO_REMOTE:-}" ]; then
+		timeout 60 "$GIT" ls-remote "$url" HEAD >/dev/null 2>&1 \
+			|| { echo "projects-check: $name: cannot read $url with git ls-remote" >&2; rc=1; }
+		# write access is only a warning (issue 163 helper, checks without writing)
+		case $url in *github.com*) timeout 60 "$PUB" check "$name" >/dev/null 2>&1 \
+			|| echo "projects-check: warning: $name: no write access (projects-publish check)" >&2 ;; esac
+	fi
+done <<EOT
+$(sed -e 's/#.*//' "$F" | awk -F'|' 'NF >= 4 { for (i = 1; i <= 7; i++) { gsub(/^[ \t]+|[ \t]+$/, "", $i); if ($i == "") $i = "-" } print $1, $2, $3, $4, $5, $6, $7 }')
+EOT
+exit "$rc"

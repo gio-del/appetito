@@ -1,5 +1,16 @@
-/dev/video/out/
-.env
-*.log
-node_modules/
-/tests/e2e/out/
+.claude/settings.local.json
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+
+# personal values (see device/edge/home-server.env.example) and rendered outputs
+*.env
+!*.env.example
+tailscale/policy.hujson
+
+# issue tracker temp files (written then renamed)
+issues/**/.tracker-tmp-*

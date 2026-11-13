@@ -1,0 +1,9 @@
+#!/bin/sh
+# Render tailscale/policy.template.hujson with the values in device/edge/home-server.env.
+set -eu
+R=$(cd "$(dirname "$0")/.." && pwd)
+set -a; . "$R/device/edge/home-server.env"; set +a
+# perl, not envsubst: the server (where Claude runs) has no gettext-base.
+# Lines tagged "// @guest" exist only when HS_LIBRARY_GUEST (email of the Library guest) is set.
+perl -ne 'if (/\/\/ \@guest\s*$/) { next if $ENV{HS_LIBRARY_GUEST} eq ""; s{\s*// \@guest\s*$}{\n}; } s/\$\{(HS_PC_TS_IP|HS_PHONE_TS_IP|HS_LIBRARY_GUEST)\}/$ENV{$1}/g; print' < "$R/tailscale/policy.template.hujson" > "$R/tailscale/policy.hujson"
+echo "$R/tailscale/policy.hujson"

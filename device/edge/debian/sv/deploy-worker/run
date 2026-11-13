@@ -1,0 +1,11 @@
+#!/bin/sh
+# deploy-worker as a service (issue 512): only meant for "Security enabled", where the agent runs
+# without sudo and asks this process to deploy. Runs as $HS_USER WITHOUT no-new-privs (the deploy
+# needs sudo); the request dir is the only way in, and the deploy it runs is the repo's own.
+exec 2>&1
+set -a; . /etc/home-server.env; set +a
+H=$(getent passwd "$HS_USER" | cut -d: -f6)
+export HOME=$H USER=$HS_USER LOGNAME=$HS_USER SHELL=/bin/bash LANG=C.UTF-8 \
+  PATH=$H/bin:/usr/local/bin:/usr/bin:/bin
+mkdir -p /var/lib/hs-deploy; chown "$HS_USER:" /var/lib/hs-deploy; chmod 700 /var/lib/hs-deploy
+exec setpriv --reuid="$HS_USER" --regid="$HS_USER" --init-groups /usr/local/sbin/deploy-worker

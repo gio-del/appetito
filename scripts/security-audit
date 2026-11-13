@@ -1,0 +1,153 @@
+#!/bin/bash
+# Repeatable security audit of the Edge (issue 046, review addendum C5). Re-run it after every
+# security-relevant change (policy paste, new service or port, sshd/Caddy config) and keep the
+# output in the issue that made the change.
+#
+#   scripts/security-audit          on the Edge (sudo inside): the packet filter tailscaled
+#                                   enforces vs. the policy template's `tests`, listening sockets
+#                                   vs. what that filter and the LAN can reach, ports-check.
+#   scripts/security-audit --scan   from another tailnet device (the admin PC): TCP connect scan
+#                                   of the Edge's tailnet IP, checked against the `tests` for
+#                                   this device. The Edge can't scan itself (userspace tailscaled
+#                                   doesn't loop back to its own tailnet IP).
+#
+# Values come from device/edge/home-server.env (or /etc/home-server.env): HS_TS_IP, HS_PC_TS_IP,
+# HS_PHONE_TS_IP, HS_LIBRARY_GUEST(_IP). Needs jq and perl. Prints PASS/WARN/FAIL lines; exits 1 on any FAIL.
+set -euo pipefail
+R=$(cd "$(dirname "$0")/.." && pwd)
+ENV=$R/device/edge/home-server.env
+[ -r "$ENV" ] || ENV=/etc/home-server.env
+set -a; . "$ENV"; set +a
+SUDO=; [ "$(id -u)" = 0 ] || SUDO=sudo
+fails=0
+pass() { echo "PASS  $*"; }
+warn() { echo "WARN  $*"; }
+fail() { echo "FAIL  $*"; fails=$((fails + 1)); }
+[ ! -d /opt/hs-tools ] || { [ -z "$(find /opt/hs-tools -perm /022 ! -type l 2>/dev/null)" ] && pass "/opt/hs-tools: nothing writable by group/others" || fail "/opt/hs-tools has group/other-writable files"; }
+
+# Policy template as JSON: drop // comments and trailing commas, fill ${HS_*}.
+policy() {
+	perl -0pe 's{(^|\s)//[^\n]*}{$1}g; s/,(\s*[\]}])/$1/g; s/\$\{(HS_\w+)\}/$ENV{$1}/g' \
+		"$R/tailscale/policy.template.hujson"
+}
+# "SRC_IP accept|deny PORT" for every test whose destination is tag:server.
+tests() {
+	policy | jq -r '.hosts as $h | .tests[] | ($h[.src] // .src) as $ip
+		| (.accept // [] | map("accept " + .)) + (.deny // [] | map("deny " + .)) | .[]
+		| select(test(" tag:server:[0-9]+$")) | "\($ip) \(sub(" tag:server:"; " "))"'
+}
+
+audit_edge() {
+	local rules listen
+	rules=$($SUDO tailscale debug netmap | jq -c '.PacketFilterRules // []')
+	listen=$($SUDO ss -ltnpH)
+	# open SRC PORT: does the enforced filter let SRC reach our tailnet IP on tcp PORT?
+	# "*" means any source; with SRC "*" it asks "open to anyone at all".
+	open() {
+		jq -e --arg s "$1" --argjson p "$2" --arg d "$HS_TS_IP" 'any(.[];
+			((.IPProto // [6]) | index(6)) and ($s == "*" or (.SrcIPs | index($s) or index("*")))
+			and any(.DstPorts[]; (.IP == $d or .IP == "*") and .Ports.First <= $p and $p <= .Ports.Last))' \
+			<<<"$rules" >/dev/null
+	}
+
+	echo "== Tailnet filter enforced on the Edge vs. policy tests"
+	local n=0 src verb port
+	while read -r src verb port; do
+		n=$((n + 1))
+		if [ -n "${HS_LIBRARY_GUEST:-}" ] && [ "$src" = "$HS_LIBRARY_GUEST" ]; then
+			# a shared node has no host alias: the filter lists its IP
+			if [ -z "${HS_LIBRARY_GUEST_IP:-}" ]; then warn "$src -> :$port skipped (HS_LIBRARY_GUEST_IP not set)"; continue; fi
+			src=$HS_LIBRARY_GUEST_IP
+		fi
+		if open "$src" "$port"; then
+			[ "$verb" = accept ] && pass "$src -> :$port open" || fail "$src -> :$port open, policy test says deny"
+		else
+			[ "$verb" = deny ] && pass "$src -> :$port closed" || fail "$src -> :$port closed, policy test says accept (policy not pasted?)"
+		fi
+	done < <(tests)
+	[ "$n" -gt 0 ] || fail "no tests found in tailscale/policy.template.hujson"
+
+	echo "== Secrets scanner (issue 529)"
+	if [ -x /usr/local/lib/hs/gitleaks ]; then
+		if [ "$(stat -c %U /usr/local/lib/hs/gitleaks)" = root ] && [ -z "$(find /usr/local/lib/hs/gitleaks -perm /022)" ]; then
+			pass "gitleaks installed, root-owned, not writable by group or others"
+		else fail "gitleaks writable by group or others, or not owned by root"; fi
+	else fail "gitleaks not installed (deploy runs hs-scanner-fetch)"; fi
+
+	echo "== TCP listeners reachable from the tailnet or the LAN"
+	# Which process may sit on a port the tailnet filter opens, and which may listen beyond loopback.
+	expect_tailnet() {
+		case $1 in
+		22) echo sshd ;; 3000) echo AdGuardHome ;; 8384|22000) echo syncthing ;;
+		80|443) echo caddy ;; *) [ "$1" -ge 8440 ] && [ "$1" -le 8459 ] && echo caddy ;;
+		esac
+	}
+	expect_lan() { case $1 in 53) echo AdGuardHome ;; 80|443|8443) echo caddy ;; esac; }
+	local addr proc host want
+	while read -r addr proc; do
+		port=${addr##*:}; host=${addr%:*}
+		case $port in *[!0-9]*|'') continue ;; esac
+		proc=$(sed -n 's/^users:(("\([^"]*\)".*/\1/p' <<<"$proc")
+		if open '*' "$port"; then
+			want=$(expect_tailnet "$port" || true)
+			[ -n "$want" ] && [ "$proc" = "$want" ] && pass "tailnet :$port -> $proc" \
+				|| fail "tailnet :$port is open and $proc listens on it (expected: ${want:-nothing})"
+		fi
+		case $host in 127.*|'[::1]'|*%lo) continue ;; esac
+		want=$(expect_lan "$port" || true)
+		[ -n "$want" ] && [ "$proc" = "$want" ] && pass "LAN $addr -> $proc" \
+			|| fail "$addr ($proc) listens beyond loopback (expected only 53 AdGuard, 80/443/8443 Caddy)"
+	done < <(awk '{print $4, $6}' <<<"$listen")
+
+	echo "== ports-check"
+	local out
+	out=$($SUDO "$R/device/edge/debian/ports-check" 2>&1) && [ -z "$out" ] && pass "only Caddy in 8440-8459" \
+		|| fail "ports-check: $out"
+
+	echo "== project-run (issue 187)"
+	local u=hs-build w=$HOME/.local/state/ops-auto/work
+	if id $u >/dev/null 2>&1; then
+		[ "$(id -u $u)" -lt 1000 ] && [ "$(getent passwd $u | cut -d: -f7)" = /usr/sbin/nologin ] \
+			&& pass "$u: system user, no login" || fail "$u: not a no-login system user"
+		$SUDO setpriv --reuid "$(id -u $u)" --regid "$(id -g $u)" --clear-groups ls "$HOME/.secrets" >/dev/null 2>&1 \
+			&& fail "$u can read ~/.secrets" || pass "$u cannot read ~/.secrets"
+	fi
+	[ ! -d "$w" ] || { [ "$(stat -c %a "$w")" = 700 ] && pass "work dir mode 700" || fail "$w is not mode 700"; }
+
+	echo "== library (issue 316)"
+	if id library >/dev/null 2>&1; then
+		$SUDO -u library sudo -n true >/dev/null 2>&1 && fail "library has sudo" || pass "library has no sudo"
+		[ "$(stat -c %a /var/lib/library)" = 700 ] && pass "/var/lib/library mode 700" || fail "/var/lib/library is not mode 700"
+		$SUDO setpriv --reuid "$(id -u library)" --regid "$(id -g library)" --clear-groups test -w /opt/library >/dev/null 2>&1 \
+			&& fail "library can write /opt/library" || pass "library cannot write /opt/library"
+	fi
+}
+
+audit_scan() {
+	local me src verb port rc
+	me=$(tailscale ip -4 2>/dev/null | head -1 || true)
+	[ -n "$me" ] || { echo "security-audit: can't read this device's tailnet IP (tailscale ip -4)" >&2; exit 2; }
+	echo "== Connect scan of $HS_TS_IP from $me"
+	local n=0
+	while read -r src verb port; do
+		[ "$src" = "$me" ] || continue
+		n=$((n + 1))
+		rc=0; timeout 4 bash -c "exec 3<>/dev/tcp/$HS_TS_IP/$port" 2>/dev/null || rc=$?
+		case $verb:$rc in
+		accept:0) pass ":$port open" ;;
+		accept:*) warn ":$port allowed but not answering (no listener, or the Edge is offline)" ;;
+		deny:0) fail ":$port OPEN, policy test says deny" ;;
+		deny:124) pass ":$port filtered" ;;
+		deny:*) warn ":$port refused rather than dropped (filter lets it through, nothing listens)" ;;
+		esac
+	done < <(tests)
+	[ "$n" -gt 0 ] || fail "no policy test has src $me (tests cover only admin-pc and phone)"
+}
+
+case ${1:-} in
+'') audit_edge ;;
+--scan) audit_scan ;;
+*) echo "usage: $0 [--scan]" >&2; exit 2 ;;
+esac
+echo "== $fails failure(s)"
+[ "$fails" = 0 ]

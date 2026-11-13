@@ -1,0 +1,56 @@
+#!/bin/sh
+# Renders the scheduled jobs from the "#@ [Category] title | when | what" lines of the cron files
+# given as arguments. Fails if a job line has no "#@" line right above it, or the line has no valid
+# category, so the dashboard can't drift from cron (issue 224).
+#   --schedule the categories for the static dashboard (issue 109): {"categories":[{key,name,count}]},
+#              installed as /var/lib/edge-status/schedule.json (the page reads the status from jobs.json)
+#   --json     the catalog read by jobs-status (installed as /etc/hs-jobs.json): per job its hs-run
+#              name, category, title, when, run interval in seconds, owner file (brain's jobs are
+#              trusted only for the names listed here) and optional live "Quando"
+# Optional 4th field "FILE FIELD": a live "Quando" row read from /var/lib/edge-status/FILE (issue 049).
+exec perl -e '
+my $json = @ARGV && $ARGV[0] eq "--json" ? shift @ARGV : "";
+my $sched = !$json && @ARGV && $ARGV[0] eq "--schedule" ? shift @ARGV : "";
+my @cats = ("Backup", "Progetti", "Sviluppo automatico", "Second brain", "Sicurezza", "Sistema");
+my %ok = map { $_ => 1 } @cats;
+my $fail = 0; my @items;
+# Seconds between two runs of a cron schedule (rough: enough to tell "late").
+sub interval { my ($m, $h, $dom, $mon, $dow) = @_;
+	return 60 * ($1 || 1) if $m =~ m{^\*(?:/(\d+))?$};
+	my $n = () = split /,/, $m; return int(3600 / $n) if $n > 1 && $h eq "*";
+	return 3600 * ($1 || 1) if $h =~ m{^\*(?:/(\d+))?$};
+	return 7 * 86400 if $dow ne "*"; return 86400; }
+for my $f (@ARGV) {
+	open my $fh, "<", $f or die "$f: $!\n"; my ($prev, $cur) = ("", undef);
+	my $user = $f =~ /brain/ ? "brain" : "";
+	while (<$fh>) {
+		chomp;
+		if (/^#@\s*(.*)$/) { my @p = map { s/^\s+|\s+$//gr } split /\|/, $1, 4;
+			(@p == 3 || (@p == 4 && $p[3] =~ /^[\w.-]+\.json \w+$/)) or die "$f:$.: want \"#\@ [Category] title | when | what [| file.json field]\"\n";
+			$p[0] =~ s/^\[([^\]]+)\]\s*// or die "$f:$.: title needs a category: \"[" . join("|", @cats) . "] title\"\n";
+			$ok{$1} or die "$f:$.: unknown category \"$1\" (" . join(", ", @cats) . ")\n";
+			my $u = $ENV{HS_USER} // "gio"; s/\@HS_USER\@/$u/g for @p;
+			my %i = (cat => $1, title => $p[0], when => $p[1], what => $p[2], live => $p[3] // "", name => "", every => 0, user => $user);
+			push @items, \%i; $cur = \%i; }
+		elsif (/^\s*[0-9*@]/) {
+			if ($prev !~ /^#@/) { warn "$f:$.: cron job without a #\@ line above it\n"; $fail = 1; }
+			elsif ($cur) { my @c = split " ", $_; $cur->{every} = interval(@c[0..4]) if @c > 5 && $c[0] !~ /^@/;
+				$cur->{name} = $1 if /\bhs-run\s+([a-z0-9-]+)/; }
+		}
+		$prev = $_;
+	}
+}
+exit 1 if $fail;
+sub jq { my $s = shift; $s =~ s/(["\\])/\\$1/g; "\"$s\"" }
+if ($sched) {
+	my @o; for my $c (@cats) { my $n = grep { $_->{cat} eq $c } @items; next unless $n; (my $k = lc $c) =~ s/ /_/g;
+		push @o, "  {\"key\": \"$k\", \"name\": " . jq($c) . ", \"count\": $n}"; }
+	print "{\"categories\": [\n", join(",\n", @o), "\n]}\n"; exit 0;
+}
+if ($json) {
+	print "[\n", join(",\n", map { my $i = $_;
+		"  {" . join(", ", map { "\"$_\": " . ($_ eq "every" ? $i->{$_} : jq($i->{$_})) } qw(name cat title when what live user every)) . "}" } @items), "\n]\n";
+	exit 0;
+}
+exit 0;
+' -- "$@"

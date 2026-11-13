@@ -1,0 +1,566 @@
+{
+  "HS_AUTO_PAUSE": {
+    "type": "bool",
+    "default": false,
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "essential",
+    "label": "In pausa",
+    "hint": "Ferma il lavoro automatico sulle issue.",
+    "desc": "Ferma il lavoro automatico dell'AI sulle issue (ops-auto). Gli errori continuano a diventare issue."
+  },
+  "HS_AI_BACKEND": {
+    "type": "enum",
+    "values": ["headless", "api-anthropic", "api-openai", "api-gemini"],
+    "default": "headless",
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "advanced",
+    "labels": {
+      "headless": "CLI sull'account (headless)",
+      "api-anthropic": "API Anthropic (solo testo)",
+      "api-openai": "API OpenAI o compatibile (solo testo)",
+      "api-gemini": "API Gemini (solo testo)"
+    },
+    "label": "Backend AI",
+    "hint": "Come girano i lavori AI automatici.",
+    "desc": "Il backend AI dei lavori automatici. Le voci API valgono solo per i lavori a sola generazione di testo (suggerimenti sulle domande); gli altri restano sulla CLI headless. La chiave sta in ~/.secrets/ai-<fornitore>.conf."
+  },
+  "HS_AUTO_QUOTA_MAX": {
+    "type": "int",
+    "min": 10,
+    "max": 80,
+    "default": 50,
+    "unit": "%",
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "essential",
+    "label": "Quota settimanale massima",
+    "hint": "Oltre questo uso del piano AI il lavoro si ferma.",
+    "desc": "Sopra questo uso settimanale del piano AI il lavoro automatico si ferma fino al reset."
+  },
+  "HS_AUTO_QUOTA_MANUAL_MAX": {
+    "type": "int",
+    "min": 10,
+    "max": 100,
+    "default": 80,
+    "unit": "%",
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "advanced",
+    "label": "Quota settimanale massima per l'avvio manuale",
+    "hint": "Limite di quota per i lanci a mano.",
+    "desc": "«Avvia ora» e «Lavora su questa issue» partono fino a questo uso settimanale, anche se i giri programmati sono fermi per la quota. Se è più bassa della quota qui sopra vale quella."
+  },
+  "HS_AUTO_MAX_PER_RUN": {
+    "type": "int",
+    "min": 1,
+    "max": 5,
+    "default": 1,
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "essential",
+    "label": "Issue per giro",
+    "hint": "Quante issue lavora ogni giro.",
+    "desc": "Quante issue al massimo per giro (ogni 30 minuti). Dopo una issue chiusa, passata a te o con una PR aperta prende la successiva; una issue che resta in corso senza progressi viene saltata per il resto del giro e si passa alla successiva."
+  },
+  "HS_AUTO_MAX_RUNS": {
+    "type": "int",
+    "min": 3,
+    "max": 30,
+    "default": 8,
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "advanced",
+    "label": "Giri massimi per issue",
+    "hint": "Giri dopo i quali una issue passa a te.",
+    "desc": "Una issue che a ogni giro fa progressi (un commit di lavoro) non esaurisce i 3 tentativi; oltre questo numero di giri senza chiuderla passa comunque a te."
+  },
+  "HS_AUTO_MODEL": {
+    "type": "enum",
+    "values": [
+      "default",
+      "opus",
+      "sonnet",
+      "haiku"
+    ],
+    "default": "default",
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "advanced",
+    "labels": {
+      "default": "predefinito dell'account",
+      "opus": "Opus",
+      "sonnet": "Sonnet",
+      "haiku": "Haiku"
+    },
+    "label": "Modello",
+    "hint": "Modello AI del lavoro automatico.",
+    "desc": "Il modello AI del lavoro automatico. Opus consuma la quota settimanale molto più in fretta di Sonnet; «predefinito» lascia decidere all'account."
+  },
+  "HS_AUTO_MODEL_MAINT": {
+    "type": "enum",
+    "values": [
+      "default",
+      "opus",
+      "sonnet",
+      "haiku"
+    ],
+    "default": "sonnet",
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "advanced",
+    "labels": {
+      "default": "predefinito dell'account",
+      "opus": "Opus",
+      "sonnet": "Sonnet",
+      "haiku": "Haiku"
+    },
+    "label": "Modello per la manutenzione",
+    "hint": "Modello per errori, lint e aggiornamenti.",
+    "desc": "Il modello per le issue di manutenzione (errori dei controlli, lint, aggiornamenti). Se al primo tentativo non chiude, il secondo usa il Modello qui sopra."
+  },
+  "HS_AUTO_EFFORT_MAINT": {
+    "type": "enum",
+    "values": [
+      "default",
+      "low",
+      "medium",
+      "high"
+    ],
+    "default": "low",
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "advanced",
+    "labels": {
+      "default": "predefinito dell'account",
+      "low": "Basso",
+      "medium": "Medio",
+      "high": "Alto"
+    },
+    "label": "Ragionamento per lint e aggiornamenti",
+    "hint": "Quanto ragiona l'AI su lint e aggiornamenti.",
+    "desc": "Quanto ragiona l'AI sulle issue di lint e di aggiornamento delle app: basso consuma meno quota. Dal secondo tentativo torna al predefinito."
+  },
+  "HS_SUGGEST_ENABLED": {
+    "type": "bool",
+    "default": false,
+    "group": "Proposte giornaliere",
+    "level": "essential",
+    "label": "Attive",
+    "hint": "L'AI propone ogni giorno migliorie al sistema.",
+    "desc": "L'AI propone ogni giorno migliorie al sistema; le trovi nella colonna Proposte del tracker e decidi tu."
+  },
+  "HS_SUGGEST_HOUR": {
+    "type": "int",
+    "min": 0,
+    "max": 23,
+    "default": 8,
+    "unit": "h",
+    "group": "Proposte giornaliere",
+    "level": "essential",
+    "label": "Ora",
+    "hint": "A che ora girano le proposte.",
+    "desc": "Ora del giorno in cui girano le proposte."
+  },
+  "HS_SUGGEST_HOUR_EVENING": {
+    "type": "enum",
+    "values": ["no", "17", "18", "19", "20", "21", "22"],
+    "default": "19",
+    "labels": {"no": "Solo mattina", "17": "17", "18": "18", "19": "19", "20": "20", "21": "21", "22": "22"},
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "label": "Ora della sera",
+    "hint": "Secondo giro di proposte la sera.",
+    "desc": "Seconda ora del giorno in cui girano le proposte, dopo quella del mattino; «Solo mattina» la spegne. I limiti valgono per ogni giro, quindi al giorno raddoppiano."
+  },
+  "HS_ATTRITI_MAX": {
+    "type": "int",
+    "min": 0,
+    "max": 5,
+    "default": 3,
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "label": "Attriti a settimana",
+    "hint": "Massimo di issue sugli attriti ogni settimana; 0 spegne.",
+    "desc": "Ogni settimana l'AI cerca le fonti di attrito (cose che chiedono all'owner senza bisogno, o decise in silenzio) e apre al massimo questo numero di issue da correggere. 0 spegne il giro."
+  },
+  "HS_SUGGEST_MAX": {
+    "type": "int",
+    "min": 0,
+    "max": 5,
+    "default": 3,
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "label": "Proposte al giorno",
+    "hint": "Massimo di nuove proposte per Project a ogni giro.",
+    "desc": "Numero massimo di nuove proposte per giro, per ogni Project."
+  },
+  "HS_SUGGEST_PENDING_MAX": {
+    "type": "int",
+    "min": 1,
+    "max": 30,
+    "default": 10,
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "label": "Proposte in attesa",
+    "hint": "Per Project: con tante proposte da valutare salta.",
+    "desc": "Se un Project ha già tante proposte da valutare, per lui il giro salta."
+  },
+  "HS_SUGGEST_QUOTA_MAX": {
+    "type": "int",
+    "min": 10,
+    "max": 80,
+    "default": 50,
+    "unit": "%",
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "label": "Quota settimanale massima",
+    "hint": "Oltre questo uso del piano le proposte non girano.",
+    "desc": "Sopra questo uso settimanale del piano AI le proposte non girano."
+  },
+  "HS_SUGGEST_MODEL": {
+    "type": "enum",
+    "values": [
+      "default",
+      "opus",
+      "sonnet",
+      "haiku"
+    ],
+    "default": "default",
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "labels": {
+      "default": "predefinito dell'account",
+      "opus": "Opus",
+      "sonnet": "Sonnet",
+      "haiku": "Haiku"
+    },
+    "label": "Modello",
+    "hint": "Modello AI delle proposte.",
+    "desc": "Il modello AI delle proposte giornaliere; «predefinito» lascia decidere all'account."
+  },
+  "HS_QUESTIONS_MODEL": {
+    "type": "enum",
+    "values": ["default", "opus", "sonnet", "haiku"],
+    "default": "sonnet",
+    "group": "Domande",
+    "level": "advanced",
+    "labels": {"default": "predefinito dell'account", "opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku"},
+    "label": "Modello",
+    "hint": "Modello AI delle risposte suggerite.",
+    "desc": "Il modello AI che scrive la risposta consigliata sulle carte della pagina Domande; «predefinito» lascia decidere all'account."
+  },
+  "HS_QUESTIONS_QUOTA_MAX": {
+    "type": "int",
+    "min": 5,
+    "max": 80,
+    "default": 30,
+    "unit": "%",
+    "group": "Domande",
+    "level": "advanced",
+    "label": "Quota settimanale massima",
+    "hint": "Oltre questo uso del piano AI le risposte suggerite si fermano.",
+    "desc": "Sopra questo uso settimanale del piano AI le risposte suggerite alle Domande non vengono più preparate, fino al reset."
+  },
+  "HS_BRAIN_MODEL": {
+    "type": "enum",
+    "values": [
+      "default",
+      "opus",
+      "sonnet",
+      "haiku"
+    ],
+    "default": "sonnet",
+    "group": "Second brain",
+    "level": "advanced",
+    "labels": {
+      "default": "predefinito dell'account",
+      "opus": "Opus",
+      "sonnet": "Sonnet",
+      "haiku": "Haiku"
+    },
+    "label": "Modello per il riordino",
+    "hint": "Modello che riordina la Inbox del vault.",
+    "desc": "Il modello AI che riordina la Inbox del vault ogni 5 minuti. Sonnet basta e consuma poca quota."
+  },
+  "HS_TAILOR_MODEL": {
+    "type": "enum",
+    "values": [
+      "default",
+      "opus",
+      "sonnet",
+      "haiku"
+    ],
+    "default": "sonnet",
+    "group": "Progetti",
+    "level": "advanced",
+    "labels": {
+      "default": "predefinito dell'account",
+      "opus": "Opus",
+      "sonnet": "Sonnet",
+      "haiku": "Haiku"
+    },
+    "label": "Modello per i CV di Sumisura",
+    "hint": "Modello che prepara la bozza di CV e lettera dalle richieste.",
+    "desc": "Il modello AI che riscrive CV e lettera da una richiesta nel Vault (Projects/Sumisura/Richieste). È un lavoro di scrittura fedele ai dati: Sonnet è il minimo sensato, Haiku è sconsigliato."
+  },
+  "HS_OBSIDIAN_VAULT": {
+    "type": "text",
+    "default": "Vault",
+    "group": "Tracker",
+    "level": "advanced",
+    "label": "Nome del vault Obsidian",
+    "hint": "Nome del vault nell'app Obsidian.",
+    "desc": "Il nome del vault nell'app Obsidian (telefono e PC): serve al link «Origine» delle proposte del second brain e ai pulsanti «Nuova nota» e «Apri in Obsidian» dell'app Studio (lì vale dal riavvio successivo dell'app)."
+  },
+  "HS_BACKLOG_STALE_DAYS": {
+    "type": "int",
+    "min": 7,
+    "max": 180,
+    "default": 30,
+    "unit": "giorni",
+    "group": "Tracker",
+    "level": "advanced",
+    "label": "Backlog fermo dopo",
+    "hint": "Dopo quanti giorni un backlog fermo viene segnalato.",
+    "desc": "Una issue in Backlog senza decisioni da tanti giorni viene segnalata nel tracker e nella dashboard, con i pulsanti per spostarla in To do, tenerla o scartarla."
+  },
+  "HS_BACKUP_OFFSITE_DAYS": {
+    "type": "int",
+    "min": 1,
+    "max": 60,
+    "default": 7,
+    "unit": "giorni",
+    "group": "Backup",
+    "level": "advanced",
+    "label": "Avviso backup non arrivati al PC",
+    "hint": "Avvisa se i backup non arrivano al PC.",
+    "desc": "Se i backup cifrati (Vaultwarden, calendario) non arrivano completi al PC via Syncthing da tanti giorni, si apre una issue."
+  },
+  "HS_BATTERY_HOT_C": {
+    "type": "int",
+    "min": 35,
+    "max": 55,
+    "default": 40,
+    "unit": "°C",
+    "group": "Sistema",
+    "level": "advanced",
+    "label": "Avviso batteria calda",
+    "hint": "Avvisa se la batteria resta sopra questa temperatura per 30 minuti.",
+    "desc": "Se la temperatura della batteria resta almeno a questo valore per 30 minuti (dallo storico di 5 minuti), si apre una issue: una batteria calda a lungo si gonfia."
+  },
+  "HS_BATTERY_FULL_HOURS": {
+    "type": "int",
+    "min": 6,
+    "max": 240,
+    "default": 48,
+    "unit": "ore",
+    "group": "Sistema",
+    "level": "advanced",
+    "label": "Avviso batteria piena in carica",
+    "hint": "Avvisa se la batteria resta al 100% in carica per troppe ore.",
+    "desc": "Se la batteria resta al 100% collegata al caricatore per tante ore di fila, si apre una issue: una batteria sempre piena si gonfia."
+  },
+  "HS_VAULT_OFFLINE_HOURS": {
+    "type": "int",
+    "min": 1,
+    "max": 720,
+    "default": 24,
+    "unit": "ore",
+    "group": "Backup",
+    "level": "advanced",
+    "label": "Avviso dispositivo del vault non collegato",
+    "hint": "Avvisa se un dispositivo del vault non si collega.",
+    "desc": "Se un dispositivo della cartella vault (telefono, PC) non si collega a Syncthing da tante ore, si apre una issue: le note scritte lì non arrivano a brain."
+  },
+  "HS_CD_PAUSE_SUMISURA": {
+    "type": "bool",
+    "default": false,
+    "group": "Installazione dei Progetti",
+    "level": "advanced",
+    "label": "Sumisura: installazione automatica in pausa",
+    "hint": "Non installa più i commit verdi di Sumisura.",
+    "desc": "Il server non installa più da solo i nuovi commit verdi di main per Sumisura: resta quello in uso finché togli la pausa."
+  },
+  "HS_CD_PAUSE_LIBRARY": {
+    "type": "bool",
+    "default": false,
+    "group": "Installazione dei Progetti",
+    "level": "advanced",
+    "label": "Library: installazione automatica in pausa",
+    "hint": "Non installa più i commit verdi di Library.",
+    "desc": "Il server non installa più da solo i nuovi commit verdi di main per Library: resta quello in uso finché togli la pausa."
+  },
+  "HS_CD_PAUSE_STUDIO": {
+    "type": "bool",
+    "default": false,
+    "group": "Installazione dei Progetti",
+    "level": "advanced",
+    "label": "Studio: installazione automatica in pausa",
+    "hint": "Non installa più i commit verdi di Studio.",
+    "desc": "Il server non installa più da solo i nuovi commit verdi di main per Studio: resta quello in uso finché togli la pausa."
+  },
+  "HS_SUGGEST_PAUSE_HOME_SERVER": {
+    "type": "bool",
+    "default": false,
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "label": "Home-server: proposte in pausa",
+    "hint": "Non genera nuove proposte per Home-server.",
+    "desc": "L'AI non propone più nulla di nuovo per Home-server finché togli la pausa. Le proposte già in attesa restano e puoi ancora approvarle o scartarle."
+  },
+  "HS_SUGGEST_PAUSE_SUMISURA": {
+    "type": "bool",
+    "default": false,
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "label": "Sumisura: proposte in pausa",
+    "hint": "Non genera nuove proposte per Sumisura.",
+    "desc": "L'AI non propone più nulla di nuovo per Sumisura finché togli la pausa. Le proposte già in attesa restano e puoi ancora approvarle o scartarle."
+  },
+  "HS_SUGGEST_PAUSE_LIBRARY": {
+    "type": "bool",
+    "default": false,
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "label": "Library: proposte in pausa",
+    "hint": "Non genera nuove proposte per Library.",
+    "desc": "L'AI non propone più nulla di nuovo per Library finché togli la pausa. Le proposte già in attesa restano e puoi ancora approvarle o scartarle."
+  },
+  "HS_SUGGEST_PAUSE_STUDIO": {
+    "type": "bool",
+    "default": false,
+    "group": "Proposte giornaliere",
+    "level": "advanced",
+    "label": "Studio: proposte in pausa",
+    "hint": "Non genera nuove proposte per Studio.",
+    "desc": "L'AI non propone più nulla di nuovo per Studio finché togli la pausa. Le proposte già in attesa restano e puoi ancora approvarle o scartarle."
+  },
+  "HS_OWNER_NOTIFY_MAX": {
+    "type": "int",
+    "min": 0,
+    "max": 20,
+    "default": 4,
+    "unit": "avvisi",
+    "group": "Avvisi",
+    "level": "advanced",
+    "label": "Avvisi al giorno",
+    "hint": "Tetto giornaliero degli avvisi push su ciò che aspetta te (0 = spenti).",
+    "desc": "Il server ti manda un riepilogo push quando proposte, release o passi tuoi aspettano una decisione, e un avviso subito per ciò che ferma il lavoro. Oltre questo numero al giorno aspetta il giorno dopo."
+  },
+  "HS_RELEASE_PAUSE": {
+    "type": "bool",
+    "default": false,
+    "group": "Rilascio dei Progetti",
+    "level": "essential",
+    "label": "Rilasci in pausa",
+    "hint": "Ferma annunci e unione delle release dei Progetti.",
+    "desc": "Il server non annuncia e non unisce più le Release PR dei Progetti (quelle già annunciate aspettano)."
+  },
+  "HS_RELEASE_SOAK_DAYS": {
+    "type": "int",
+    "min": 0,
+    "max": 60,
+    "default": 3,
+    "unit": "giorni",
+    "group": "Rilascio dei Progetti",
+    "level": "advanced",
+    "label": "Giorni di prova sul server",
+    "hint": "Giorni di prova sul server prima di una release.",
+    "desc": "Una release esce solo se il server è in prova continua da almeno tanti giorni (senza rollback dall'ultima release), con i controlli verdi e senza nuove issue bug."
+  },
+  "HS_RELEASE_HEAD_HOURS": {
+    "type": "int",
+    "min": 0,
+    "max": 72,
+    "default": 12,
+    "unit": "ore",
+    "group": "Rilascio dei Progetti",
+    "level": "advanced",
+    "label": "Ore di prova dell'ultimo commit",
+    "hint": "Ore minime in cui l'ultimo commit gira sano prima di una release.",
+    "desc": "Un commit appena installato non esce in una release senza essere stato visto funzionare per tante ore."
+  },
+  "HS_RELEASE_MIN_DAYS": {
+    "type": "int",
+    "min": 0,
+    "max": 90,
+    "default": 7,
+    "unit": "giorni",
+    "group": "Rilascio dei Progetti",
+    "level": "advanced",
+    "label": "Giorni minimi tra due release",
+    "hint": "Distanza minima tra due release.",
+    "desc": "Una release di soli fix può uscire prima."
+  },
+  "HS_RELEASE_NOTICE_HOURS": {
+    "type": "int",
+    "min": 1,
+    "max": 168,
+    "default": 24,
+    "unit": "ore",
+    "group": "Rilascio dei Progetti",
+    "level": "advanced",
+    "label": "Preavviso prima di unire",
+    "hint": "Ore di preavviso prima di unire la release.",
+    "desc": "Ore tra l'annuncio nel tracker (con il changelog) e l'unione della Release PR; in questo tempo puoi premere Rimanda."
+  },
+  "HS_DIGEST_ENABLED": {
+    "type": "bool",
+    "default": true,
+    "group": "Second brain",
+    "level": "advanced",
+    "label": "Mail di riepilogo",
+    "hint": "Una mail al giorno con sicurezza, lavoro fatto e cosa aspetta te.",
+    "desc": "Il server ti manda una mail al giorno con aggiornamenti e avvisi di sicurezza, le issue chiuse, quelle ferme su di te e le proposte da decidere. Parte solo se il collegamento mail è attivo."
+  },
+  "HS_DIGEST_HOUR": {
+    "type": "int",
+    "min": 0,
+    "max": 23,
+    "default": 7,
+    "unit": "ora",
+    "group": "Second brain",
+    "level": "advanced",
+    "label": "Ora della mail di riepilogo",
+    "hint": "Dalle quali ore del mattino parte la mail del giorno.",
+    "desc": "La mail parte al primo controllo (ogni 15 minuti) da quest’ora in poi, una volta al giorno. Se nel vault «Impostazioni/Second brain.md» ha una riga «Orario», vale quella."
+  },
+  "HS_DIGEST_WEEKEND": {
+    "type": "bool",
+    "default": true,
+    "group": "Second brain",
+    "level": "advanced",
+    "label": "Mail anche nel weekend",
+    "hint": "Spegni per non ricevere il riepilogo di sabato e domenica.",
+    "desc": "Se spento, il riepilogo non parte di sabato e domenica. Gli avvisi urgenti (batteria quasi scarica) partono comunque. Se nel vault «Impostazioni/Second brain.md» c’è una riga «Weekend», vale quella: qui sotto leggi cosa è in uso, e se la mail salta ti arriva un avviso."
+  },
+  "HS_OPS_REFRESH_IDLE_MIN": {
+    "type": "int",
+    "min": 5,
+    "max": 240,
+    "default": 15,
+    "unit": "min",
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "advanced",
+    "label": "Riavvio sessione ops: inattività",
+    "hint": "Minuti senza attività prima di passare all'ultima versione di Code.",
+    "desc": "Quando Claude Code si aggiorna, la sessione ops del server resta sulla versione vecchia. Dopo questi minuti senza attività viene chiusa e riaperta da sola sulla versione nuova. Una sessione in uso non viene mai toccata."
+  },
+  "HS_APP_IDLE_DAYS": {
+    "type": "int",
+    "min": 1,
+    "max": 365,
+    "default": 30,
+    "unit": "giorni",
+    "group": "Installazione dei Progetti",
+    "level": "advanced",
+    "label": "App dei Progetti: spegni se non usate",
+    "hint": "Giorni senza aprirla prima che l'app di un Progetto si spenga.",
+    "desc": "L'app di un Progetto che non apri da tanti giorni viene spenta e lo leggi nella mail del mattino. Si riaccende con un tocco dalla dashboard; per tenerla accesa a prescindere scegli Sempre accesa."
+  },
+  "HS_APP_TRIAL_HOURS": {
+    "type": "int",
+    "min": 1,
+    "max": 720,
+    "default": 24,
+    "unit": "ore",
+    "group": "Installazione dei Progetti",
+    "level": "advanced",
+    "label": "App nuova in prova: ore prima di spegnerla",
+    "hint": "Ore senza uso prima che un'app provata si rispenga.",
+    "desc": "Un Progetto nuovo con un'app parte spento. Lo accendi per provarlo e, se per queste ore non lo usi, si rispegne da solo."
+  }
+}

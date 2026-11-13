@@ -1,0 +1,106 @@
+#!/bin/sh
+# Restore tool for the server's nightly age-encrypted backups (issue 319). Run it on the PC, which
+# holds the private key; it never touches anything live: extract goes into an empty folder.
+#   restore-backup list
+#   restore-backup extract TYPE [FILE] DEST    latest backup of TYPE (or FILE) into an empty DEST
+#   restore-backup check                       open every type's latest backup in a temp dir, check expected files
+# Types: vaultwarden radicale repo sumisura library state. Where to put the files back: docs/services.md, "Ripristino".
+# Variables: HS_RESTORE_DIR (backups, default ~/Backups/vaultwarden), HS_RESTORE_KEY (default ~/.secrets/vw-backup.agekey).
+set -eu
+DIR=${HS_RESTORE_DIR:-$HOME/Backups/vaultwarden}
+KEY=${HS_RESTORE_KEY:-$HOME/.secrets/vw-backup.agekey}
+TYPES="vaultwarden radicale repo sumisura library state"
+
+# Expected files per type: one table, a grep -E over the archive's file list (at least one line must match).
+expected() {
+	case $1 in
+	vaultwarden) echo '^vaultwarden/db\.sqlite3$' ;;
+	radicale) echo '^radicale/' ;;
+	sumisura) echo '^sumisura-data/profile\.yaml$' ;;
+	library) echo '^library/' ;;
+	state) echo '^state/(settings/settings\.env|adguardhome/AdGuardHome\.yaml|syncthing/(config\.xml|cert\.pem|key\.pem))$' ;;
+	esac
+}
+ext() { if [ "$1" = repo ]; then echo bundle.age; else echo tar.gz.age; fi; }
+valid() { case " $TYPES " in *" $1 "*) ;; *) echo "unknown type: $1 (one of: $TYPES)" >&2; exit 2 ;; esac; }
+latest() { ls -1 "$DIR"/"$1"-*."$(ext "$1")" 2> /dev/null | sort | tail -n 1; }
+need_key() { [ -r "$KEY" ] || { echo "key not readable: $KEY" >&2; exit 1; }; }
+verify_bundle() { # BUNDLE
+	g=$(mktemp -d)
+	git init -q "$g"
+	git -C "$g" bundle verify -q "$1" > /dev/null 2>&1
+	r=$?
+	rm -rf "$g"
+	return $r
+}
+
+do_list() {
+	for t in $TYPES; do
+		found=
+		for f in $(ls -1 "$DIR"/"$t"-*."$(ext "$t")" 2> /dev/null | sort -r); do
+			found=1
+			printf '%-12s %s  %8s bytes  %s\n' "$t" "$(basename "$f" | sed -E 's/^[a-z]+-([0-9]{8})-([0-9]{4}).*/\1 \2/')" "$(wc -c < "$f")" "$(basename "$f")"
+		done
+		[ -n "$found" ] || printf '%-12s (no backup)\n' "$t"
+	done
+}
+
+do_extract() {
+	t=$1
+	valid "$t"
+	if [ $# -eq 3 ]; then f=$2; dest=$3; else f=$(latest "$t"); dest=$2; fi
+	[ -n "$f" ] && [ -f "$f" ] || { echo "no $t backup in $DIR" >&2; exit 1; }
+	need_key
+	if [ -e "$dest" ] && { [ ! -d "$dest" ] || [ -n "$(ls -A "$dest")" ]; }; then
+		echo "destination not empty: $dest" >&2
+		exit 1
+	fi
+	mkdir -p "$dest"
+	if [ "$t" = repo ]; then
+		age -d -i "$KEY" -o "$dest/repo.bundle" "$f"
+		verify_bundle "$dest/repo.bundle" || { echo "bundle verify FAILED" >&2; exit 1; }
+		echo "ok: $dest/repo.bundle (git clone $dest/repo.bundle NAME)"
+	else
+		age -d -i "$KEY" "$f" | tar --no-same-owner -xzf - -C "$dest"
+		echo "ok: extracted $(basename "$f") into $dest"
+	fi
+}
+
+do_check() {
+	need_key
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' EXIT
+	bad=0 seen=0
+	for t in $TYPES; do
+		f=$(latest "$t")
+		if [ -z "$f" ]; then echo "SKIP $t: no backup"; continue; fi
+		seen=$((seen + 1))
+		if [ "$t" = repo ]; then
+			if age -d -i "$KEY" -o "$tmp/repo.bundle" "$f" 2> /dev/null && verify_bundle "$tmp/repo.bundle"; then
+				echo "ok   $t"
+			else
+				echo "FAIL $t: bundle does not open or verify"; bad=1
+			fi
+			rm -f "$tmp/repo.bundle"
+			continue
+		fi
+		if ! age -d -i "$KEY" "$f" 2> /dev/null | tar -tzf - > "$tmp/list" 2> /dev/null; then
+			echo "FAIL $t: archive does not decrypt/open"; bad=1
+		elif ! grep -Eq "$(expected "$t")" "$tmp/list"; then
+			echo "FAIL $t: expected file missing"; bad=1
+		else
+			echo "ok   $t"
+		fi
+	done
+	[ "$seen" -gt 0 ] || { echo "FAIL: no backup found in $DIR" >&2; exit 1; }
+	exit $bad
+}
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+case $cmd in
+list) do_list ;;
+extract) [ $# -ge 2 ] && [ $# -le 3 ] || { echo "usage: restore-backup extract TYPE [FILE] DEST" >&2; exit 2; }; do_extract "$@" ;;
+check) do_check ;;
+*) echo "usage: restore-backup list | extract TYPE [FILE] DEST | check" >&2; exit 2 ;;
+esac

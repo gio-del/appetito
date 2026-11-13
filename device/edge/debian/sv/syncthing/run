@@ -1,0 +1,7 @@
+#!/bin/sh
+exec 2>&1
+set -a; . /etc/home-server.env; set +a
+export HOME=/home/$HS_USER STNORESTART=1 STNOUPGRADE=1
+exec chpst -u $HS_USER:$HS_USER /usr/bin/syncthing serve --no-browser --no-restart \
+  --home=/home/$HS_USER/.local/state/syncthing --gui-address=127.0.0.1:8384 \
+  --logfile=- 

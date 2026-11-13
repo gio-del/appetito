@@ -1,0 +1,20 @@
+#!/bin/sh
+# projects-issue-apply as a service (issue 332): the tracker's requests for GitHub (Rispondi, Azioni on
+# /projects.html) are answered within a couple of seconds instead of waiting for the once-a-minute cron,
+# which stays as a safety net (the script's lock keeps the two from applying a request twice).
+# Runs as $HS_USER, the one that holds the token; looks at the dir every 2 s and runs the job only when a
+# request has no answer yet.
+exec 2>&1
+set -a; . /etc/home-server.env; set +a
+H=$(getent passwd "$HS_USER" | cut -d: -f6)
+export HOME=$H USER=$HS_USER LOGNAME=$HS_USER SHELL=/bin/bash LANG=C.UTF-8 \
+  PATH=$H/bin:/usr/local/bin:/usr/bin:/bin
+exec setpriv --reuid="$HS_USER" --regid="$HS_USER" --init-groups --no-new-privs sh -c '
+  D=/var/lib/projects-writes
+  while :; do
+    for f in "$D"/*.req.json; do
+      [ -e "$f" ] || continue
+      [ -e "${f%.req.json}.res.json" ] || { "$HOME/bin/projects-issue-apply" || true; break; }
+    done
+    sleep 2
+  done'

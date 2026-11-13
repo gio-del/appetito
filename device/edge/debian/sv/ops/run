@@ -1,0 +1,25 @@
+#!/bin/sh
+# ops: the Claude Code session that operates the server, kept alive so it can be driven
+# from the phone via Remote Control (the Claude app or its web client) with the PC off.
+# Lives in tmux session "ops" (attach over SSH with the `ops` alias). If claude exits
+# or the session is killed, this script exits and runit starts a fresh one.
+# Approved by the owner (2026-10-10); requires 2FA on the Claude account.
+exec 2>&1
+set -a; . /etc/home-server.env; set +a
+H=$(getent passwd "$HS_USER" | cut -d: -f6)
+export HOME=$H USER=$HS_USER LOGNAME=$HS_USER SHELL=/bin/bash TERM=xterm-256color LANG=C.UTF-8 \
+  PATH=$H/.local/bin:$H/bin:/usr/local/bin:/usr/bin:/bin
+# Security enabled (issue 511): --no-new-privs, so sudo and setuid do nothing; off = this session uses sudo (with permission prompts).
+NP=; ! hs-security-enabled || NP=--no-new-privs
+exec setpriv $NP --reuid="$HS_USER" --regid="$HS_USER" --init-groups sh -c '
+  # ops-refresh (issue 441) leaves the id of the conversation it closed: resume it once (an id missing = fresh session).
+  R=$HOME/.local/state/ops-resume-id; a=""
+  # Uncommitted work ops-auto stashed since the chat closed (issue 451): tell the owner.
+  if [ -s "$R" ]; then
+    since=$(stat -c %Y "$R"); s=$(git -C "$HOME/home-server" stash list --format="%ct %gs" 2>/dev/null | awk -v s="$since" "\$1 >= s && /ops-auto #|altra sessione/" | head -1 | cut -d" " -f2-)
+    [ -z "$s" ] || hs-notify "ops" "Mentre la chat era chiusa del lavoro non committato è finito nello stash: $s" || true
+  fi
+  if [ -s "$R" ]; then a="--resume $(tr -dc 0-9a-f- < "$R") "; fi; rm -f "$R"
+  tmux has-session -t ops 2>/dev/null ||
+    tmux new-session -d -s ops -c "$HOME/home-server" "claude ${a}--remote-control ops" || exit 1
+  while tmux has-session -t ops 2>/dev/null; do sleep 20; done'

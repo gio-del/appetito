@@ -1,0 +1,17 @@
+#!/bin/sh
+exec 2>&1
+# studio-app, the app of the Gateway Project "studio" (issue 461; installed by studio-app-setup): unprivileged user
+# studioapp, no capabilities, on 127.0.0.1:3008 behind Caddy (https://$HS_TS_HOST:8449). It reads the study folder
+# ~studio/studio (group studioapp, read-only) and writes only segnalazioni.md there (see studio-app-setup).
+# STUDIO_SESSION_NAME names the Remote Control session shown on the Feedback page (issue 475; optional STUDIO_SESSION_URL for a link).
+# HS_OBSIDIAN_VAULT (tracker setting, read with hs-setting: one place for the vault name) lets the app build the obsidian:// links
+# of notes and cards and the "Nuova nota" button of a step (issue 549); a changed setting is picked up at the next restart.
+# /etc/studio-app.env holds AUTH_USER and AUTH_PASSWORD (the server does not start without a password).
+set -a; . /etc/home-server.env; . /etc/studio-app.env; set +a
+H=$(getent passwd studio | cut -d: -f6)
+[ -d "$H/studio" ] || { echo "studio-app: no study folder"; sleep 300; exit 1; }
+HS_OBSIDIAN_VAULT=$(hs-setting HS_OBSIDIAN_VAULT 2> /dev/null || true)
+export HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin LISTEN_HOST=127.0.0.1 PORT=3008 STUDIO_SESSION_NAME=studio STUDIO_DIR=$H/studio STATE_DIR=/var/lib/studio-app HS_OBSIDIAN_VAULT
+cd /opt/studio-app
+exec setpriv --reuid=studioapp --regid=studioapp --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all \
+	/usr/local/bin/node /opt/studio-app/server.js

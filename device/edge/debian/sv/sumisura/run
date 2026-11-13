@@ -1,0 +1,13 @@
+#!/bin/sh
+exec 2>&1
+# Sumisura, the app of the Gateway Project "sumisura" (issue 018; installed by sumisura-setup):
+# unprivileged user sumisura, no capabilities, on 127.0.0.1:3005 behind Caddy
+# (https://$HS_TS_HOST:8446). /etc/sumisura.env holds LAN_AUTH_TOKEN (every /api request needs it)
+# and the optional ANTHROPIC_API_KEY.
+set -a; . /etc/sumisura.env; set +a
+L=/var/lib/sumisura
+export HOME=$L PATH=/usr/local/bin:/usr/bin:/bin LISTEN_HOST=127.0.0.1 PORT=3005 \
+	DATA_DIR=$L/data PROJECT_ROOT=$L STATIC_DIR=/opt/sumisura/web
+cd "$L"
+exec setpriv --reuid=sumisura --regid=sumisura --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all \
+	/opt/sumisura/sumisura

@@ -1,0 +1,13 @@
+#!/bin/sh
+exec 2>&1
+# Issue tracker (device/edge/tracker, installed to /opt/hs-tracker): unprivileged user tracker, no capabilities,
+# on 127.0.0.1:3004 behind Caddy (https://$HS_TS_HOST:8444). It may write only issues/open and issues/done
+# (ACLs set by tracker-setup); $HS_USER's cron commits them (issues-autocommit).
+set -a; . /etc/home-server.env; set +a
+H=$(getent passwd "$HS_USER" | cut -d: -f6)
+export HOME=/var/lib/tracker NODE_ENV=production \
+	TRACKER_REPO=$H/home-server TRACKER_STATE=/var/lib/tracker TRACKER_PORT=3004 \
+	TRACKER_ORIGINS=https://$HS_TS_HOST:8444 TRACKER_AUTHOR=$HS_USER HS_QUEUE_PROJECTS_JSON=/var/lib/edge-status/projects-issues.json
+umask 002
+exec setpriv --reuid=tracker --regid=tracker --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all \
+	/usr/local/bin/node /opt/hs-tracker/server.js

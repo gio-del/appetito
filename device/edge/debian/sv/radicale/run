@@ -1,0 +1,7 @@
+#!/bin/sh
+exec 2>&1
+# Radicale CalDAV (Debian package): unprivileged user radicale, no capabilities, on 127.0.0.1:5232
+# behind Caddy (https://$HS_TS_HOST:8445). Config /etc/radicale/{config,rights,users} (radicale-setup).
+export HOME=/var/lib/radicale
+exec setpriv --reuid=radicale --regid=radicale --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all \
+	/usr/bin/python3 -m radicale --config /etc/radicale/config

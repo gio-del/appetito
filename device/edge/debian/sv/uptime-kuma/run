@@ -1,0 +1,5 @@
+#!/bin/sh
+exec 2>&1
+cd /opt/uptime-kuma
+export HOME=/var/lib/uptime-kuma NODE_ENV=production UPTIME_KUMA_HOST=127.0.0.1 UPTIME_KUMA_PORT=3001 DATA_DIR=/var/lib/uptime-kuma/data/ UPTIME_KUMA_DB_TYPE=sqlite
+exec chpst -u kuma:kuma /usr/local/bin/node server/server.js

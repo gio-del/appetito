@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101112">
+<title>Mail</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="mail.js" defer></script>
+</head>
+<body>
+<main class="pa">
+  <h1>Mail</h1>
+  <p class="muted small">Le mail che inoltri al tuo indirizzo con <b>+edge</b> finiscono nell'Inbox del second brain, e il server può scriverti. Passa da un piccolo script nel tuo account Google: il server vede solo le mail mandate a quell'indirizzo e può scrivere solo a te.</p>
+  <div id="ml-state" class="pa-row" hidden></div>
+
+  <section id="ml-setup" hidden>
+    <h2 class="st-group" id="ml-copy-h">1. Copia lo script</h2>
+    <p class="small">Contiene un segreto che conosce solo il server: non incollarlo in chat o altrove.</p>
+    <div class="ml-actions"><button id="ml-copy" class="btn primary" type="button">Copia lo script</button><span id="ml-copied" class="pa-ok small" role="status"></span></div>
+    <details class="small"><summary>Mostra lo script</summary><textarea id="ml-script" class="ml-script" readonly rows="8"></textarea></details>
+
+    <h2 class="st-group" id="ml-new-h">2. Pubblicalo nel tuo account Google</h2>
+    <ol id="ml-new" class="small ml-steps">
+      <li>Apri <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener noreferrer">script.google.com → Nuovo progetto</a>. Se dal telefono l'editor non si apre bene: menu <b>⋮</b> di Chrome → <b>Sito desktop</b>.</li>
+      <li>Tocca <b>Progetto senza titolo</b> e chiamalo <b>edge-mail</b>.</li>
+      <li>In <b>Codice.gs</b> cancella tutto, incolla lo script e salva (icona del dischetto).</li>
+      <li><b>Esegui il deployment</b> → <b>Nuovo deployment</b> → ingranaggio accanto a «Seleziona tipo» → <b>App web</b>.</li>
+      <li><b>Esegui come</b>: <b>Me</b>. <b>Chi ha accesso</b>: <b>Chiunque</b>. Poi <b>Esegui il deployment</b>.</li>
+      <li><b>Autorizza l'accesso</b> → il tuo account → «Google non ha verificato questa app» → <b>Avanzate</b> → <b>Vai a edge-mail (non sicura)</b> → <b>Consenti</b>. È normale: l'app è tua.</li>
+      <li>Copia l'<b>URL</b> dell'app web (finisce con <code>/exec</code>) e incollalo qui sotto.</li>
+    </ol>
+
+    <h2 class="st-group" id="ml-up-h" hidden>2. Pubblica la nuova versione</h2>
+    <ol id="ml-up" class="small ml-steps" hidden>
+      <li>Apri <a href="https://script.google.com/home" target="_blank" rel="noopener noreferrer">script.google.com</a> → progetto <b>edge-mail</b>. Se dal telefono l'editor non si apre bene: menu <b>⋮</b> di Chrome → <b>Sito desktop</b>.</li>
+      <li>In <b>Codice.gs</b> cancella tutto, incolla lo script e salva (icona del dischetto).</li>
+      <li><b>Esegui il deployment</b> → <b>Gestisci deployment</b> → matita <b>Modifica</b> → <b>Versione</b>: <b>Nuova versione</b> → <b>Esegui il deployment</b>. Non fare un «Nuovo deployment»: l'indirizzo cambierebbe.</li>
+      <li>Se chiede di autorizzare: <b>Autorizza l'accesso</b> → il tuo account → <b>Avanzate</b> → <b>Vai a edge-mail (non sicura)</b> → <b>Consenti</b>.</li>
+      <li>Fatto: l'indirizzo resta lo stesso e non va salvato di nuovo. Entro 2 minuti questa pagina torna a «Collegato».</li>
+    </ol>
+  </section>
+
+  <form id="ml-form" hidden>
+    <h2 class="st-group" id="ml-url-h">3. Indirizzo dello script</h2>
+    <input id="ml-url" class="ml-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec">
+    <div class="ml-actions"><button class="btn primary" type="submit">Salva</button><button id="ml-unlink" class="btn ghost" type="button" hidden>Scollega</button><span id="ml-saved" class="pa-ok small" role="status"></span></div>
+  </form>
+
+  <section id="ml-use" hidden>
+    <h2 class="st-group">Come si usa</h2>
+    <p class="small">Inoltra una mail (o scrivine una) a:</p>
+    <div class="ml-actions"><code id="ml-alias" class="ml-alias"></code><button id="ml-alias-copy" class="btn" type="button">Copia</button></div>
+    <p class="small muted">Le righe che scrivi sopra la mail inoltrata sono le tue istruzioni; la mail inoltrata e gli allegati sono materiale da smistare. Entrano solo le mail spedite dal tuo account (o dagli indirizzi in <code>HS_MAIL_ALLOW</code>) e verificate da Gmail: le altre vengono scartate.</p>
+    <div class="ml-actions"><button id="ml-test" class="btn" type="button">Mandami una mail di prova</button><span id="ml-test-st" class="small" role="status"></span></div>
+    <div id="ml-rejected"></div>
+  </section>
+  <p id="ml-msg" class="err" role="alert"></p>
+</main>
+</body>
+</html>

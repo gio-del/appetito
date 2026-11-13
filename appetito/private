@@ -1,0 +1,20 @@
+# File di home-server che restano privati di Appetito (issue 487, epic 476).
+# Stesso formato di appetito/files (percorso, cartella/, modello*). Un file tracciato che non è né in
+# `files` né qui è «nuovo fuori elenco»: scripts/appetito-propose ne fa una proposta nel tracker.
+# Approva = il file entra in `files`; Scarta = resta privato (la proposta scartata lo ricorda).
+# Classe P di docs/appetito-inventario.md.
+issues/
+docs/
+DIREZIONE.md
+README.md
+CLAUDE.md
+cloudflare/
+public-site/
+wrangler.jsonc
+device/watch/
+scripts/edge-debloat.txt
+scripts/moto-flash-stock.py
+scripts/rebuild-vbmeta.py
+device/edge/debian/projects
+device/edge/debian/studio/CLAUDE.md
+device/edge/debian/sumisura/*-prompt.md

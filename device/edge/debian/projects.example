@@ -1,0 +1,19 @@
+# Projects hosted by this server: its Gateway (issue 018), one per line (every Project needs a git remote the Edge can read: device/edge/projects-check, issue 180):
+#   name | git URL (- = this repo, already at ~/home-server) | app service (- = none) | status
+#        | proposals: issues dir, relative to the Project (- = no daily proposals) | extra rules file (- = none)
+#        | release: auto = release-gate (issue 208) merges the Project's release-please Release PR when its rules hold, after announcing it for HS_RELEASE_NOTICE_HOURS; - = never (default)
+# The deploy installs this file as /etc/hs-projects. gateway-sync (as $HS_USER) keeps the
+# Gateway root ~/projects: one folder per Project (a clone, made once and never pulled by a
+# script; home-server is a link to ~/home-server). An app service is a runit service with its
+# own setup script (<service>-setup in /usr/local/sbin, run by the deploy): it runs only while
+# its Project is listed here with that service, and gets a dashboard card in "Progetti".
+# Status is the Gateway's: active, paused, archived (CONTEXT.md in the Gateway root).
+# Proposals: ops-suggest (issue 028) runs once a day on each Project with an issues dir; the rules
+# file (relative to the Project) is appended to ops-suggest-prompt.md for it. Proposals always go to
+# this server's tracker (home-server's issues/proposed). `github` (issue 161) = the Project's issues live
+# on its host (Sumisura: GitHub Issues, mirrored read-only by projects-issues-sync): the run also reads
+# the Project's CLAUDE.md, the proposals are tagged `Project: NAME` in the tracker and:
+# approving one leaves it for projects-publish-pending (issue 189), which creates the issue on the host.
+# Template: copy to device/edge/debian/projects (the file the deploy installs) and list your Projects.
+home-server | - | - | active | issues | - | -
+# example | https://github.com/OWNER/example.git | - | active | github | - | -
