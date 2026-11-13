@@ -1,0 +1,110 @@
+#!/bin/sh
+# Appetito: pubblicazione (issue 560, epic 476). L'unico comando che scrive su `main` del repo di Appetito.
+# Fa una cosa sola: manda a GitHub i commit nuovi della cartella di lavoro DIR (quella di appetito-build),
+# solo in avanti. Non ha opzioni per forzare e non pubblica mai su un repo che e' un Project.
+#   scripts/appetito-publish [--dry-run] [DIR]      DIR: default ~/appetito-pub
+# Dove: HS_APPETITO_REPO (proprietario/nome su GitHub) in device/edge/home-server.env, altrimenti in
+# /etc/home-server.env. Vuoto = pubblicazione spenta (esce 1 senza fare nulla).
+# Prima del push, tutti obbligatori (al primo che fallisce esce 1 e non pubblica):
+#   1. DIR e' un repo git su `main`, senza modifiche non committate, con origin = quel repo;
+#   2. quel repo non e' tra i Project (/etc/hs-projects): quelli passano dalle PR;
+#   3. il commit locale sta sopra `main` pubblicato (nessuna storia riscritta);
+#   4. i file sono esattamente l'elenco (`appetito-build --files` sul commit HEAD di home-server);
+#   5. `appetito-check` sulla copia dei file (valori personali, segreti, attribuzione);
+#   6. `hs-secrets verdict` sulla storia e `hs-attribution commits` sui commit nuovi.
+# Dopo il push: `ls-remote` deve mostrare il commit, altrimenti esce 1.
+# Il token ~/.secrets/git-github arriva a git solo da uno script GIT_ASKPASS temporaneo (come projects-git):
+# mai in una riga di comando, in un URL, in .git/config o nei log.
+# Per i test: HS_ENV_FILE (file dei valori; puo' definire HS_APPETITO_URL al posto di github.com),
+# HS_PROJECTS_FILE, HS_APPETITO_FILES_CMD, HS_APPETITO_CHECK_CMD, HS_SECRETS_CMD, HS_ATTRIBUTION_CMD, HS_GIT_TOKEN.
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd)
+die() { echo "appetito-publish: $*" >&2; exit 1; }
+dry=0; dir=''
+while [ $# -gt 0 ]; do
+	case $1 in
+	--dry-run) dry=1 ;;
+	-*) die "opzione sconosciuta: $1 (uso: appetito-publish [--dry-run] [DIR])" ;;
+	*) [ -z "$dir" ] || die "una sola cartella"; dir=$1 ;;
+	esac
+	shift
+done
+[ -n "$dir" ] || dir=$HOME/appetito-pub
+
+envf=${HS_ENV_FILE:-}
+if [ -z "$envf" ]; then
+	for f in "$here/device/edge/home-server.env" /etc/home-server.env; do [ -r "$f" ] && { envf=$f; break; }; done
+fi
+[ -n "$envf" ] && [ -r "$envf" ] || die "nessun file dei valori (home-server.env)"
+HS_APPETITO_REPO=''; HS_APPETITO_URL=''
+# shellcheck disable=SC1090
+. "$envf"
+[ -n "$HS_APPETITO_REPO" ] || die "pubblicazione spenta: HS_APPETITO_REPO e' vuoto"
+case $HS_APPETITO_REPO in
+*[!A-Za-z0-9._/-]* | */*/* | /* | */ | .* | *..*) die "HS_APPETITO_REPO non valido: $HS_APPETITO_REPO" ;;
+*/*) ;;
+*) die "HS_APPETITO_REPO non valido: $HS_APPETITO_REPO (proprietario/nome)" ;;
+esac
+url=${HS_APPETITO_URL:-https://github.com/$HS_APPETITO_REPO.git}
+
+# 2. mai un Project
+projects=${HS_PROJECTS_FILE:-/etc/hs-projects}
+if [ -r "$projects" ] && grep -v '^[[:space:]]*#' "$projects" | grep -qiF -- "/$HS_APPETITO_REPO.git"; then
+	die "$HS_APPETITO_REPO e' un Project: si pubblica con le PR, non da qui"
+fi
+
+# 1. la cartella di lavoro
+git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 || die "$dir non e' un repo git (prima scripts/appetito-build $dir)"
+[ "$(git -C "$dir" rev-parse --show-toplevel)" = "$(cd "$dir" && pwd -P)" ] || die "$dir non e' la radice del repo"
+[ "$(git -C "$dir" symbolic-ref --short -q HEAD || true)" = main ] || die "$dir non e' sul ramo main"
+[ -z "$(git -C "$dir" status --porcelain)" ] || die "$dir ha modifiche non committate"
+[ "$(git -C "$dir" remote get-url origin 2> /dev/null || true)" = "$url" ] || die "origin di $dir non e' $url"
+
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+export GIT_TERMINAL_PROMPT=0
+token=${HS_GIT_TOKEN:-$HOME/.secrets/git-github}
+case $url in
+https://github.com/*)
+	[ -r "$token" ] || die "token non leggibile: $token"
+	printf '#!/bin/sh\ncase $1 in Username*) echo x-access-token ;; *) cat %s ;; esac\n' "'$token'" > "$tmp/ask"
+	chmod 700 "$tmp/ask"
+	export GIT_ASKPASS="$tmp/ask"
+	;;
+esac
+
+# 3. solo in avanti
+git -C "$dir" fetch -q origin main || die "non riesco a leggere main di $HS_APPETITO_REPO"
+base=$(git -C "$dir" rev-parse FETCH_HEAD)
+head=$(git -C "$dir" rev-parse HEAD)
+git -C "$dir" merge-base --is-ancestor "$base" "$head" || die "il commit locale non sta sopra main pubblicato ($(echo "$base" | cut -c1-7)): niente push forzato, rifare la copia da un clone aggiornato"
+[ "$base" != "$head" ] || { echo "niente da pubblicare: main e' gia' a $(echo "$head" | cut -c1-7)"; exit 0; }
+
+# 4. i file sono l'elenco
+${HS_APPETITO_FILES_CMD:-sh "$here/scripts/appetito-build" --files} | sort > "$tmp/want" || die "elenco dei file non leggibile"
+git -C "$dir" ls-files | sort > "$tmp/have"
+if ! cmp -s "$tmp/want" "$tmp/have"; then
+	echo "appetito-publish: i file non sono l'elenco (< solo nell'elenco, > solo nella copia):" >&2
+	diff "$tmp/want" "$tmp/have" | grep '^[<>]' | head -10 >&2 || true
+	die "rifare la copia: scripts/appetito-build $dir"
+fi
+
+# 5. controllo sulla copia dei file (senza .git)
+mkdir "$tmp/copy"
+git -C "$dir" archive HEAD | tar -x --no-same-owner -C "$tmp/copy"
+${HS_APPETITO_CHECK_CMD:-sh "$here/scripts/appetito-check"} "$tmp/copy" || die "bloccata dal controllo dei file"
+
+# 6. storia e commit nuovi
+${HS_SECRETS_CMD:-hs-secrets} verdict "$dir" > "$tmp/verdict" 2>&1 || { tail -5 "$tmp/verdict" >&2; die "bloccata dallo scanner dei segreti"; }
+(cd "$dir" && ${HS_ATTRIBUTION_CMD:-hs-attribution} commits "$base..$head") > "$tmp/attr" 2>&1 || { tail -5 "$tmp/attr" >&2; die "bloccata dal controllo dell'attribuzione"; }
+
+n=$(git -C "$dir" rev-list --count "$base..$head")
+short=$(echo "$head" | cut -c1-7)
+if [ "$dry" = 1 ]; then
+	git -C "$dir" push -q --dry-run origin "$head:refs/heads/main" || die "prova di push rifiutata (permessi del token o regole del ramo)"
+	echo "prova riuscita: $n commit pronti ($(echo "$base" | cut -c1-7)..$short), $(wc -l < "$tmp/have") file; nulla pubblicato"
+	exit 0
+fi
+git -C "$dir" push -q origin "$head:refs/heads/main" || die "push rifiutato (permessi del token o regole del ramo): nulla pubblicato"
+now=$(git -C "$dir" ls-remote -q origin refs/heads/main | cut -f1)
+[ "$now" = "$head" ] || die "dopo il push main e' a $(echo "$now" | cut -c1-7), atteso $short"
+echo "pubblicato $short su main di $HS_APPETITO_REPO ($n commit, $(wc -l < "$tmp/have") file)"

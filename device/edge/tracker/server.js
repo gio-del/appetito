@@ -1227,6 +1227,8 @@ const SEC_HEADERS = {
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
 
+const IMG_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
+
 function send(res, code, body, headers = {}) {
   const json = typeof body !== 'string' && !Buffer.isBuffer(body);
   res.writeHead(code, { ...SEC_HEADERS, 'Cache-Control': 'no-store',
@@ -1416,6 +1418,14 @@ async function handle(req, res) {
   }
   if (p === '/api/issues' && req.method === 'GET') return send(res, 200, { issues: await listIssues(), author: AUTHOR, staleAfter: await staleAfter() });
   if (p === '/api/issues' && req.method === 'POST') return send(res, 201, await createIssue(await readJson(req)));
+  // Images of an issue (issue 550): issues/assets/<N>/<file>, read only, owner session only.
+  const im = /^\/api\/issues\/(\d{3,})\/images\/([A-Za-z0-9][A-Za-z0-9._-]{0,100}\.(png|jpe?g|webp))$/.exec(p);
+  if (im && req.method === 'GET') {
+    const f = path.join(REPO, 'issues', 'assets', im[1], im[2]);
+    let data;
+    try { const st = await fsp.lstat(f); if (!st.isFile() || st.size > 8e6) throw 0; data = await fsp.readFile(f); } catch { return send(res, 404, { error: 'not found' }); }
+    return send(res, 200, data, { 'Content-Type': IMG_TYPES[im[3]], 'Cache-Control': 'private, max-age=300' });
+  }
   const m = /^\/api\/issues\/(\d{3,})$/.exec(p);
   if (m && req.method === 'GET') {
     const cur = await find(m[1]);
@@ -1440,7 +1450,9 @@ async function handle(req, res) {
       const vault = (await readSettings()).HS_OBSIDIAN_VAULT ?? SCHEMA.HS_OBSIDIAN_VAULT.default;
       originUrl = `obsidian://open?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(me.originPath)}`;
     }
-    return send(res, 200, { ...me, originUrl, children, links, problems, desc: parsed.desc, hitl: hitlSteps(parsed.desc), commentList: parsed.comments, history: await history(cur.issue.file) });
+    let images = [];
+    try { images = (await fsp.readdir(path.join(REPO, 'issues', 'assets', me.id), { withFileTypes: true })).filter(e => e.isFile() && /^[A-Za-z0-9][A-Za-z0-9._-]{0,100}\.(png|jpe?g|webp)$/.test(e.name)).map(e => e.name).sort(); } catch { /* no assets */ }
+    return send(res, 200, { ...me, originUrl, images, children, links, problems, desc: parsed.desc, hitl: hitlSteps(parsed.desc), commentList: parsed.comments, history: await history(cur.issue.file) });
   }
   if (m && req.method === 'PATCH') return send(res, 200, await updateIssue(m[1], await readJson(req)));
   if (p === '/api/projects-issues' && req.method === 'GET') return send(res, 200, await projectsIssues());

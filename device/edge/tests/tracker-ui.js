@@ -59,6 +59,10 @@ function fixture() {
   fs.writeFileSync(path.join(repo, 'issues', 'open', '019-tre-passi-hitl.md'),
     '# Tre passi hitl\n\nOpened: 2026-01-01\nBlocked on: user (passi)\nStatus: in-progress\n\n## Esecuzione\n- [x] Passo fatto da Claude\n' +
     '- [ ] (HITL) Primo? (perché)\n- [ ] (HITL) Secondo? (perché)\n- [ ] (HITL) Terzo? (perché)\n- [ ] Passo autonomo dopo\n');
+  // Immagini di una issue (issue 550): due png finti su #003, più un file non ammesso.
+  const as = path.join(repo, 'issues', 'assets', '003'); fs.mkdirSync(as, { recursive: true });
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+  fs.writeFileSync(path.join(as, 'uno-chiaro.png'), png); fs.writeFileSync(path.join(as, 'due-scuro.png'), png); fs.writeFileSync(path.join(as, 'note.txt'), 'x');
   const old = { ...process.env, GIT_AUTHOR_DATE: '2025-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2025-01-01T00:00:00Z' };
   const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { env: old, stdio: 'ignore' });
   git('init', '-q'); git('add', '-A'); git('commit', '-qm', 'fixture');
@@ -283,6 +287,26 @@ async function main() {
     const op = await evaluate(`S.open`);
     if (op === '001') console.log(`ok padre cliccabile nel drawer (${w}px)`);
     else { failed++; console.log(`FAIL padre nel drawer (${w}px): aperta ${op}`); }
+  }
+  // Immagini nel drawer (issue 550): miniature entro la larghezza, endpoint con regole strette.
+  for (const w of [390, 1280]) {
+    await c.send('Emulation.setDeviceMetricsOverride', { width: w, height: 844, deviceScaleFactor: 1, mobile: w < 600 });
+    await evaluate(`openIssue('003')`);
+    await sleep(700);
+    const g = await evaluate(`(() => { const d = document.querySelector('#drawer'); const s = [...document.querySelectorAll('#drawer .shot')];
+      return { n: s.length, names: s.map(x => x.textContent), ok: s.every(x => { const r = x.getBoundingClientRect(); return r.right <= d.getBoundingClientRect().right + 1 && r.width > 50; }), over: d.scrollWidth > d.clientWidth + 1,
+      loaded: [...document.querySelectorAll('#drawer .shot img')].every(i => i.complete && i.naturalWidth === 1) }; })()`);
+    if (g.n === 2 && g.names.join() === 'due-scuro.png,uno-chiaro.png' && g.ok && !g.over && g.loaded) console.log(`ok immagini nel drawer (${w}px)`);
+    else { failed++; console.log(`FAIL immagini nel drawer (${w}px): ${JSON.stringify(g)}`); }
+  }
+  {
+    const st = async (p, auth = true) => (await fetch(base + p, { headers: auth ? { cookie } : {} })).status;
+    const r = await fetch(base + '/api/issues/003/images/uno-chiaro.png', { headers: { cookie } });
+    const got = [r.status, r.headers.get('content-type'), r.headers.get('x-content-type-options'), await st('/api/issues/003/images/uno-chiaro.png', false),
+      await st('/api/issues/003/images/note.txt'), await st('/api/issues/003/images/..%2F..%2Fopen%2F001-epic-con-figli.md'), await st('/api/issues/003/images/..%2Fx.png'),
+      await st('/api/issues/002/images/uno-chiaro.png'), await st('/api/issues/003/images/manca.png')];
+    if (JSON.stringify(got) === JSON.stringify([200, 'image/png', 'nosniff', 401, 404, 404, 404, 404, 404])) console.log('ok immagini: servite solo png valide, 401 senza sessione, 404 per ../ e estensioni non ammesse');
+    else { failed++; console.log('FAIL immagini endpoint: ' + JSON.stringify(got)); }
   }
   await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   // Issue dei Progetti nella board (issue 184): the filter swaps the columns to the GitHub copy, read-only.

@@ -48,6 +48,7 @@ scripts/restore-backup
 scripts/appetito-build
 scripts/appetito-propose
 scripts/appetito-check
+scripts/appetito-publish
 appetito/files
 appetito/private
 

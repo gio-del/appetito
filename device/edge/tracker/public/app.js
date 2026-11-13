@@ -589,6 +589,10 @@ function renderDetail() {
   const comments = d.commentList.map(c => h('div', { class: 'comment' },
     h('div', { class: 'comment-h' }, h('b', null, c.author), c.date),
     h('div', { class: 'md', html: md(c.text) })));
+  const imgUrl = n => `/api/issues/${d.id}/images/${encodeURIComponent(n)}`;
+  const gallery = d.images?.length ? [h('div', { class: 'section-h' }, `Immagini (${d.images.length})`),
+    h('div', { class: 'gallery' }, d.images.map(n => h('a', { class: 'shot', href: imgUrl(n), target: '_blank', rel: 'noopener' },
+      h('img', { src: imgUrl(n), alt: n, loading: 'lazy' }), h('span', null, n))))] : [];
   const cIn = h('textarea', { rows: 3, placeholder: 'Scrivi un commento… (Ctrl+Invio per inviare)' });
   const cBtn = h('button', { class: 'btn primary', onclick: async () => {
     if (!cIn.value.trim()) return;
@@ -690,7 +694,7 @@ function renderDetail() {
 
   body.replaceChildren(title, proposal || '', stale || '', reply || '', problems || '', props,
     h('div', { class: 'section-h' }, 'Descrizione', editBtn), descBox,
-    ...(subs || []),
+    ...(subs || []), ...gallery,
     h('div', { class: 'section-h' }, `Commenti (${d.commentList.length})`), ...comments, cIn, h('div', { class: 'edit-actions' }, cBtn),
     h('div', { class: 'section-h' }, 'Cronologia (git)'), hist);
   if (S.wantReply) { S.wantReply = false; reply?.querySelector('button')?.click(); }
