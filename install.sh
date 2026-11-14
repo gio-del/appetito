@@ -144,7 +144,9 @@ x install -m 644 "$TARGET/device/edge/home-server.env" /etc/home-server.env
 
 # 7. First deploy as the user, then the base services (the optional ones stay off).
 say "first deploy"
-x runuser -u "$USER_NAME" -- sh -c "cd '$TARGET' && HS_DEPLOY_WORKER=1 device/edge/deploy"
+# --skip-tests only here: the copy passed its checks before it was published, and its tests need the tracker and the
+# helpers this very deploy installs (the first deploy cannot satisfy them). Later deploys run them all.
+x runuser -u "$USER_NAME" -- sh -c "cd '$TARGET' && HS_DEPLOY_WORKER=1 device/edge/deploy --skip-tests"
 say "base services"
 BASE="tracker caddy syncthing"
 [ -z "$TS" ] || BASE="$BASE tailscaled"
