@@ -60,4 +60,5 @@ jobs:
           sudo -u tester sh -c "cd $H && scripts/security-audit" || fail "security-audit"
       - name: Time
         if: always()
-        run: echo "total: $(( $(date +%s) - $(cat /tmp/install-start 2>/dev/null || date +%s) )) s"
+        run: |
+          echo "total: $(( $(date +%s) - $(cat /tmp/install-start 2>/dev/null || date +%s) )) s"

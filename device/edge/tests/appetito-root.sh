@@ -42,4 +42,12 @@ sh "$B" "$t/out" --repo "$t/src" --env "$t/vals" > "$t/err" 2>&1 && fail "collis
 grep -q "stesso percorso" "$t/err" || fail "collision message: $(cat "$t/err")"
 [ "$(git -C "$t/out" rev-list --count HEAD)" = "$n" ] || fail "collision still committed"
 [ "$(cat "$t/out/README.md")" = "public readme" ] || fail "collision overwrote the copy"
+# the real workflows of the public copy: no YAML parser here, so catch the mistake that made GitHub reject
+# install.yml (issue 570): a plain `run:`/`name:` value holding ": " (it must be a block scalar or quoted)
+repo=$(cd "$(dirname "$0")/../../.." && pwd)
+for w in "$repo"/appetito/root/.github/workflows/*.yml; do
+	[ -e "$w" ] || continue
+	bad=$(grep -nE '^[[:space:]-]*(run|name|if):[[:space:]]+[^|>"'"'"'[:space:]].*:[[:space:]]' "$w" | grep -v '\${{' || true)
+	[ -z "$bad" ] || fail "$(basename "$w"): plain YAML value with ': ' (quote it or use a block): $bad"
+done
 echo "ok: appetito-root"

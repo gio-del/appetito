@@ -21,10 +21,11 @@
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 die() { echo "appetito-publish: $*" >&2; exit 1; }
-dry=0; dir=''
+dry=0; dir=''; ci=0
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
+	--ci) ci=1 ;; # sola lettura: esito dell'ultima prova di installazione pulita (issue 570)
 	-*) die "opzione sconosciuta: $1 (uso: appetito-publish [--dry-run] [DIR])" ;;
 	*) [ -z "$dir" ] || die "una sola cartella"; dir=$1 ;;
 	esac
@@ -47,6 +48,29 @@ case $HS_APPETITO_REPO in
 *) die "HS_APPETITO_REPO non valido: $HS_APPETITO_REPO (proprietario/nome)" ;;
 esac
 url=${HS_APPETITO_URL:-https://github.com/$HS_APPETITO_REPO.git}
+
+# --ci: sola lettura (issue 570). Stampa "SHA7 green|red|pending|none" e, se rossa, i job falliti.
+# Legge da GitHub Actions l'ultimo run del workflow install.yml su main; il token va a curl solo da stdin.
+if [ "$ci" = 1 ]; then
+	tok=${HS_GIT_TOKEN:-$HOME/.secrets/git-github}
+	[ -r "$tok" ] || die "token non leggibile: $tok"
+	base=${HS_APPETITO_API:-https://api.github.com}
+	get() { printf 'header = "Authorization: Bearer %s"\n' "$(cat "$tok")" |
+		curl -fsS --max-time 30 -K - -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$base$1"; }
+	runs=$(get "/repos/$HS_APPETITO_REPO/actions/workflows/install.yml/runs?branch=main&per_page=1") || die "run non leggibili (token senza lettura di Actions, o Actions spente)"
+	run=$(printf %s "$runs" | jq -c '.workflow_runs[0] // empty')
+	[ -n "$run" ] || { echo "none"; exit 0; }
+	sha=$(printf %s "$run" | jq -r '.head_sha[0:7]')
+	st=$(printf %s "$run" | jq -r 'if .status != "completed" then "pending" elif .conclusion == "success" then "green" else "red" end')
+	echo "$sha $st"
+	if [ "$st" = red ]; then
+		id=$(printf %s "$run" | jq -r .id)
+		jobs=$(get "/repos/$HS_APPETITO_REPO/actions/runs/$id/jobs?per_page=20") || die "job del run non leggibili"
+		printf '%s\n' "$(printf %s "$run" | jq -r '"run: \(.conclusion // "?") (\(.event)), nome: \(.name)"')"
+		printf %s "$jobs" | jq -r '(.jobs | length | "job: \(.)"), (.jobs[] | select(.conclusion != "success") | "job \(.name): \(.conclusion // "?")", (.steps[]? | select(.conclusion == "failure") | "  passo: \(.name)"))' | head -n 12
+	fi
+	exit 0
+fi
 
 # 2. mai un Project
 projects=${HS_PROJECTS_FILE:-/etc/hs-projects}
