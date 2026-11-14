@@ -154,6 +154,11 @@ if [ -n "$HOST_TLS" ] && { [ -n "$DRY" ] || [ ! -s "$TLSDIR/$HOST_TLS.crt" ]; };
 	x chmod 600 "$TLSDIR/$HOST_TLS.key"
 fi
 
+# 6c. Two things the deploy expects that a stock system lacks: node where the scripts look for it, and sshd's
+# privilege-separation directory (sshd -t, run by the deploy, refuses without it; sshd creates it itself when it starts).
+if [ ! -e /usr/local/bin/node ] && [ -x /usr/bin/node ]; then x ln -s /usr/bin/node /usr/local/bin/node; fi
+x install -d -m 755 /run/sshd
+
 # 7. First deploy as the user, then the base services (the optional ones stay off).
 say "first deploy"
 # --skip-tests only here: the copy passed its checks before it was published, and its tests need the tracker and the
