@@ -58,5 +58,7 @@ PATH=/usr/local/bin:/usr/bin:/bin
 25 5 * * * hs-run appetito-propose sh home-server/scripts/appetito-propose --max 3 >> .local/state/appetito-propose.log 2>&1
 #@ [Sviluppo automatico] Pubblicazione di Appetito | Ogni giorno alle 5:40 | Se il codice è cambiato, aggiorna la copia pubblica di Appetito dopo i controlli (solo se attiva nelle Impostazioni, nessuna chiamata all'AI)
 40 5 * * * hs-run appetito-auto sh home-server/scripts/appetito-auto >> .local/state/appetito-auto.log 2>&1
+#@ [Sviluppo automatico] Installazione pulita di Appetito | Ogni giorno alle 6:10 | Legge da GitHub l'esito della prova di installazione da zero della copia pubblica (solo lettura); se è rotta apre una issue (nessuna chiamata all'AI)
+10 6 * * * hs-run appetito-ci sh home-server/scripts/appetito-publish --ci-check >> .local/state/appetito-ci.log 2>&1
 #@ [Sviluppo automatico] Prova della copia di Appetito | Ogni giorno alle 4:10 | Costruisce la copia pubblica e ci esegue tutti i test da sola; l'esito resta valido finché la copia non cambia, così la pubblicazione delle 5:40 e i giri dell'AI non rifanno la prova (nessuna chiamata all'AI)
 10 4 * * * hs-run appetito-selfcheck sh home-server/scripts/appetito-selfcheck >> .local/state/appetito-selfcheck.log 2>&1

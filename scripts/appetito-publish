@@ -21,11 +21,12 @@
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 die() { echo "appetito-publish: $*" >&2; exit 1; }
-dry=0; dir=''; ci=0
+dry=0; dir=''; ci=0; cicheck=0
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
 	--ci) ci=1 ;; # sola lettura: esito dell'ultima prova di installazione pulita (issue 570)
+	--ci-check) ci=1; cicheck=1 ;; # come --ci, ma esce 1 se la prova e' rossa (per il job di cron: hs-run apre la issue)
 	-*) die "opzione sconosciuta: $1 (uso: appetito-publish [--dry-run] [DIR])" ;;
 	*) [ -z "$dir" ] || die "una sola cartella"; dir=$1 ;;
 	esac
@@ -73,6 +74,9 @@ if [ "$ci" = 1 ]; then
 			echo "--- log (ultime righe) del job $jid"
 			get "/repos/$HS_APPETITO_REPO/actions/jobs/$jid/logs" 2> /dev/null | grep -v 'Post job cleanup' | grep -B1000 -m1 'Process completed with exit code' | tail -n "${HS_APPETITO_CI_LOG_LINES:-25}" | cut -c1-300 || echo "(log non leggibile)"
 		done
+		[ "$cicheck" = 0 ] || { echo "Appetito: installazione pulita rotta al commit $sha"; exit 1; }
+	elif [ "$cicheck" = 1 ]; then
+		[ "$st" = green ] && echo "Appetito: installazione pulita ok al commit $sha" || echo "Appetito: installazione pulita $st al commit $sha"
 	fi
 	exit 0
 fi

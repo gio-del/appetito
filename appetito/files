@@ -142,6 +142,9 @@ device/edge/debian/hs-secrets
 device/edge/debian/hs-security-enabled
 device/edge/debian/hs-on-android
 appetito/root/install.sh
+appetito/root/README.md
+appetito/root/SECURITY.md
+appetito/root/LICENSE
 appetito/root/.github/workflows/install.yml
 device/edge/debian/hs-skill-fetch
 device/edge/debian/ports-check
