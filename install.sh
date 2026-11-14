@@ -57,8 +57,17 @@ PKGS="runit sudo git jq curl ca-certificates gnupg cron openssh-server util-linu
 x env DEBIAN_FRONTEND=noninteractive apt-get update -q
 # shellcheck disable=SC2086
 x env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $PKGS
+# Without a running systemd (a container, the clean-install proof) units are enabled/disabled but not started/stopped.
+NOW=--now; SD=1
+if [ -z "$DRY" ] && [ ! -d /run/systemd/system ]; then NOW=''; SD=''; say "systemd is not running: units are set up but not started"; fi
 for u in caddy syncthing; do
-	x systemctl disable --now "$u.service"
+	# Not every distribution ships a system unit for each (Ubuntu has syncthing@.service only): disable what exists.
+	if [ -n "$DRY" ] || systemctl list-unit-files "$u.service" 2>/dev/null | grep -q "^$u\.service"; then
+		# shellcheck disable=SC2086
+		x systemctl disable $NOW "$u.service"
+	else
+		echo "no system unit $u.service, nothing to disable"
+	fi
 done
 if [ -n "$TS" ]; then
 	say "tailscale (official apt repository)"
@@ -71,7 +80,8 @@ if [ -n "$TS" ]; then
 		x env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends tailscale
 	fi
 	# runit runs tailscaled (sv/tailscaled), not the package's own unit.
-	x systemctl disable --now tailscaled.service
+	# shellcheck disable=SC2086
+	x systemctl disable $NOW tailscaled.service
 fi
 
 # 4. The user, with the sudo the deploy needs (checked with visudo before it is installed).
@@ -105,8 +115,9 @@ EOF
 x install -d -m 755 /etc/hs-service /etc/hs-sv
 x install -m 644 "$UNIT" /etc/systemd/system/hs-runsvdir.service
 rm -f "$UNIT"
-x systemctl daemon-reload
-x systemctl enable --now hs-runsvdir.service
+[ -z "$SD" ] || x systemctl daemon-reload
+# shellcheck disable=SC2086
+x systemctl enable $NOW hs-runsvdir.service
 
 # 6. The env file (never overwritten) and the copy in the user's home.
 say "device/edge/home-server.env"
