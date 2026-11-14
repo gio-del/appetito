@@ -141,6 +141,7 @@ put() {
 # not (issue 084), so a file dropped from the repo stops being served. DEST is fixed by this script.
 prune() {
 	case $2 in /opt/hs-tracker|/usr/local/share/tasks-web|/usr/local/share/dashboard-web) ;; *) echo "prune: refusing $2" >&2; exit 1 ;; esac
+	[ -d "$2" ] || return 0 # nothing installed there (the public copy has no dashboard)
 	sudo find "$2" -mindepth 1 ! -type d -printf "%P\n" > "$S/prune.list"
 	while IFS= read -r f; do
 		[ -n "$f" ] && [ -f "$1/$f" ] && continue
