@@ -53,7 +53,7 @@ say "user: $USER_NAME ($UHOME)"
 
 # 3. Packages. The services of the packages are disabled afterwards: runit supervises them.
 say "packages"
-PKGS="runit sudo git jq curl ca-certificates gnupg cron openssh-server util-linux perl nodejs shellcheck caddy syncthing acl"
+PKGS="runit sudo git jq curl ca-certificates gnupg cron openssh-server util-linux perl nodejs shellcheck caddy syncthing acl openssl"
 x env DEBIAN_FRONTEND=noninteractive apt-get update -q
 # shellcheck disable=SC2086
 x env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $PKGS
@@ -141,6 +141,18 @@ x chown -R "$USER_NAME:$(id -gn "$USER_NAME" 2>/dev/null || echo "$USER_NAME")" 
 [ -d "$TARGET/.git" ] || x runuser -u "$USER_NAME" -- git -C "$TARGET" init -q
 # /etc/home-server.env must exist first: the deploy applies locally when it finds it.
 x install -m 644 "$TARGET/device/edge/home-server.env" /etc/home-server.env
+
+# 6b. The Caddyfile wants a certificate for HS_TS_HOST, which tailscale only gives after 'tailscale up' (and never with
+# --no-tailscale). Until a real one is put there (tls-renew), a self-signed placeholder lets Caddy start; sites stay on 127.0.0.1.
+TLSDIR=/var/lib/caddy/tls
+if [ -n "$DRY" ]; then HOST_TLS=server.example.ts.net; else HOST_TLS=$(sed -n 's/^HS_TS_HOST=//p' "$ENVF" | tr -d "\"' " | tail -1); fi
+if [ -n "$HOST_TLS" ] && { [ -n "$DRY" ] || [ ! -s "$TLSDIR/$HOST_TLS.crt" ]; }; then
+	say "placeholder certificate for $HOST_TLS"
+	x install -d -m 700 -o caddy -g caddy "$TLSDIR"
+	x openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=$HOST_TLS" -addext "subjectAltName=DNS:$HOST_TLS" -keyout "$TLSDIR/$HOST_TLS.key" -out "$TLSDIR/$HOST_TLS.crt"
+	x chown caddy:caddy "$TLSDIR/$HOST_TLS.key" "$TLSDIR/$HOST_TLS.crt"
+	x chmod 600 "$TLSDIR/$HOST_TLS.key"
+fi
 
 # 7. First deploy as the user, then the base services (the optional ones stay off).
 say "first deploy"
