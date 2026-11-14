@@ -1,0 +1,68 @@
+#!/usr/bin/env node
+// proposals-card ($HS_USER; no Claude): writes /var/lib/edge-status/proposals.json for the
+// dashboard card "Proposte" (issue 030, epic 026). Called by hs-monitor every 5 min and by
+// ops-suggest after each run. Counts the proposals waiting in issues/proposed/ by their
+// `Source:` header only (system / brain; none = an old brain one): their text is never read
+// further (the kind of the last run's proposals is the `Labels:` kind of its Source: system header).
+// The last ops-suggest run and check come from its suggest.json. Also counts the stale backlog
+// issues of issues/open/ (issue 063, threshold HS_BACKLOG_STALE_DAYS): "Backlog da rivedere".
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const { parse, getField, readAll, gitDates, staleBacklog } = require(process.env.HS_ISSUES_JS || '/opt/hs-tracker/issues.js');
+
+const HOME = process.env.HOME;
+const PROPOSED = path.join(process.env.HS_PROPOSALS_DIR || path.join(HOME, 'home-server/issues'), 'proposed');
+const SUGGEST = process.env.HS_SUGGEST_STATUS || '/var/lib/edge-status/suggest.json';
+const CARD = process.env.HS_PROPOSALS_CARD || '/var/lib/edge-status/proposals.json';
+
+const pad = n => String(n).padStart(2, '0');
+let files = []; try { files = fs.readdirSync(PROPOSED).filter(f => /^\d{3,}-.*\.md$/.test(f)); } catch {}
+let system = 0, brain = 0, questions = 0;
+for (const f of files) {
+  let p; try { p = parse(fs.readFileSync(path.join(PROPOSED, f), 'utf8')); } catch { continue; }
+  if (getField(p, 'Source') === 'system') system++; else brain++;
+  if ((getField(p, 'Labels') || '').split(',').some(l => l.trim() === 'question')) questions++; // issue 286: count only
+}
+let s = {}; try { s = JSON.parse(fs.readFileSync(SUGGEST, 'utf8')) || {}; } catch {}
+const created = Array.isArray(s.created) ? s.created.filter(x => /^\d{3,}$/.test(x)) : [];
+// Kind of each created proposal (issue 128): the label of its header (Source: system only) that is one
+// of ops-suggest's KINDS, wherever the proposal is now (pending, approved, closed).
+const KINDS = ["feature", "improvement", "cleanup", "security", "reliability", "docs", "performance", "optimization", "quality"];
+const issuesDir = path.dirname(PROPOSED);
+const kindOf = id => {
+  for (const d of [PROPOSED, path.join(issuesDir, "open"), path.join(issuesDir, "done")]) {
+    let f; try { f = fs.readdirSync(d).find(n => n.startsWith(id + "-") && n.endsWith(".md")); } catch { continue; }
+    if (!f) continue;
+    let p; try { p = parse(fs.readFileSync(path.join(d, f), "utf8")); } catch { return ""; }
+    if (getField(p, "Source") !== "system") return "";
+    const k = (getField(p, "Labels") || "").split(",").map(l => l.trim()).find(l => KINDS.includes(l));
+    return k ? " " + k : "";
+  }
+  return "";
+};
+const setting = k => { try { return require("child_process").execFileSync("/usr/local/bin/hs-setting", [k], { encoding: "utf8", timeout: 20000 }).trim(); } catch { return ""; } };
+// Shown on the "Proposte giornaliere" row of "Attività programmate" (issue 049): follows the settings page.
+const hour = setting("HS_SUGGEST_HOUR");
+const eveHour = setting("HS_SUGGEST_HOUR_EVENING");
+const paused = Array.isArray(s.paused) && s.paused.length ? ` (in pausa: ${s.paused.join(", ")})` : "";
+const schedule = (setting("HS_SUGGEST_ENABLED") !== "1" ? "disattivate (Impostazioni)" : /^\d+$/.test(hour) ? `ogni giorno alle ${hour}:50` + (/^\d+$/.test(eveHour) ? ` e alle ${eveHour}:50` : "") : "?") + paused;
+
+// Stale backlog (issue 063): "0" hides the row on the dashboard (custom.js).
+const days = Number(setting("HS_BACKLOG_STALE_DAYS")) || 30;
+const repo = path.dirname(path.dirname(PROPOSED));
+let stale = [];
+try { stale = staleBacklog(readAll(repo, ["open"]), days, gitDates(repo)); } catch (e) { console.error(`proposals-card: backlog: ${e.message}`); }
+
+const now = new Date();
+const card = {
+  pending: `${system + brain} (sistema ${system}, second brain ${brain})`,
+  questions,
+  last_run: s.last_run ? `${s.last_run}: ${created.length ? `${created.length} (${created.map(x => '#' + x + kindOf(x)).join(', ')})` : 'nessuna'}` : 'mai',
+  check: s.checked ? `${s.checked}: ${s.outcome || '?'}` : 'mai',
+  schedule,
+  backlog: stale.length ? `${stale.length} (${stale.slice(0, 5).map(x => '#' + x.id).join(', ')}${stale.length > 5 ? ', …' : ''})` : '0',
+  checked: `${pad(now.getHours())}:${pad(now.getMinutes())}`,
+};
+const tmp = path.join(path.dirname(CARD), `.proposals-card-tmp-${process.pid}`);
+try { fs.writeFileSync(tmp, JSON.stringify(card) + '\n', { mode: 0o664 }); fs.renameSync(tmp, CARD); } catch (e) { console.error(`proposals-card: ${e.message}`); process.exit(1); }

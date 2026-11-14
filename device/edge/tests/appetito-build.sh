@@ -29,6 +29,8 @@ echo b2 > "$t/src/pub/sub/b.txt"; g commit -q -am "two"; echo c > "$t/src/pub/c.
 sh "$B" "$t/out" --repo "$t/src" --env "$t/vals" >/dev/null
 [ "$(git -C "$t/out" rev-list --count HEAD)" = 2 ] || fail "two source commits must be one publication commit"
 git -C "$t/out" log --format=%s | grep -qxE 'one|two|three|four' && fail "source history leaked"
+# the default commit message is in English, like the history of the public repo (issue 563)
+git -C "$t/out" log -1 --format=%s | grep -qxE 'Update [0-9]{4}-[0-9]{2}-[0-9]{2}' || fail "default commit message: $(git -C "$t/out" log -1 --format=%s)"
 g rm -q pub/c.txt; g commit -q -m four; sh "$B" "$t/out" --repo "$t/src" --env "$t/vals" >/dev/null
 [ ! -e "$t/out/pub/c.txt" ] || fail "removed file stays in the copy"
 printf 'nothing/here\n' >> "$t/src/appetito/files"; g commit -q -am five

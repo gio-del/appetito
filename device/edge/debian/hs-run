@@ -1,0 +1,30 @@
+#!/bin/sh
+# hs-run NAME CMD [ARG...]: run a scheduled job and, when it fails, drop an event for
+# hs-monitor (which turns it into an issue). Output still goes where the caller sends it.
+# Events: /var/lib/hs-events (mode 1733: anyone drops, only its owner gio can list; files 644).
+# The monitor trusts the event file's owner, not its content: for user brain it ignores the
+# log text and accepts only job names from the repo's crontab-brain.
+name=$1; shift
+case $name in *[!a-z0-9-]*|'') echo "hs-run: bad name" >&2; exit 2 ;; esac
+# Features the owner does not use are turned off by apps-idle (issue 480): their jobs are skipped, and the log says so.
+GATE=${HS_APPS_IDLE_GATE:-/usr/local/sbin/apps-idle}
+if [ -x "$GATE" ]; then "$GATE" gate "$name" 2> /dev/null; [ "$?" -ne 1 ] || exit 0; fi  # only exit 1 = off (an older apps-idle answers 2: run)
+out=$(mktemp) || exit 1
+t0=$(date +%s)
+"$@" > "$out" 2>&1; rc=$?
+# Last result per job for the dashboard (issue 224): time, exit code, seconds; never the output.
+# jobs-status trusts the file's owner and name, not its content (same rule as the events).
+if [ -d /var/lib/hs-jobs ]; then
+	jf=$(mktemp -p /var/lib/hs-jobs ".$name.XXXXXX") && {
+		t1=$(date +%s); printf '{"t":%s,"rc":%s,"dur":%s}\n' "$t1" "$rc" "$((t1 - t0))" > "$jf" && chmod 644 "$jf" && mv "$jf" "/var/lib/hs-jobs/$name.json"
+	} || true
+fi
+cat "$out"
+if [ "$rc" -ne 0 ] && [ -d /var/lib/hs-events ]; then
+	ev=$(mktemp -p /var/lib/hs-events ".$name.XXXXXX") && {
+		printf 'name %s\nrc %s\nwhen %s\n' "$name" "$rc" "$(date +%s)"
+		echo "---"; tail -n 40 "$out" | cut -c1-300
+	} > "$ev" && chmod 644 "$ev" && mv "$ev" "/var/lib/hs-events/$name.$(date +%s).$$"
+fi
+rm -f "$out"
+exit "$rc"

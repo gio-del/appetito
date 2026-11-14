@@ -1,0 +1,6 @@
+#!/bin/sh
+# Duplicate check before writing an issue (issue 058): prints the open and recently done (60 days)
+# issues whose title/description look like the given ones, one per line "id<TAB>score<TAB>state<TAB>title",
+# best first; nothing = no candidate. Deterministic, no Claude; proposals are left out (untrusted text).
+# Usage: issues-similar TITLE [BODY]   (repo: $ISSUES_REPO, default ~/home-server)
+exec /usr/local/bin/node /opt/hs-tracker/issues.js --similar "$@"

@@ -1,0 +1,76 @@
+#!/bin/sh
+# Answers that arrived on their own (issue 354, epic 351). An open issue may carry a `Check:` header line
+# (issues/README.md): `deb-version PKG >= X`, `release OWNER/REPO >= X`, `url-status URL`, `file-exists PATH`.
+# This job runs each one with known tools (no AI, no free text: the arguments are validated, never evaluated;
+# the only internet is a GitHub release tag and a HEAD request read by curl, issues 113/121) and writes
+# $QS_DIR/found.json {"<issue id>": {ok, check, evidence, at}}. The tracker shows «Sembra risolta: <prova>» on the
+# card when ok is true; nothing is ever closed or answered here. Cron of $HS_USER every 6 hours.
+# Usage: questions-recheck [ISSUES_DIR]     (test overrides: QS_DIR, QR_APT_POLICY, QR_CURL)
+set -eu
+export PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8
+OPEN=${1:-${QR_ISSUES:-$HOME/home-server/issues/open}}
+QS_DIR=${QS_DIR:-/var/lib/question-suggestions}
+ST=${QS_STATE:-$HOME/.local/state/questions}
+mkdir -p "$ST"
+log() { echo "$(date '+%F %T') recheck: $*" >> "$ST/questions.log"; }
+now=$(date +%s)
+out=$(mktemp); trap 'rm -f "$out" "$out.new"' EXIT
+echo '{}' > "$out"
+verge() { dpkg --compare-versions "$1" ge "$2"; }
+for f in "$OPEN"/[0-9]*.md; do
+	[ -e "$f" ] || continue
+	line=$(sed -n '1,25s/^[Cc]heck:[[:space:]]*//p' "$f" | head -1)
+	[ -n "$line" ] || continue
+	id=$(basename "$f" | cut -d- -f1)
+	set -- $line
+	kind=$1 ok=null ev=
+	case $kind in
+	deb-version)
+		if [ $# -eq 4 ] && [ "$3" = ">=" ] && printf '%s' "$2" | grep -Eq '^[a-z0-9][a-z0-9.+-]*$' && printf '%s' "$4" | grep -Eq '^[A-Za-z0-9.+:~-]+$'; then
+			cand=$(${QR_APT_POLICY:-apt-cache} policy "$2" 2>/dev/null | sed -n 's/^ *Candidate: //p' | head -1)
+			if [ -z "$cand" ] || [ "$cand" = "(none)" ]; then ev="$2 non ha candidata in apt"
+			elif verge "$cand" "$4"; then ok=true ev="apt offre $2 $cand (>= $4)"
+			else ok=false ev="apt offre $2 $cand (< $4)"; fi
+		fi ;;
+	release)
+		if [ $# -eq 4 ] && [ "$3" = ">=" ] && printf '%s' "$2" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' && printf '%s' "$4" | grep -Eq '^v?[0-9][A-Za-z0-9.+~-]*$'; then
+			tag=$(${QR_CURL:-curl} -fsS -m 20 "https://api.github.com/repos/$2/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null | head -c 60) || tag=
+			tag=$(printf '%s' "$tag" | tr -cd 'A-Za-z0-9.+~-')
+			if [ -z "$tag" ]; then ev="release di $2 non letta"
+			elif verge "${tag#v}" "${4#v}"; then ok=true ev="$2 ha la release $tag (>= $4)"
+			else ok=false ev="$2 è alla release $tag (< $4)"; fi
+		fi ;;
+	url-status)
+		if [ $# -eq 2 ] && printf '%s' "$2" | grep -Eq '^https?://[A-Za-z0-9._~:/?&=%+#@-]{1,300}$'; then
+			code=$(${QR_CURL:-curl} -sS -o /dev/null -I -L -m 20 -w '%{http_code}' "$2" 2>/dev/null) || code=000
+			case $code in
+			[23]??) ok=true ev="$2 risponde $code" ;;
+			000) ok=false ev="$2 non raggiungibile" ;;
+			*) ok=false ev="$2 risponde $code" ;;
+			esac
+		fi ;;
+	file-exists)
+		if [ $# -eq 2 ] && printf '%s' "$2" | grep -Eq '^/[A-Za-z0-9._/+-]{1,200}$'; then
+			if [ -e "$2" ]; then ok=true ev="$2 esiste"; else ok=false ev="$2 non esiste"; fi
+		fi ;;
+	esac
+	# Backlog issue waiting for this event (issue 297): the Check passing puts it back in the queue, once, with a dated note.
+	if [ "$ok" = true ] && grep -q '^Status: backlog[[:space:]]*$' "$f" && ! grep -q '^### .* (recheck)$' "$f"; then
+		RC_STAMP=$(date '+%F %H:%M') RC_EV=$ev perl -0pi -e '
+			s/^Status: backlog[ \t]*\n/Status: todo\n/m;
+			s/^Blocked on: user \(avviso senza versione corretta\)\n/Blocked on: -\n/m;
+			s/\s*\z/\n/;
+			$_ .= "\n## Comments\n" unless /^## Comments\s*$/m;
+			$_ .= "\n### $ENV{RC_STAMP} (recheck)\nIl controllo `Check:` è passato: $ENV{RC_EV}. La issue torna in coda (`Status: todo`).\n";' "$f" || true
+	fi
+	[ "$ok" != null ] || { [ -n "$ev" ] || ev="controllo non valido"; }
+	jq --arg id "$id" --arg c "$line" --arg e "$ev" --argjson ok "$ok" --argjson at "$now" \
+		'.[$id] = {ok: $ok, check: $c[0:200], evidence: $e[0:200], at: $at}' "$out" > "$out.new" && mv "$out.new" "$out"
+done
+# Findings of the AI step (questions-recheck-ai, issue 363) survive for issues without a Check: line of their own.
+if [ -s "$QS_DIR/found.json" ]; then
+	jq --slurpfile o "$QS_DIR/found.json" '($o[0] | with_entries(select(.value.ai == true))) + .' "$out" > "$out.new" && mv "$out.new" "$out" || true
+fi
+mkdir -p "$QS_DIR"
+cp "$out" "$QS_DIR/found.json.new" && mv "$QS_DIR/found.json.new" "$QS_DIR/found.json"
+log "$(jq -r '"\(length) checks, \([.[] | select(.ok == true)] | length) resolved"' "$out")"

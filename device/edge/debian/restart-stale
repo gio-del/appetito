@@ -1,0 +1,14 @@
+#!/bin/sh
+# Restart daemons still running a binary that an upgrade replaced (/proc/PID/exe "(deleted)").
+# runit services: sv restart. sshd: SIGHUP (re-execs itself; open sessions survive).
+# tailscaled is a runit service too (sv/tailscaled/run).
+set -u
+stale() { readlink "/proc/$1/exe" 2>/dev/null | grep -q ' (deleted)$'; }
+for s in /etc/hs-service/*; do
+	pid=$(sv status "$s" 2>/dev/null | sed -n 's/^run: [^(]*(pid \([0-9]*\)).*/\1/p')
+	[ -n "$pid" ] && stale "$pid" && { sv restart "$s" >/dev/null && echo "restarted $(basename "$s") (binary upgraded)"; }
+done
+for pid in $(pgrep -x sshd); do stale "$pid" && { pkill -HUP -x sshd; echo "reloaded sshd (binary upgraded)"; break; }; done
+# Unsupervised tailscaled only (old debian.sh); the runit service is covered above.
+[ -e /etc/hs-service/tailscaled ] || for pid in $(pgrep -x tailscaled); do stale "$pid" && { /usr/local/sbin/restart-tailscaled; echo "restarted tailscaled (binary upgraded)"; }; done
+exit 0

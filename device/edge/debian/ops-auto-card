@@ -1,0 +1,407 @@
+#!/usr/bin/env node
+// ops-auto-card ($HS_USER; no Claude): writes /var/lib/edge-status/auto.json for the dashboard
+// card "Manutenzione e Sviluppo automatico" (issues 021, 035). Called by hs-monitor every 5 min and by
+// ops-auto at the start and end of every issue, so the card follows a run as it happens.
+// Stato: "al lavoro su #NNN" while a run holds ops-auto's lock, "in pausa", "fermo per la
+// quota fino al …", the last run's error, or "in attesa, prossimo giro HH:MM" (next :07/:37
+// slot, after the 30-min "repo in uso" quiet from `ops-auto --busy` when it applies). The
+// queue comes from `ops-auto --queue`, the same selector the worker uses. "Errori rilevati"
+// counts monitor issues without the lint label; "Da riordinare" the issues-lint ones.
+// "Avvisi sicurezza" counts the advisory-/eol- issues of hs-advisories (issue 124).
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const { execFileSync, spawnSync } = require('child_process');
+
+const HOME = process.env.HOME;
+const REPO = path.join(HOME, 'home-server');
+const cleanTools = o => { const c = {}; for (const [k, v] of Object.entries(o && typeof o === "object" ? o : {})) if (Number.isFinite(v)) { const n = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(k) ? k : 'altro'; c[n] = (c[n] || 0) + v; } return c; };
+const ISSUES = path.join(REPO, 'issues');
+const ST = path.join(HOME, '.local/state/ops-auto');
+const CARD = process.env.HS_AUTO_CARD || '/var/lib/edge-status/auto.json';
+const SLOTS = [7, 37]; // minutes of ops-auto's cron line in crontab-user
+
+const pad = n => String(n).padStart(2, '0');
+const hm = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const dm = d => `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`;
+const sh = (cmd, args, opts = {}) => { try { return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 20000, ...opts }); } catch { return null; } };
+const read = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
+const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
+// A queue line is an issues/open file name (`186-slug.md`) or, for a trusted issue of another Project
+// (issue 186), `sumisura-221`: shown as `sumisura#221`.
+const dispId = id => /#/.test(id) ? id : `#${id}`; // `sumisura#221` or `200` -> `#200`
+const qid = f => /^\d+-.*\.md$/.test(f) ? f.split('-')[0] : f.replace(/-(\d+)$/, '#$1');
+const projectEntry = f => {
+  const id = qid(f), [name, num] = id.split('#');
+  const pr = (readJson(process.env.HS_QUEUE_PROJECTS_JSON ?? '/var/lib/edge-status/projects-issues.json', {}).projects || {})[name];
+  const i = pr && (pr.issues || []).find(x => String(x.number) === num);
+  return { id, title: String((i && i.title) || id).slice(0, 160), priority: 'none', monitor: false, project: name };
+};
+// Issues handed to the owner (needs-owner) whose work sits unpublished in a local branch (issue 334): ops-auto's handover records
+// ($ST/handover/ID: kind, branch) checked against the mirror. A format refusal still waiting for its one automatic retry is not listed.
+function unpublished() {
+  const dir = path.join(ST, 'handover');
+  let names = [];
+  try { names = fs.readdirSync(dir).filter(n => /-\d+$/.test(n)); } catch { return []; }
+  const projects = readJson(process.env.HS_QUEUE_PROJECTS_JSON ?? '/var/lib/edge-status/projects-issues.json', {}).projects || {};
+  const out = [];
+  for (const id of names) {
+    const [kind, , at] = read(path.join(dir, id)).split('\n');
+    if ((kind === 'format' || kind === 'machine') && !fs.existsSync(path.join(dir, id + '.retried'))) continue;
+    const m = /^(.*)-(\d+)$/.exec(id), pr = projects[m[1]];
+    const i = pr && (pr.issues || []).find(x => String(x.number) === m[2] && x.state === 'open');
+    if (!i || !(i.labels || []).some(l => (l && l.name || l) === 'needs-owner')) continue;
+    out.push({ ...projectEntry(m[1] + '-' + m[2]), why: 'unpublished', pr: null, kind, days: /^\d+$/.test(at || '') ? Math.floor((Date.now() / 1000 - Number(at)) / 86400) : null });
+  }
+  return out.slice(0, 10);
+}
+const setting = k => (sh('/usr/local/bin/hs-setting', [k]) || '').trim();
+
+// First cron slot at or after t (ms).
+function nextSlot(t) {
+  const d = new Date(t); d.setSeconds(0, 0);
+  for (let i = 0; i < 24 * 60; i++) {
+    if (SLOTS.includes(d.getMinutes()) && d.getTime() >= t - 59e3) return d;
+    d.setMinutes(d.getMinutes() + 1);
+  }
+  return d;
+}
+
+const now = Date.now();
+// An issue is being worked when ops-auto wrote `current` and still holds its lock (a crashed
+// run releases the lock, so a stale `current` doesn't show "al lavoro" forever).
+const current = read(path.join(ST, 'current'));
+const working = current !== '' && fs.existsSync(path.join(ST, 'lock')) &&
+  spawnSync('flock', ['-n', path.join(ST, 'lock'), 'true'], { stdio: 'ignore' }).status === 1;
+const paused = fs.existsSync(path.join(ST, 'pause')) || setting('HS_AUTO_PAUSE') === '1';
+const last = readJson(path.join(ST, 'last.json'), null);
+const queue = (sh(path.join(HOME, 'bin/ops-auto'), ['--queue']) || '').split('\n').filter(Boolean);
+// Project entries kept out of the queue and why (open PR, hold, no CI; issue 259): same rule as the selector, `ops-auto --waiting`.
+const waitingMap = (() => { try { return JSON.parse(sh(path.join(HOME, 'bin/ops-auto'), ['--waiting']) || '{}'); } catch { return {}; } })();
+
+// quotaUntil stops the scheduled rounds; manualQuotaUntil also the manual starts (own, higher limit, issue 175).
+const quotaMax = Number(setting('HS_AUTO_QUOTA_MAX') || 50);
+const quotaManualMax = Math.max(quotaMax, Number(setting('HS_AUTO_QUOTA_MANUAL_MAX')) || 0);
+let quotaUntil = 0, manualQuotaUntil = 0;
+{
+  const [util, reset] = read(path.join(ST, 'usage')).split(/\s+/).map(Number);
+  if (reset && now < reset * 1000 && util >= quotaMax) quotaUntil = reset * 1000;
+  if (reset && now < reset * 1000 && util >= quotaManualMax) manualQuotaUntil = reset * 1000;
+}
+
+// When the "repo in uso" quiet ends: `ops-auto --busy`, the worker's own rule (its own commits
+// and files changed before the end of its last run don't count; uncommitted non-issue changes
+// block until they are committed).
+function repoFreeAt() {
+  const out = (sh(path.join(HOME, 'bin/ops-auto'), ['--busy']) || '').trim();
+  if (out === 'dirty') return Infinity;
+  return (Number(out) || 0) * 1000;
+}
+
+// Which uncommitted files block the repo and since when: `ops-auto --dirty-info` (issue 296).
+function dirtyInfo() {
+  try { return JSON.parse(sh(path.join(HOME, 'bin/ops-auto'), ['--dirty-info']) || 'null'); } catch { return null; }
+}
+function dirtyText(d) {
+  if (!d || !d.files || !d.files.length) return '';
+  const age = Math.max(0, Math.floor(Date.now() / 1000) - d.since), h = Math.floor(age / 3600);
+  return ': ' + d.files.join(', ') + (d.total > d.files.length ? ` (+${d.total - d.files.length} altri)` : '') + ' da ' + (h >= 1 ? h + ' h' : Math.max(1, Math.floor(age / 60)) + ' min');
+}
+
+// Uncommitted work of an interrupted run that the next round resumes (issue 108): "ID REASON"
+// from `ops-auto --interrupted`; until the 5-hour limit resets (`limited`) it waits for it.
+const resumeId = working ? '' : ((sh(path.join(HOME, 'bin/ops-auto'), ['--interrupted']) || '').trim().split(' ')[0] || '');
+const limitedUntil = (Number(read(path.join(ST, 'limited'))) || 0) * 1000;
+const resuming = working && !!(readJson(path.join(ST, 'current.json'), {}) || {}).resume;
+
+// "Avvia ora" pressed in the tracker and not yet answered by ops-auto-request (issue 067).
+const req = readJson('/var/lib/ops-auto-req/request.json', null);
+const pendingReq = req && req.id !== (readJson(path.join(ST, 'request.json'), {}) || {}).id && now / 1000 - req.at < 660;
+let dirtyD = null;
+let state;
+if (working) state = resuming ? `ripresa ${dispId(current)}` : `al lavoro su ${dispId(current)}`;
+else if (pendingReq) state = 'avvio manuale richiesto';
+else if (paused) state = 'in pausa';
+else if (quotaUntil) state = `fermo per la quota fino al ${dm(new Date(quotaUntil))} ${hm(new Date(quotaUntil))}${manualQuotaUntil ? '' : ' (avvio manuale sì)'}`;
+else if (resumeId) state = limitedUntil > now ? `riprende #${resumeId} alle ${hm(new Date(limitedUntil))} (limite 5 ore)`
+  : `riprende #${resumeId} al prossimo giro ${hm(nextSlot(Math.max(now, repoFreeAt())))}`;
+else if (last && last.note) state = last.note;
+else if (!queue.length) state = 'in attesa: niente in coda';
+else {
+  const free = repoFreeAt();
+  if (free === Infinity) { dirtyD = dirtyInfo(); state = 'in attesa: modifiche non committate nel repo' + dirtyText(dirtyD); }
+  else {
+    const slot = nextSlot(Math.max(now, free));
+    state = `in attesa, prossimo giro ${slot.getDate() === new Date(now).getDate() ? '' : dm(slot) + ' '}${hm(slot)}${free > now ? ' (repo in uso)' : ''}`;
+  }
+}
+
+const labels = f => (read(f).match(/^Labels:(.*)$/m) || [, ''])[1];
+const isMonitor = f => /\bmonitor\b/.test(labels(f));
+const isLint = f => /\blint\b/.test(labels(f)); // issues-lint findings: reshaping, not failures
+let openFiles = []; try { openFiles = fs.readdirSync(path.join(ISSUES, 'open')).filter(f => /^\d{3,}-.*\.md$/.test(f)).map(f => path.join(ISSUES, 'open', f)); } catch {}
+const mon = openFiles.filter(f => isMonitor(f) && !isLint(f));
+const lint = openFiles.filter(f => isMonitor(f) && isLint(f));
+const monBlocked = mon.filter(f => !/^Blocked on: -/m.test(read(f)));
+// Security advisories and end of support opened by hs-monitor from hs-advisories (issue 124).
+const sec = openFiles.filter(f => /^Fingerprint: (advisory|eol)-/m.test(read(f)));
+const secBlocked = sec.filter(f => !/^Blocked on: -/m.test(read(f)));
+
+const card = {
+  state,
+  queue: queue.length ? `${queue.length} (prossima #${qid(queue[0])})` : '0',
+  errors: `${mon.length} aperti, ${monBlocked.length} aspettano te`,
+  lint: String(lint.length),
+  security: `${sec.length} aperti, ${secBlocked.length} aspettano te`,
+  round: read(path.join(ST, 'round')) || 'nessun giro',
+  last: last ? `${last.when}: ${last.text}` : 'nessuna esecuzione',
+  checked: hm(new Date(now)),
+};
+const tmp = path.join(path.dirname(CARD), `.ops-auto-card-tmp-${process.pid}`);
+try { fs.writeFileSync(tmp, JSON.stringify(card) + '\n', { mode: 0o664 }); fs.renameSync(tmp, CARD); } catch (e) { console.error(`ops-auto-card: ${e.message}`); process.exit(1); }
+
+// ---------- Detailed status for the tracker page /auto.html (issue 067) ----------
+// /var/lib/edge-status/ops-auto.json: state code, the issue being worked with live progress (tool
+// names and counts, the run's own todo list), gates (pause, quota windows, repo in use), queue,
+// recent runs and the answer to the last manual request. Tool inputs and denied commands never
+// go here: only categories derived from the command's first word.
+const DETAIL = process.env.HS_AUTO_DETAIL || '/var/lib/edge-status/ops-auto.json';
+const titleOf = id => {
+  if (/#/.test(id)) { const [name, num] = id.split('#'); const pr = (readJson(process.env.HS_QUEUE_PROJECTS_JSON ?? '/var/lib/edge-status/projects-issues.json', {}).projects || {})[name]; const i = pr && (pr.issues || []).find(x => String(x.number) === num); return { title: String((i && i.title) || '').slice(0, 160), state: 'project' }; }
+  for (const st of ['open', 'done']) {
+    try {
+      const f = fs.readdirSync(path.join(ISSUES, st)).find(x => x.startsWith(id + '-'));
+      if (f) return { title: (read(path.join(ISSUES, st, f)).match(/^# (.*)$/m) || [, f])[1].slice(0, 160), state: st };
+    } catch {}
+  }
+  return { title: '', state: '' };
+};
+
+// Category of one tool call, from the tool name or the first word of a Bash command.
+function category(name, input) {
+  if (/^(Read|NotebookRead)$/.test(name)) return 'read';
+  if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(name)) return 'edit';
+  if (/^(Grep|Glob)$/.test(name)) return 'search';
+  if (/^(WebFetch|WebSearch)$/.test(name)) return 'web';
+  if (/^(TodoWrite|Task|Agent|TaskCreate|TaskUpdate)$/.test(name)) return 'plan';
+  if (name !== 'Bash') return 'other';
+  let c = String((input && input.command) || '').trim();
+  c = c.replace(/^(cd\s+\S+\s*(&&|;)\s*)+/, '').replace(/^([A-Z_]+=\S*\s+)+/, '').replace(/^sudo\s+(-\S+\s+)*/, '');
+  const w = (c.match(/^[^\s|;&]+/) || [''])[0].replace(/^.*\//, '');
+  if (/(^|\/)deploy$/.test((c.match(/^\S+/) || [''])[0])) return 'deploy';
+  if (w === 'git') return /^git\s+(commit|mv|add|rm|push|reset|checkout|restore)\b/.test(c) ? 'commit' : 'git';
+  if (/\s-i\b|\s-pi\b|>\s*[^&|]|\btee\b/.test(c) && /^(perl|sed|cat|printf|echo|tee|awk)$/.test(w)) return 'edit';
+  if (/^(mv|cp|mkdir|rm|chmod|install|touch|ln)$/.test(w)) return 'edit';
+  if (/^(grep|rg|find|issues-similar|issues-lint)$/.test(w)) return 'search';
+  if (/^(cat|sed|head|tail|ls|wc|jq|less|stat|file|diff|cmp|tree|date|readlink|realpath)$/.test(w)) return 'read';
+  if (/^(curl|wget)$/.test(w)) return 'net';
+  if (/^(sv|systemctl|service|caddy-reload|restart-\S+|pgrep|ps|kill|pkill)$/.test(w)) return 'service';
+  if (/^(node|sh|bash|perl|python3?|hs-\S+|ops-\S+|brain-\S+|tracker-\S+|sleep|test|\[)$/.test(w)) return 'run';
+  return 'other';
+}
+
+// Live view of a run from its stream-json: tool calls in order, counts, the last todo list,
+// and the latest rate-limit windows.
+function streamInfo(file) {
+  let txt = ''; try { txt = fs.readFileSync(file, 'utf8'); } catch { return null; }
+  const tools = []; let todos = null; let rate = null; let result = null; let thinking = 0;
+  for (const line of txt.split('\n')) {
+    if (!line) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.type === 'assistant') {
+      for (const c of (o.message && o.message.content) || []) {
+        if (c.type !== 'tool_use') continue;
+        tools.push(category(c.name, c.input));
+        if (c.name === 'TodoWrite' && c.input && Array.isArray(c.input.todos)) todos = c.input.todos;
+      }
+    } else if (o.type === 'rate_limit_event') rate = o.rate_limit_info && o.rate_limit_info.unifiedWindows;
+    else if (o.type === 'system' && o.subtype === 'thinking_tokens') thinking++;
+    else if (o.type === 'result') result = o;
+  }
+  const counts = {}; for (const t of tools) counts[t] = (counts[t] || 0) + 1;
+  let todo = null;
+  if (todos && todos.length) {
+    const act = todos.find(t => t.status === 'in_progress');
+    todo = { total: todos.length, done: todos.filter(t => t.status === 'completed').length,
+      items: todos.slice(0, 20).map(t => ({ s: t.status === 'completed' ? 'done' : t.status === 'in_progress' ? 'active' : 'todo',
+        t: String((t.status === 'in_progress' && t.activeForm) || t.content || '').slice(0, 120) })),
+      active: act ? String(act.activeForm || act.content || '').slice(0, 120) : '' };
+  }
+  let mtime = 0; try { mtime = Math.floor(fs.statSync(file).mtimeMs / 1000); } catch {}
+  const win = w => w ? { util: Math.round((w.utilization || 0) * 100), reset: w.resetsAt || 0 } : null;
+  return { tools: tools.slice(-80), total: tools.length, counts, todo, thinking, lastAt: mtime,
+    rate: rate ? { five: win(rate.five_hour), week: win(rate.seven_day) } : null,
+    cost: result ? result.total_cost_usd : null };
+}
+
+// Consumption per backend, last 7 days, from backend-usage.jsonl written by ops-auto (issue 253): numbers only.
+function backends() {
+  const since = Math.floor(Date.now() / 1000) - 7 * 86400; const by = {};
+  for (const l of read(path.join(ST, 'backend-usage.jsonl')).split('\n')) {
+    let r; try { r = JSON.parse(l); } catch { continue; }
+    if (!r || !(r.t >= since) || !/^[a-z][a-z0-9-]{0,31}$/.test(String(r.backend))) continue;
+    const b = by[r.backend] || (by[r.backend] = { runs: 0, turns: 0, cost: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0 });
+    b.runs++;
+    for (const k of ['turns', 'cost', 'in', 'out', 'cacheRead', 'cacheWrite']) b[k] += Number(r[k]) || 0;
+  }
+  for (const b of Object.values(by)) b.cost = Math.round(b.cost * 100) / 100;
+  return { days: 7, by };
+}
+
+// Recent runs from ops-auto.log: "#NNN: run N (file)[ manual]" then "#NNN: <esito> rc=R {json}".
+function history() {
+  const lines = (sh('tail', ['-n', '600', path.join(ST, 'ops-auto.log')]) || '').split('\n');
+  const runs = []; const open = {};
+  const ts = s => Math.floor(new Date(s.replace(' ', 'T')).getTime() / 1000);
+  for (const l of lines) {
+    let m = /^(\S+ \S+) #?(\d+|[A-Za-z0-9_-]+#\d+): run (\d+) \([^)]*\)( manual)?$/.exec(l);
+    if (m) { const r = { id: m[2], start: ts(m[1]), attempt: +m[3], manual: !!m[4], outcome: 'running' }; open[m[2]] = r; runs.push(r); continue; }
+    m = /^(\S+ \S+) #?(\d+|[A-Za-z0-9_-]+#\d+): (chiusa|aspetta te|PR aperta|PR aggiornata|in corso) rc=(\d+) (.*)$/.exec(l);
+    if (m && open[m[2]]) {
+      const r = open[m[2]]; delete open[m[2]];
+      r.end = ts(m[1]); r.rc = +m[4];
+      r.outcome = r.rc === 124 ? 'timeout' : r.rc !== 0 ? 'error' : { chiusa: 'closed', 'aspetta te': 'handed', 'PR aperta': 'pr', 'PR aggiornata': 'prfix', 'in corso': 'partial' }[m[3]];
+      try { const j = JSON.parse(m[5]); r.turns = j.num_turns; r.cost = Math.round(j.total_cost_usd * 100) / 100; r.denied = j.denied; r.deniedTools = cleanTools(j.deniedTools); } catch {}
+      continue;
+    }
+    m = /^(\S+ \S+) #?(\d+|[A-Za-z0-9_-]+#\d+): handed over after (?:3 attempts|3 CI fixes|\d+ runs)$/.exec(l);
+    if (m) runs.push({ id: m[2], start: ts(m[1]), end: ts(m[1]), outcome: 'gaveup' });
+  }
+  // A "running" entry whose run is not the current one died without an outcome line.
+  for (const r of runs) if (r.outcome === 'running' && !(working && r.id === current && r === runs.filter(x => x.id === r.id).pop())) r.outcome = 'lost';
+  return runs.slice(-16).map(r => ({ ...r, title: titleOf(r.id).title }));
+}
+
+// Rounds (issue 068): one invocation of ops-auto = "round start …" … "round end: <text>" in the
+// log, with the issue runs in between; skipped rounds have no issues. Older lines have no markers:
+// an issue run that starts within 5 s of the previous outcome belongs to the same round.
+// Consecutive skipped rounds with the same reason collapse into one entry with a count.
+function skipReason(t) {
+  if (/in pausa/.test(t)) return 'paused';
+  if (/quota/.test(t)) return 'quota';
+  if (/niente da fare/.test(t)) return 'empty';
+  if (/modifiche non committate/.test(t)) return 'dirty';
+  if (/repo in uso/.test(t)) return 'busy';
+  if (/non lavorabile/.test(t)) return 'notpickable';
+  if (/passata a te/.test(t)) return 'gaveup';
+  return 'other';
+}
+function rounds() {
+  const lines = (sh('tail', ['-n', '3000', path.join(ST, 'ops-auto.log')]) || '').split('\n');
+  const ts = s => Math.floor(new Date(s.replace(' ', 'T')).getTime() / 1000);
+  const out = []; let cur = null; const runOf = {};
+  const close = (r, end) => { if (r && !r.end) r.end = end; };
+  for (const l of lines) {
+    let m = /^(\S+ \S+) round start (manual|scheduled)(?: (#\d+|[a-z0-9][a-z0-9-]*#\d+))?$/.exec(l);
+    if (m) { close(cur, ts(m[1])); cur = { start: ts(m[1]), manual: m[2] === 'manual', only: m[3] ? m[3].replace(/^#/, '') : null, issues: [], marked: true }; out.push(cur); continue; }
+    m = /^(\S+ \S+) round end: (.*)$/.exec(l);
+    if (m) { if (cur && cur.marked) { cur.end = ts(m[1]); cur.text = m[2]; } cur = null; continue; }
+    m = /^(\S+ \S+) request [a-f0-9]+(?: (#\d+|[a-z0-9][a-z0-9-]*#\d+))?: (started|refused)(?: \((.*)\))?$/.exec(l);
+    if (m) { if (m[3] === 'refused') out.push({ start: ts(m[1]), end: ts(m[1]), request: true, manual: true, issues: [], text: m[4] || '', only: m[2] ? m[2].replace(/^#/, '') : null }); continue; }
+    m = /^(\S+ \S+) #?(\d+|[A-Za-z0-9_-]+#\d+): run (\d+) \([^)]*\)( manual)?$/.exec(l);
+    if (m) {
+      const t = ts(m[1]);
+      if (!cur || (!cur.marked && t - (cur.lastEnd || 0) > 5)) { cur = { start: t, manual: !!m[4], issues: [], marked: false }; out.push(cur); }
+      const r = { id: m[2], start: t, attempt: +m[3], manual: !!m[4], outcome: 'running' };
+      cur.issues.push(r); runOf[m[2]] = r; continue;
+    }
+    m = /^(\S+ \S+) #?(\d+|[A-Za-z0-9_-]+#\d+): (chiusa|aspetta te|PR aperta|PR aggiornata|in corso) rc=(\d+) (.*)$/.exec(l);
+    if (m && runOf[m[2]]) {
+      const r = runOf[m[2]]; delete runOf[m[2]];
+      r.end = ts(m[1]); r.rc = +m[4];
+      r.outcome = r.rc === 124 ? 'timeout' : r.rc !== 0 ? 'error' : { chiusa: 'closed', 'aspetta te': 'handed', 'PR aperta': 'pr', 'PR aggiornata': 'prfix', 'in corso': 'partial' }[m[3]];
+      try { const j = JSON.parse(m[5]); r.turns = j.num_turns; r.cost = Math.round(j.total_cost_usd * 100) / 100; r.denied = j.denied; r.deniedTools = cleanTools(j.deniedTools); } catch {}
+      if (cur) { cur.lastEnd = r.end; if (!cur.marked) cur.end = r.end; }
+      continue;
+    }
+    m = /^(\S+ \S+) #?(\d+|[A-Za-z0-9_-]+#\d+): handed over after (?:3 attempts|3 CI fixes|\d+ runs)$/.exec(l);
+    if (m && cur) cur.issues.push({ id: m[2], start: ts(m[1]), end: ts(m[1]), outcome: 'gaveup' });
+  }
+  // The open round is the current one only while ops-auto holds its lock.
+  const last = out[out.length - 1];
+  for (const r of out) {
+    r.live = working && r === last && !r.end;
+    for (const i of r.issues) if (i.outcome === 'running' && !(r.live && i === r.issues[r.issues.length - 1])) i.outcome = 'lost';
+    if (!r.end && !r.live) r.end = r.issues.length ? r.issues[r.issues.length - 1].end || r.start : r.start;
+    r.result = r.request ? 'refused' : r.issues.length ? 'worked' : skipReason(r.text || '');
+    delete r.marked; delete r.lastEnd;
+  }
+  // Collapse runs of identical skips (e.g. "repo in uso" every 30 min).
+  const merged = [];
+  for (const r of out) {
+    const p = merged[merged.length - 1];
+    if (p && !r.issues.length && !p.issues.length && !r.request && !p.request && p.result === r.result && !r.live) { p.count = (p.count || 1) + 1; p.end = r.end; p.text = r.text; continue; }
+    merged.push(r);
+  }
+  return merged.slice(-14).map(r => ({ ...r, issues: r.issues.map(i => ({ ...i, title: titleOf(i.id).title })) }));
+}
+
+{
+  const cur = readJson(path.join(ST, 'current.json'), null);
+  const free = working ? 0 : repoFreeAt();
+  let code;
+  if (working) code = 'working';
+  else if (paused) code = 'paused';
+  else if (quotaUntil) code = 'quota';
+  else if (resumeId) code = 'resume';
+  else if (last && last.note) code = 'error';
+  else if (!queue.length) code = 'empty';
+  else if (free === Infinity) code = 'dirty';
+  else if (free > now) code = 'busy';
+  else code = 'idle';
+  const live = streamInfo(path.join(ST, 'last-run.jsonl'));
+  // Weekly usage: the freshest reading among the jobs that call Claude (ops-auto, ops-suggest, brain-sort); `at` = when it was read.
+  const usageFile = f => { try { const [u, r] = read(f).split(/\s+/).map(Number); return r ? { util: u, reset: r, at: Math.floor(fs.statSync(f).mtimeMs / 1000) } : null; } catch { return null; } };
+  const weekReads = [live && live.rate && live.rate.week ? { ...live.rate.week, at: live.lastAt } : null,
+    usageFile(path.join(ST, 'usage')), usageFile(path.join(HOME, '.local/state/ops-suggest/usage')),
+    usageFile('/home/brain/.local/state/brain/usage')].filter(Boolean).sort((a, b) => b.at - a.at);
+  const detail = {
+    v: 1, checked: Math.floor(now / 1000), code, state,
+    current: working ? { id: current, ...titleOf(current), start: cur && cur.id === current ? cur.start : null,
+      attempt: cur && cur.id === current ? cur.attempt : null, manual: !!(cur && cur.manual), live } : null,
+    lastRun: working ? null : live && (() => { const hr = history().filter(r => r.outcome !== 'running' && r.id).pop(); return { total: live.total, counts: live.counts, tools: live.tools, todo: live.todo, cost: live.cost,
+      ...(hr ? { id: hr.id, title: hr.title, outcome: hr.outcome, end: hr.end || null } : {}) }; })(),
+    nextSlot: Math.floor(nextSlot(Math.max(now, free === Infinity ? now : free)).getTime() / 1000),
+    repo: { dirty: free === Infinity, files: dirtyD ? dirtyD.files : [], total: dirtyD ? dirtyD.total : 0, since: dirtyD ? dirtyD.since : null, freeAt: free === Infinity ? null : Math.floor(free / 1000) },
+    gates: { paused, quotaMax, quotaManualMax, perRun: Number(setting('HS_AUTO_MAX_PER_RUN') || 1),
+      week: weekReads[0] || null,
+      five: live && live.rate && live.rate.five && live.rate.five.reset * 1000 > now ? { ...live.rate.five, at: live.lastAt } : null,
+      quotaUntil: quotaUntil ? Math.floor(quotaUntil / 1000) : null,
+      manualQuotaUntil: manualQuotaUntil ? Math.floor(manualQuotaUntil / 1000) : null },
+    queue: queue.slice(0, 10).map(f => {
+      if (!/^\d+-.*\.md$/.test(f)) return projectEntry(f);
+      const t = read(path.join(ISSUES, 'open', f));
+      return { id: f.split('-')[0], title: ((t.match(/^# (.*)$/m) || [, f])[1]).slice(0, 160),
+        priority: (t.match(/^Priority: (\S+)/m) || [, 'none'])[1], monitor: /\bmonitor\b/.test((t.match(/^Labels:(.*)$/m) || [, ''])[1]) };
+    }),
+    queueTotal: queue.length,
+    waiting: Object.entries(waitingMap).slice(0, 10).map(([f, w]) => ({ ...projectEntry(f), why: w.why, pr: (/\/pull\/(\d+)/.exec(w.pr || '') || [])[1] || null })).concat(unpublished()),
+    rr: (() => { const [src, n] = read(path.join(ST, 'rr')).trim().split(/\s+/); return { src: src || '', used: Number(n) || 1 }; })(),
+    counts: { errors: mon.length, errorsBlocked: monBlocked.length, lint: lint.length, security: sec.length, securityBlocked: secBlocked.length },
+    round: read(path.join(ST, 'round')),
+    last,
+    backends: backends(),
+    history: history(),
+    rounds: rounds(),
+    request: readJson(path.join(ST, 'request.json'), null),
+  };
+  const t2 = path.join(path.dirname(DETAIL), `.ops-auto-detail-tmp-${process.pid}`);
+  try { fs.writeFileSync(t2, JSON.stringify(detail) + '\n', { mode: 0o664 }); fs.renameSync(t2, DETAIL); } catch (e) { console.error(`ops-auto-card: ${e.message}`); process.exit(1); }
+}
+
+// ---------- Log of the current/last run for /auto.html's "Log ›" (issue 104) ----------
+// What Claude says and one line per tool call (inputs only, redacted, never outputs: see
+// ops-auto-log). Not in edge-status (Caddy serves part of it to the LAN): /var/lib/ops-auto-log is
+// $HS_USER's, setgid group tracker, 2750 (tracker-setup); the file is 640, served only by the
+// tracker's authenticated GET /api/auto/log.
+{
+  const LOG = process.env.HS_AUTO_LOG || '/var/lib/ops-auto-log/run.json';
+  const { fromFile } = require(path.join(__dirname, 'ops-auto-log'));
+  const l = fromFile(path.join(ST, 'last-run.jsonl'), category);
+  // last-run.jsonl belongs to the latest "#NNN: run" line of ops-auto.log
+  const runs = (sh('tail', ['-n', '600', path.join(ST, 'ops-auto.log')]) || '').match(/ (?:#\d+|[A-Za-z0-9_-]+#\d+): run \d+ /g) || [];
+  const id = working ? current : runs.length ? runs[runs.length - 1].match(/(?:#\d+|[A-Za-z0-9_-]+#\d+)(?=: run)/)[0].replace(/^#/, '') : null;
+  const out = { v: 1, checked: Math.floor(now / 1000), live: working, id, ...(l || { entries: [], total: 0 }) };
+  const t3 = path.join(path.dirname(LOG), `.ops-auto-log-tmp-${process.pid}`);
+  try { fs.writeFileSync(t3, JSON.stringify(out) + '\n', { mode: 0o640 }); fs.chmodSync(t3, 0o640); fs.renameSync(t3, LOG); } catch (e) { console.error(`ops-auto-card: ${e.message}`); try { fs.unlinkSync(t3); } catch {} }
+}

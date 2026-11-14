@@ -1,0 +1,109 @@
+#!/bin/sh
+# Worktree per issue of a Project for ops-auto (issue 187): never the owner's working tree in
+# ~/projects/NAME, which gateway-sync keeps clean. Run as $HS_USER.
+#   project-worktree create NAME N SLUG   fetch, then worktree + branch issue/N-SLUG from origin/<default>;
+#                                         if the worktree or an issue/N-* branch exists (interrupted run) it is resumed. Prints the path.
+#   project-worktree path NAME N          print the path if the worktree exists (exit 1 otherwise)
+#   project-worktree remove NAME N        remove the worktree and, if merged (also squash: its PR is merged on the remote) or empty, its branch
+#   project-worktree prune NAME           delete local issue/* branches (+ clean worktree) whose PR is merged, and empty issue/* / claude/* ones; the rest goes in $HS_LEFTOVERS_DIR/NAME (read by gateway-sync); skipped while ops-auto runs
+# N is the issue number (digits; for a Project on GitHub the Project's own issue number).
+# HS_PROJECTS_DIR (~/projects) and HS_WORK_DIR (~/.local/state/ops-auto/work) override the places.
+set -eu
+PROJ=${HS_PROJECTS_DIR:-$HOME/projects}
+WORK=${HS_WORK_DIR:-$HOME/.local/state/ops-auto/work}
+die() { echo "project-worktree: $*" >&2; exit 1; }
+# prune NAME: housekeeping of leftovers (issue 295), nothing for a running ops-auto (its lock is held).
+if [ "${1:-}" = prune ]; then
+	[ $# -eq 2 ] || die "uso: prune NAME"
+	name=$2
+	case $name in '' | *[!A-Za-z0-9_-]* | -*) die "nome Project non valido: $name" ;; esac
+	repo=$PROJ/$name
+	[ -e "$repo/.git" ] || die "Project $name non clonato in $repo"
+	LOCK=${HS_OPSAUTO_LOCK:-$HOME/.local/state/ops-auto/lock}
+	LEFT=${HS_LEFTOVERS_DIR:-$HOME/.local/state/ops-auto/leftovers}
+	mkdir -p "$(dirname "$LOCK")" "$LEFT"
+	{ exec 8>>"$LOCK" && flock -n 8; } 2> /dev/null || exit 0
+	def=$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2> /dev/null || echo origin/main)
+	git -C "$repo" rev-parse -q --verify "$def^{commit}" > /dev/null || exit 0
+	cur=$(git -C "$repo" symbolic-ref -q --short HEAD || true)
+	git -C "$repo" worktree prune
+	left=$LEFT/$name.tmp; : > "$left"
+	for br in $(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/issue refs/heads/claude); do
+		[ "$br" != "$cur" ] || continue
+		num=${br#*/}; num=${num%%-*}
+		dir=
+		case $num in '' | *[!0-9]*) ;; *) dir=$WORK/$name-$num ;; esac
+		[ -n "$dir" ] && [ -e "$dir/.git" ] || dir=
+		if [ -n "$dir" ] && [ -n "$(git -C "$dir" status --porcelain 2> /dev/null)" ]; then
+			echo "$br: worktree sporco" >> "$left"; continue
+		fi
+		ahead=$(git -C "$repo" rev-list --count "$def..$br")
+		drop=0
+		if [ "$ahead" -eq 0 ]; then
+			# empty branch: an unused worktree must be older than a day (a run may be about to start)
+			if [ -z "$dir" ] || [ -n "$(find "$dir" -maxdepth 0 -mmin +1440 2> /dev/null)" ]; then drop=1; fi
+		else
+			case $br in
+			issue/*)
+				kind=$(projects-publish ci "$name" "$br" 2> /dev/null | head -n 1 || true)
+				if [ "$kind" = merged ]; then drop=1; else echo "$br: $ahead commit, PR ${kind:-non leggibile} (non unita)" >> "$left"; fi ;;
+			*) echo "$br: $ahead commit senza PR" >> "$left" ;;
+			esac
+		fi
+		if [ "$drop" = 1 ]; then
+			[ -z "$dir" ] || git -C "$repo" worktree remove --force "$dir"
+			git -C "$repo" branch -D "$br" > /dev/null 2>&1 || echo "$br: cancellazione non riuscita" >> "$left"
+		fi
+	done
+	if [ -s "$left" ]; then mv "$left" "$LEFT/$name"; else rm -f "$left" "$LEFT/$name"; fi
+	exit 0
+fi
+[ $# -ge 3 ] || die "uso: create NAME N SLUG | path NAME N | remove NAME N"
+cmd=$1 name=$2 n=$3
+case $name in '' | *[!A-Za-z0-9_-]* | -*) die "nome Project non valido: $name" ;; esac
+case $n in '' | *[!0-9]*) die "numero issue non valido: $n" ;; esac
+repo=$PROJ/$name
+dir=$WORK/$name-$n
+[ -e "$repo/.git" ] || die "Project $name non clonato in $repo"
+case $cmd in
+create)
+	[ $# -eq 4 ] || die "create vuole NAME N SLUG"
+	# accents transliterated, cut at a word boundary (issue 333)
+	slug=$(printf '%s' "$4" | perl -CS -MUnicode::Normalize -pe '$_ = NFD($_); s/\p{Mn}//g' | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' - | sed 's/--*/-/g; s/^-//; s/-$//')
+	if [ ${#slug} -gt 40 ]; then
+		cut40=$(printf '%s' "$slug" | cut -c1-40)
+		[ "$(printf %s "$slug" | cut -c41)" = - ] || cut40=${cut40%-*}
+		[ -n "$cut40" ] && slug=$cut40 || slug=$(printf '%s' "$slug" | cut -c1-40)
+	fi
+	[ -n "$slug" ] || die "slug vuoto"
+	if [ -e "$dir/.git" ]; then echo "$dir"; exit 0; fi
+	if command -v projects-git > /dev/null 2>&1; then projects-git fetch "$repo"; else git -C "$repo" fetch -q origin; fi
+	def=$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2> /dev/null || true)
+	[ -n "$def" ] || def=origin/main
+	git -C "$repo" rev-parse -q --verify "$def^{commit}" > /dev/null || die "$def non esiste in $repo"
+	mkdir -p "$WORK"; chmod 700 "$WORK"
+	branch=issue/$n-$slug
+	# an interrupted run from before issue 202 may hold a local claude/N-* branch (never published): rename it
+	legacy=$(git -C "$repo" for-each-ref --format='%(refname:short)' "refs/heads/claude/$n-*" | head -n1)
+	if [ -n "$legacy" ]; then git -C "$repo" branch -m "$legacy" "issue/${legacy#claude/}"; fi
+	old=$(git -C "$repo" for-each-ref --format='%(refname:short)' "refs/heads/issue/$n-*" | head -n1)
+	[ -z "$old" ] || branch=$old
+	git -C "$repo" worktree prune
+	if git -C "$repo" rev-parse -q --verify "refs/heads/$branch" > /dev/null; then
+		git -C "$repo" worktree add -q "$dir" "$branch"
+	else
+		git -C "$repo" worktree add -q "$dir" -b "$branch" "$def"
+	fi
+	echo "$dir" ;;
+path) [ -e "$dir/.git" ] || exit 1; echo "$dir" ;;
+remove)
+	[ -e "$dir/.git" ] || exit 0
+	branch=$(git -C "$dir" symbolic-ref -q --short HEAD || true)
+	git -C "$repo" worktree remove --force "$dir"
+	def=$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2> /dev/null || echo origin/main)
+	# a squash merge leaves the branch "not merged" for git: its PR merged on the remote is the proof
+	case $branch in issue/*) git -C "$repo" branch -d "$branch" > /dev/null 2>&1 ||
+		{ [ "$(projects-publish ci "$name" "$branch" 2> /dev/null | head -n1)" = merged ] && git -C "$repo" branch -D "$branch" > /dev/null 2>&1; } ||
+		echo "project-worktree: branch $branch tenuto (non unito a $def)" >&2 ;; esac ;;
+*) die "comando sconosciuto: $cmd" ;;
+esac

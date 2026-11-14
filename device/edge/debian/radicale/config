@@ -1,0 +1,27 @@
+# Radicale (CalDAV) for home-server: installed as /etc/radicale/config by device/edge/deploy.
+# Localhost only: the owner's devices reach it through Caddy (https://<ts host>:8445, tailnet,
+# ACL phone + admin PC), brain's sorting job directly on 127.0.0.1:5232 (brain-cal).
+[server]
+hosts = 127.0.0.1:5232
+
+[auth]
+type = htpasswd
+htpasswd_filename = /etc/radicale/users
+htpasswd_encryption = bcrypt
+delay = 2
+
+[rights]
+type = from_file
+file = /etc/radicale/rights
+# Deleting or replacing a whole calendar needs an explicit D / O in the rights (owner only).
+permit_delete_collection = False
+permit_overwrite_collection = False
+
+[storage]
+filesystem_folder = /var/lib/radicale/collections
+
+[web]
+type = none
+
+[logging]
+level = warning

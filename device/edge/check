@@ -49,7 +49,7 @@ if [ -s "$T/shell" ]; then
 	fi
 fi
 
-[ -s DIREZIONE.md ] || { echo "FAIL DIREZIONE.md manca (issue 472)"; fails=$((fails + 1)); }
+[ ! -d issues ] || [ -s DIREZIONE.md ] || { echo "FAIL DIREZIONE.md manca (issue 472)"; fails=$((fails + 1)); }
 
 # An executable file must start with its shebang (issue 502: a line pasted above it broke three scripts).
 git ls-files -s | awk '$1 == "100755" { print $4 }' | while IFS= read -r f; do

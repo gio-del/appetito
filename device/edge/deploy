@@ -51,37 +51,70 @@ fi
 PHASE=install
 STAGE=$(mktemp -d)
 REASON=stage
-"$HERE/projects-check" "$D/projects" || { REASON=projects; echo "deploy stopped: Projects list refused, nothing installed" >&2; exit 1; }
+PROJ=$D/projects; [ -e "$PROJ" ] || PROJ=$D/projects.example  # the public copy (Appetito) has only the template
+"$HERE/projects-check" "$PROJ" || { REASON=projects; echo "deploy stopped: Projects list refused, nothing installed" >&2; exit 1; }
 
-mkdir -p "$STAGE/questions" "$STAGE/sv" "$STAGE/bin" "$STAGE/sbin" "$STAGE/lbin" "$STAGE/brain" "$STAGE/sumisura" "$STAGE/gateway"
+# Files of a specific Project, of the mail bridge, of the phone or of the dashboard are not in the public copy
+# (Appetito, issue 584): `cpo` copies what exists and skips the rest, so the same deploy runs with or without them.
+# Only the lists below use it; everything else must exist, or the deploy stops.
+cpo() { _d=; for _a; do _d=$_a; done; for _a; do [ "$_a" = "$_d" ] || [ ! -e "$_a" ] || cp -r "$_a" "$_d"; done; }
+# Cron lines whose script is not in this install are dropped with their "#@" line (the dashboard lists only what runs).
+filter_cron() {
+	_held=''; : > "$2"
+	while IFS= read -r _l || [ -n "$_l" ]; do
+		case $_l in
+		'#@'*) [ -z "$_held" ] || printf '%s\n' "$_held" >> "$2"; _held=$_l ;;
+		'#'*|'') printf '%s\n' "$_l" >> "$2" ;;
+		*) _s=$(printf '%s\n' "$_l" | sed -n 's#.* hs-run [^ ]* \(bin/\|/usr/local/sbin/\|/usr/local/bin/\)\([A-Za-z0-9._-]*\).*#\2#p')
+			if [ -n "$_s" ] && [ ! -e "$D/$_s" ]; then _held=''; echo "deploy: cron job skipped, no $_s in this install" >&2; continue; fi
+			[ -z "$_held" ] || printf '%s\n' "$_held" >> "$2"; _held=''; printf '%s\n' "$_l" >> "$2" ;;
+		esac
+	done < "$1"
+	[ -z "$_held" ] || printf '%s\n' "$_held" >> "$2"
+}
+
+mkdir -p "$STAGE/questions" "$STAGE/sv" "$STAGE/bin" "$STAGE/sbin" "$STAGE/lbin" "$STAGE/brain" "$STAGE/sumisura" "$STAGE/gateway" "$STAGE/cron"
 cp -r "$HERE/tracker" "$STAGE/tracker"
 cp "$ENVF" "$STAGE/home-server.env"
-cp "$D/Caddyfile" "$D/projects" "$D/cron.d-home-server" "$D/crontab-user" "$D/crontab-brain" "$D/bash_aliases" "$D/phone-apps" "$STAGE/"
+cp "$D/Caddyfile" "$D/bash_aliases" "$STAGE/"
+cp "$PROJ" "$STAGE/projects"
+cpo "$D/phone-apps" "$STAGE/"
+for _c in cron.d-home-server crontab-user crontab-brain; do filter_cron "$D/$_c" "$STAGE/cron/$_c"; cp "$STAGE/cron/$_c" "$STAGE/$_c"; done
 sed "s/@HS_USER@/$HS_USER/g" "$D/sshd-home-server.conf" > "$STAGE/sshd-home-server.conf"
+# Applied on a normal Debian/Ubuntu (issue 569): sshd keeps listening where it already does (a localhost-only
+# ListenAddress would lock a remote machine out at the reload) and keeps PAM; key-only login and AllowUsers stay.
+if [ -f /etc/home-server.env ] && [ -x "$D/hs-on-android" ] && ! "$D/hs-on-android"; then
+	grep -v '^ListenAddress \|^UsePAM ' "$STAGE/sshd-home-server.conf" > "$STAGE/sshd.new" && mv "$STAGE/sshd.new" "$STAGE/sshd-home-server.conf"
+fi
 cp -r "$D"/sv/* "$STAGE/sv/"
 cp "$D/sv-log-run" "$STAGE/sv-log-run"
 mkdir -p "$STAGE/ntfy"; cp "$D"/ntfy/* "$STAGE/ntfy/"
-mkdir -p "$STAGE/mail"; cp "$D"/mail/* "$STAGE/mail/"
-mkdir -p "$STAGE/studio"; cp "$D"/studio/* "$STAGE/studio/"
+mkdir -p "$STAGE/mail" "$STAGE/studio"; cpo "$D"/mail/* "$STAGE/mail/"; cpo "$D"/studio/* "$STAGE/studio/"
 REASON=schedule
 # "#@" lines of the cron files -> catalog and categories of the dashboard (the deploy fails on a job without one).
-HS_USER="$HS_USER" "$HERE/render-schedule" --json "$D/crontab-user" "$D/crontab-brain" "$D/cron.d-home-server" > "$STAGE/hs-jobs.json"
-HS_USER="$HS_USER" "$HERE/render-schedule" --schedule "$D/crontab-user" "$D/crontab-brain" "$D/cron.d-home-server" > "$STAGE/schedule.json"
+HS_USER="$HS_USER" "$HERE/render-schedule" --json "$STAGE/crontab-user" "$STAGE/crontab-brain" "$STAGE/cron.d-home-server" > "$STAGE/hs-jobs.json"
+HS_USER="$HS_USER" "$HERE/render-schedule" --schedule "$STAGE/crontab-user" "$STAGE/crontab-brain" "$STAGE/cron.d-home-server" > "$STAGE/schedule.json"
 REASON=stage
-cp "$D/jobs-status" "$D/projects-issues-sync" "$D/projects-issue-apply" "$D/projects-publish-pending" "$D/projects-ci-watch" "$D/release-gate" "$D/owner-notify" "$D/app-upgrade" "$D/edge-watch" "$D/dashboard-stats" "$D/disk-eta" "$D/issues-autocommit" "$D/rotate-secrets" "$D/phone-apps-check" "$D/hs-monitor" "$D/ops-auto" "$D/ops-auto-model" "$D/ops-auto-card" "$D/ops-auto-log" "$D/ops-auto-request" "$D/proposals-card" \
+cp "$D/jobs-status" "$D/projects-issues-sync" "$D/projects-issue-apply" "$D/projects-publish-pending" "$D/projects-ci-watch" "$D/release-gate" "$D/owner-notify" "$D/app-upgrade" "$D/disk-eta" "$D/issues-autocommit" "$D/hs-monitor" "$D/ops-auto" "$D/ops-auto-model" "$D/ops-auto-card" "$D/ops-auto-log" "$D/ops-auto-request" "$D/proposals-card" \
 	"$D/ops-suggest" "$D/ops-suggest-index" "$D/ops-suggest-signals" "$D/attriti-signals" "$D/attriti" "$D/attriti-card" "$D/issues-triage" "$D/gateway-sync" "$D/claude-usage" "$D/check-nightly" "$D/ai-run" "$D/ai-api" "$D/ai-delegate" "$D/questions-suggest" "$D/questions-recheck" "$D/questions-recheck-ai" "$D/ops-refresh" "$STAGE/bin/"
-cp "$D/tls-renew" "$D/caddy-reload" "$D/vaultwarden-backup" "$D/radicale-backup" "$D/library-backup" "$D/sumisura-backup" "$D/state-backup" "$D/repo-backup" "$D/vaultwarden-fetch" "$D/hs-skill-fetch" \
-	"$D/apt-autoupdate" "$D/restart-stale" "$D/restart-tailscaled" "$D/update-apps" "$D/hs-advisories" "$D/claude-update-all" "$D/brain-refresh" "$D/backup-all" "$D/sessions-refresh" "$D/log-trim-system" "$D/android-sh" \
-	"$D/tracker-setup" "$D/tracker-passwd" "$D/brain-setup" "$D/radicale-setup" "$D/owners-check" "$D/ports-check" "$D/ssh-login-watch" "$D/uptime-kuma-install" "$D/sumisura-setup" "$D/library-setup" "$D/ntfy-setup" "$D/mail-setup" "$D/mail-fetch" "$D/mail-send" "$D/mail-digest" "$D/sumisura-vault" "$D/sumisura-tailor" "$D/hs-docs-fetch" "$D/hs-scanner-fetch" "$D/project-run" "$D/project-tools" "$D/project-cd" "$D/apps-idle" "$D/studio-setup" "$D/studio-vault" "$D/studio-app-setup" "$D/studio-backup" "$D/studio-autocommit" "$D/studio-calendar-sync" "$D/studio-leetcode" "$D/studio-week" "$D/deploy-worker" "$STAGE/sbin/"
-cp "$D/hs-run" "$D/hs-notify" "$D/hs-runlog" "$D/hs-setting" "$D/hs-security-enabled" "$D/vault-autocommit" "$D/brain-sort" "$D/brain-digest" "$D/brain-cal" "$D/brain-propose" "$D/mail-inbox-move" "$D/issues-housekeep" "$D/issues-lint" "$D/issues-next-id" "$D/issues-similar" "$D/issues-new" "$D/issues-context" "$D/gateway-projects" "$D/projects-publish" "$D/hs-attribution" "$D/hs-secrets" "$D/projects-git" "$D/project-worktree" "$D/project-issue-body" "$D/brain-usage" "$D/log-trim" "$D/ai-run" "$D/ai-api" "$D/ai-delegate" "$D/sumisura-fetch-url" "$STAGE/lbin/"
+cp "$D/tls-renew" "$D/caddy-reload" "$D/radicale-backup" "$D/state-backup" "$D/repo-backup" "$D/hs-skill-fetch" \
+	"$D/apt-autoupdate" "$D/restart-stale" "$D/restart-tailscaled" "$D/update-apps" "$D/hs-advisories" "$D/claude-update-all" "$D/brain-refresh" "$D/backup-all" "$D/sessions-refresh" "$D/log-trim-system" \
+	"$D/tracker-setup" "$D/tracker-passwd" "$D/brain-setup" "$D/radicale-setup" "$D/owners-check" "$D/ports-check" "$D/ssh-login-watch" "$D/ntfy-setup" "$D/hs-docs-fetch" "$D/hs-scanner-fetch" "$D/project-run" "$D/project-tools" "$D/project-cd" "$D/apps-idle" "$D/deploy-worker" "$STAGE/sbin/"
+# Not in the public copy: services and backups of the owner's apps, the mail bridge, the study Project, the phone, the dashboard.
+cpo "$D/vaultwarden-backup" "$D/library-backup" "$D/sumisura-backup" "$D/vaultwarden-fetch" "$D/android-sh" "$D/uptime-kuma-install" "$D/sumisura-setup" "$D/library-setup" \
+	"$D/mail-setup" "$D/mail-fetch" "$D/mail-send" "$D/mail-digest" "$D/sumisura-vault" "$D/sumisura-tailor" "$D/studio-setup" "$D/studio-vault" "$D/studio-app-setup" "$D/studio-backup" "$D/studio-autocommit" \
+	"$D/studio-calendar-sync" "$D/studio-leetcode" "$D/studio-week" "$STAGE/sbin/"
+cpo "$D/edge-watch" "$D/dashboard-stats" "$D/rotate-secrets" "$D/phone-apps-check" "$STAGE/bin/"
+cp "$D/hs-run" "$D/hs-notify" "$D/hs-runlog" "$D/hs-setting" "$D/hs-security-enabled" "$D/vault-autocommit" "$D/brain-sort" "$D/brain-digest" "$D/brain-cal" "$D/brain-propose" "$D/issues-housekeep" "$D/issues-lint" "$D/issues-next-id" "$D/issues-similar" "$D/issues-new" "$D/issues-context" "$D/gateway-projects" "$D/projects-publish" "$D/hs-attribution" "$D/hs-on-android" "$D/hs-secrets" "$D/projects-git" "$D/project-worktree" "$D/project-issue-body" "$D/brain-usage" "$D/log-trim" "$D/ai-run" "$D/ai-api" "$D/ai-delegate" "$STAGE/lbin/"
+cpo "$D/mail-inbox-move" "$D/sumisura-fetch-url" "$STAGE/lbin/"
 cp "$D"/brain/* "$STAGE/brain/"
 cp "$D"/questions/* "$STAGE/questions/"
-cp "$D"/sumisura/* "$STAGE/sumisura/"
+cpo "$D"/sumisura/* "$STAGE/sumisura/"
 cp "$D"/gateway/* "$STAGE/gateway/"
 mkdir -p "$STAGE/git-hooks"
 cp "$HERE/git-hooks/attribution-common.sh" "$HERE/git-hooks/commit-msg" "$HERE/git-hooks/pre-push" "$HERE/git-hooks/pre-receive" "$STAGE/git-hooks/"
 cp -r "$D/tasks-web" "$STAGE/tasks-web"
-cp -r "$D/dashboard-web" "$STAGE/dashboard-web"
+mkdir -p "$STAGE/dashboard-web"; cpo "$D"/dashboard-web/* "$STAGE/dashboard-web/"
 mkdir -p "$STAGE/radicale"
 cp "$D/radicale/config" "$STAGE/radicale/"
 sed "s/@HS_USER@/$HS_USER/g" "$D/radicale/rights" > "$STAGE/radicale/rights"
@@ -89,6 +122,8 @@ cp "$D/policy-rc.d" "$D/apt-unattended.conf" "$D/hs-docs.list" "$STAGE/"
 
 REMOTE='set -eu
 at() { echo "deploy-step: $1" >&2; }
+# Setup of an optional piece: runs only where its script was installed (not in the public copy, issue 584).
+opt() { [ -e "$S/sbin/$1" ] || return 0; at "$1"; sudo "/usr/local/sbin/$1"; }
 S=$(mktemp -d); trap "rm -rf $S" EXIT; tar -C "$S" -xf -
 # Optional services (issue 230), decided here where /etc/hs-service is: the Caddy site only while enabled
 # (the dashboard card comes from health.json).
@@ -174,7 +209,7 @@ jq -e "[.hooks.PreToolUse[]?.hooks[]?.command] | index(\"/usr/local/bin/hs-attri
 	jq ".hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{matcher: \"Bash\", hooks: [{type: \"command\", command: \"/usr/local/bin/hs-attribution claude-hook\"}]}])" "$S_CL" > "$S_CL.new" && chmod --reference="$S_CL" "$S_CL.new" && mv "$S_CL.new" "$S_CL"; echo "claude settings: attribution hook"; }
 for f in "$S"/brain/*; do put "$f" "/usr/local/share/brain/$(basename "$f")" 644 root:root; done
 for f in "$S"/questions/*; do put "$f" "/usr/local/share/questions/$(basename "$f")" 644 root:root; done
-for f in "$S"/sumisura/*; do put "$f" "/usr/local/share/sumisura/$(basename "$f")" 644 root:root; done
+for f in "$S"/sumisura/*; do [ -e "$f" ] || continue; put "$f" "/usr/local/share/sumisura/$(basename "$f")" 644 root:root; done
 # Issue tracker app (read-only for its service user) and its user/permissions/password.
 for f in $(cd "$S/tracker" && find . -type f); do put "$S/tracker/$f" "/opt/hs-tracker/${f#./}" 644 root:root tracker; done
 prune "$S/tracker" /opt/hs-tracker tracker
@@ -191,8 +226,8 @@ at tracker-setup; sudo /usr/local/sbin/tracker-setup
 at owners-check; sudo /usr/local/sbin/owners-check
 at brain-setup; sudo /usr/local/sbin/brain-setup
 # Study session (issue 448): no-op unless enabled with studio-setup --enable; its firewall is install-studio-fw.sh.
-for f in "$S"/studio/*; do put "$f" "/usr/local/share/studio/$(basename "$f")" 644 root:root; done
-at studio-setup; sudo /usr/local/sbin/studio-setup
+for f in "$S"/studio/*; do [ -e "$f" ] || continue; put "$f" "/usr/local/share/studio/$(basename "$f")" 644 root:root; done
+opt studio-setup
 # CalDAV: package, users/passwords, calendars (after brain-setup: brain gets an account).
 for f in config rights; do put "$S/radicale/$f" "/etc/radicale/$f" 644 root:root radicale; done
 at radicale-setup; sudo /usr/local/sbin/radicale-setup
@@ -200,23 +235,23 @@ at radicale-setup; sudo /usr/local/sbin/radicale-setup
 for f in "$S"/tasks-web/*; do put "$f" "/usr/local/share/tasks-web/$(basename "$f")" 644 root:root; done
 prune "$S/tasks-web" /usr/local/share/tasks-web
 # Static dashboard (issue 109): installed now, served by Caddy once its sites switch over (next step).
-for f in "$S"/dashboard-web/*; do put "$f" "/usr/local/share/dashboard-web/$(basename "$f")" 644 root:root; done
+for f in "$S"/dashboard-web/*; do [ -e "$f" ] || continue; put "$f" "/usr/local/share/dashboard-web/$(basename "$f")" 644 root:root; done
 prune "$S/dashboard-web" /usr/local/share/dashboard-web
 # Gateway (issue 018): ~/projects with one folder per Project of /etc/hs-projects, then the apps.
 at gateway-sync; "$HOME/bin/gateway-sync"
-at sumisura-setup; sudo /usr/local/sbin/sumisura-setup
-at library-setup; sudo /usr/local/sbin/library-setup
+opt sumisura-setup
+opt library-setup
 # Study app (issue 461): no-op unless /etc/hs-projects lists studio with the service studio-app (and studio-setup --enable ran).
-at studio-app-setup; sudo /usr/local/sbin/studio-app-setup
+opt studio-app-setup
 # Study folder in the vault (issue 491): no-op unless the studio service is enabled.
-at studio-vault; sudo /usr/local/sbin/studio-vault
+opt studio-vault
 # ntfy (issue 230): no-op unless enabled with ntfy-setup --enable; then pin, config and users.
 at ntfy-setup; sudo /usr/local/sbin/ntfy-setup
 # Mail bridge (issue 015): no-op unless enabled with mail-setup --enable (after tracker-setup and brain-setup: their groups).
-put "$S/mail/edge-mail.gs" /usr/local/share/mail/edge-mail.gs 644 root:root
-put "$S/mail/mail-import.js" /usr/local/lib/hs/mail-import.js 644 root:root
-put "$S/mail/mail-call.sh" /usr/local/lib/hs/mail-call.sh 644 root:root
-at mail-setup; sudo /usr/local/sbin/mail-setup
+[ ! -e "${S}/mail/edge-mail.gs" ] || put "$S/mail/edge-mail.gs" /usr/local/share/mail/edge-mail.gs 644 root:root
+[ ! -e "${S}/mail/mail-import.js" ] || put "$S/mail/mail-import.js" /usr/local/lib/hs/mail-import.js 644 root:root
+[ ! -e "${S}/mail/mail-call.sh" ] || put "$S/mail/mail-call.sh" /usr/local/lib/hs/mail-call.sh 644 root:root
+opt mail-setup
 # Docs/changelogs of the installed versions (issue 125): no-op unless a version or the list changed.
 put "$S/hs-docs.list" /etc/hs-docs.list 644 root:root
 at hs-docs-fetch; sudo /usr/local/sbin/hs-docs-fetch || echo "hs-docs-fetch FAILED: local docs not updated"
@@ -226,7 +261,7 @@ at hs-skill-fetch; if sudo /usr/local/sbin/hs-skill-fetch; then mkdir -p "$HOME/
 at hs-scanner-fetch; sudo /usr/local/sbin/hs-scanner-fetch || echo "hs-scanner-fetch FAILED: secrets scanner not installed"
 sudo crontab -u brain -l 2>/dev/null | cmp -s - "$S/crontab-brain" || { sudo crontab -u brain "$S/crontab-brain"; echo "updated brain crontab"; }
 cmp -s "$S/bash_aliases" "$HOME/.bash_aliases" 2>/dev/null || { install -m 644 "$S/bash_aliases" "$HOME/.bash_aliases"; echo "updated ~/.bash_aliases"; }
-cmp -s "$S/phone-apps" "$HOME/.config/phone-apps" 2>/dev/null ||
+[ ! -e "$S/phone-apps" ] || cmp -s "$S/phone-apps" "$HOME/.config/phone-apps" 2>/dev/null ||
 	{ install -D -m 644 "$S/phone-apps" "$HOME/.config/phone-apps"; echo "updated ~/.config/phone-apps"; "$HOME/bin/phone-apps-check" || true; }
 crontab -l 2>/dev/null | cmp -s - "$S/crontab-user" || { crontab "$S/crontab-user"; echo "updated crontab"; }
 # shellcheck for device/edge/check (issue 127; check skips it where it is missing, e.g. the PC).

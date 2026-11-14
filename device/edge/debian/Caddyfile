@@ -1,0 +1,147 @@
+# home-server: dashboard on https://<server ts name> (and plain http://<LAN IP>), Vaultwarden on :8443
+{
+	auto_https off
+	# Admin API on a unix socket only root and caddy can reach (/run/caddy is 750): on TCP localhost it was reachable from
+	# every tailnet device (tailscaled userspace forwards to 127.0.0.1) and every local user.
+	admin unix//run/caddy/admin.sock
+}
+
+# Dashboard over HTTPS (Tailscale cert): needed for installing it as an app (PWA) on phones
+# and desktops. Tailnet and home LAN (AdGuard rewrites the name to the LAN IP).
+https://{$HS_TS_HOST} {
+	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
+	header Strict-Transport-Security "max-age=31536000"
+	# no-cache: the browser revalidates (ETag, 304) instead of keeping an old page for days (issue 579)
+	header Cache-Control no-cache
+	# Static dashboard (issue 109): the page, and the JSON of /var/lib/edge-status next to it.
+	# Only these files (the others in that directory are not published).
+	@json path /status.json /phone-apps.json /auto.json /proposals.json /updates.json /releases.json /jobs.json /project-cd.json /system.json /adguard.json /health.json /schedule.json /history.jsonl /disk-daily.jsonl /adguard-daily.jsonl /disk-eta.json
+	handle @json {
+		root * /var/lib/edge-status
+		file_server
+	}
+	handle {
+		root * /usr/local/share/dashboard-web
+		file_server
+	}
+}
+
+:80 {
+	header Cache-Control no-cache
+	# Static dashboard (issue 109): the page is in /usr/local/share/dashboard-web, its numbers are the JSON files
+	# of /var/lib/edge-status, also read by hs-monitor through 127.0.0.1.
+	# Only these files (the others in that directory are not published).
+	@json path /status.json /phone-apps.json /auto.json /proposals.json /updates.json /releases.json /jobs.json /project-cd.json /system.json /adguard.json /health.json /schedule.json /history.jsonl /disk-daily.jsonl /adguard-daily.jsonl /disk-eta.json
+	handle @json {
+		root * /var/lib/edge-status
+		file_server
+	}
+	# By name (tailnet, or LAN clients using AdGuard) -> HTTPS. By LAN IP: plain HTTP,
+	# so devices without AdGuard DNS still get the dashboard.
+	# (the JSON files are served first: 127.0.0.1 readers are not redirected.)
+	@byname host {$HS_TS_NAME} {$HS_TS_HOST} {$HS_TS_IP}
+	handle @byname {
+		redir https://{$HS_TS_HOST}{uri} 308
+	}
+	handle {
+		root * /usr/local/share/dashboard-web
+		file_server
+	}
+}
+
+# Vaultwarden over HTTPS with the Tailscale cert (renewed by /usr/local/sbin/tls-renew), for the
+# tailnet (who may connect is decided by the Tailscale ACL) and the home LAN (AdGuard rewrites
+# the name to the LAN IP for Wi-Fi clients). Never the internet: no port forward on the router.
+# Not :443, which Tailscale Funnel would own if it were ever re-enabled.
+# {$HS_*} come from /etc/home-server.env (loaded by the runit service).
+https://{$HS_TS_HOST}:8443 {
+	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:8222
+}
+
+# Issue tracker (device/edge/tracker) over HTTPS (installable as an app). Bound to localhost:
+# reachable only through the tailnet (ACL: admin PC and phone), not from the home LAN.
+https://{$HS_TS_HOST}:8444 {
+	bind 127.0.0.1
+	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:3004
+}
+
+# Radicale CalDAV (tasks and calendar for DAVx⁵ on the phone). Bound to localhost: tailnet only
+# (ACL: admin PC and phone), not the home LAN. Auth is Radicale's own (htpasswd, bcrypt).
+https://{$HS_TS_HOST}:8445 {
+	bind 127.0.0.1
+	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
+	header Strict-Transport-Security "max-age=31536000"
+	redir /.well-known/caldav / 301
+	redir /.well-known/carddav / 301
+	# Tasks/calendar web app (issue 019): static files, CalDAV to Radicale on this same origin.
+	# Its requests carry X-Tasks-App, and for them WWW-Authenticate is dropped so a wrong
+	# password shows the app's own error instead of the browser's login prompt.
+	redir /app /app/ 301
+	handle /app/* {
+		uri strip_prefix /app
+		root * /usr/local/share/tasks-web
+		header {
+			Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+			X-Content-Type-Options nosniff
+			Referrer-Policy no-referrer
+			Cache-Control no-cache
+		}
+		file_server
+	}
+	@tasksapp header X-Tasks-App 1
+	handle @tasksapp {
+		reverse_proxy 127.0.0.1:5232 {
+			header_down -WWW-Authenticate
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:5232
+	}
+}
+
+# Access log of the Projects' apps (issue 477): one file per app, read by apps-idle to know when the owner last opened it.
+# JSON, no rolling (log-trim cuts it nightly, in append).
+(applog) {
+	log {
+		output file /var/log/caddy/app-{args.0}.log {
+			roll_disabled
+		}
+		format json
+	}
+}
+
+# Sumisura, app of the Gateway Project "sumisura" (issue 018; sumisura-setup). Bound to localhost:
+# tailnet only (ACL: admin PC and phone), not the home LAN. Access is the app's own token
+# (/api/* only; the browser trades it once for a cookie). Generation can take minutes.
+https://{$HS_TS_HOST}:8446 {
+	bind 127.0.0.1
+	import applog sumisura
+	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:3005
+}
+
+# library, app of the Gateway Project "library" (issues 191, 194; library-setup). Bound to localhost:
+# tailnet only (ACL: admin PC and phone), not the home LAN. Access is the app's own login (user +
+# password, session cookie). The camera needs HTTPS, hence Caddy's TLS.
+https://{$HS_TS_HOST}:8447 {
+	bind 127.0.0.1
+	import applog library
+	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:3006
+}
+
+# studio-app, app of the Gateway Project "studio" (issue 461; studio-app-setup). Bound to localhost:
+# tailnet only (ACL: admin PC and phone), not the home LAN. Access is the app's own login.
+https://{$HS_TS_HOST}:8449 {
+	bind 127.0.0.1
+	import applog studio-app
+	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:3008
+}

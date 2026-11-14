@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#101112">
+<title>Agenda e attività</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="ics.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<form id="login" class="login" hidden>
+  <h1>Agenda e attività</h1>
+  <label>Utente <input name="user" type="text" autocomplete="username" required></label>
+  <label>Password <input name="pass" type="password" autocomplete="current-password" required></label>
+  <button class="btn primary" type="submit">Accedi</button>
+  <p class="err" id="login-err"></p>
+  <p class="muted small">Le stesse credenziali di DAVx⁵ (Radicale). Restano solo in questa scheda.</p>
+</form>
+
+<main id="main" hidden>
+  <header class="top">
+    <nav class="tabs">
+      <button class="tab" data-tab="todo" type="button">Attività</button>
+      <button class="tab" data-tab="agenda" type="button">Agenda</button>
+    </nav>
+    <span class="spacer"></span>
+    <button class="btn ghost icon" id="reload" type="button" title="Aggiorna">↻</button>
+    <button class="btn ghost" id="logout" type="button">Esci</button>
+  </header>
+  <p class="err" id="err"></p>
+
+  <section id="todo" hidden>
+    <form id="todo-add" class="add">
+      <input name="summary" type="text" placeholder="Nuova attività" required maxlength="200">
+      <input name="due" type="date" title="Scadenza (facoltativa)">
+      <button class="btn primary" type="submit">Aggiungi</button>
+    </form>
+    <ul id="todo-list" class="list"></ul>
+    <label class="muted small"><input id="show-done" type="checkbox"> Mostra completate</label>
+    <ul id="done-list" class="list done" hidden></ul>
+  </section>
+
+  <section id="agenda" hidden>
+    <div class="add">
+      <span class="muted" id="agenda-range"></span>
+      <span class="spacer"></span>
+      <button class="btn primary" id="event-new" type="button">Nuovo evento</button>
+    </div>
+    <div id="agenda-list"></div>
+    <button class="btn" id="agenda-more" type="button">Mostra altri 30 giorni</button>
+  </section>
+</main>
+
+<dialog id="todo-dlg">
+  <form method="dialog" class="dlg">
+    <h2>Attività</h2>
+    <label>Titolo <input name="summary" type="text" required maxlength="200"></label>
+    <label>Scadenza <input name="due" type="date"></label>
+    <label>Note <textarea name="description" rows="4"></textarea></label>
+    <p class="err"></p>
+    <div class="row">
+      <button class="btn ghost danger" value="delete" type="button" data-act="delete">Elimina</button>
+      <span class="spacer"></span>
+      <button class="btn" value="cancel" formnovalidate>Annulla</button>
+      <button class="btn primary" value="save">Salva</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="event-dlg">
+  <form method="dialog" class="dlg">
+    <h2>Evento</h2>
+    <p class="muted small" data-recur hidden>Evento ripetuto: qui si vede soltanto, si modifica dal telefono.</p>
+    <label>Titolo <input name="summary" type="text" required maxlength="200"></label>
+    <label>Giorno <input name="date" type="date" required></label>
+    <label class="check"><input name="allday" type="checkbox"> Tutto il giorno</label>
+    <div class="row times">
+      <label>Dalle <input name="start" type="time" value="09:00"></label>
+      <label>Alle <input name="end" type="time" value="10:00"></label>
+    </div>
+    <label>Luogo <input name="location" type="text" maxlength="200"></label>
+    <label>Note <textarea name="description" rows="3"></textarea></label>
+    <p class="err"></p>
+    <div class="row">
+      <button class="btn ghost danger" type="button" data-act="delete">Elimina</button>
+      <span class="spacer"></span>
+      <button class="btn" value="cancel" formnovalidate>Annulla</button>
+      <button class="btn primary" value="save">Salva</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>

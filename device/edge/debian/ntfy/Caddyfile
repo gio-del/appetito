@@ -1,0 +1,10 @@
+
+# ntfy, push notifications (issue 230; ntfy-setup). Added to the Caddyfile by the deploy only while the
+# service is enabled (/etc/hs-service/ntfy). Bound to localhost: tailnet only (ACL: admin PC and phone),
+# not the home LAN. Access is ntfy's own login (deny-all by default).
+https://{$HS_TS_HOST}:8448 {
+	bind 127.0.0.1
+	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:3007
+}

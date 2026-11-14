@@ -1,0 +1,152 @@
+#!/bin/sh
+# Brain's part of the digest mail (issue 414), cron of user brain every 15 minutes. The ops session and root never
+# read the vault, so brain reads it and hands over two small validated files in $OUT (/var/lib/brain-digest, brain's, 755):
+#   alive.json     {updated}: brain-digest is running (mail-digest then waits up to an hour for part.json). Hour, weekend and
+#                  sections are NOT read from the note any more (issue 473): they live only on the settings page.
+#   part.json      {day, sections:[{key, items:[{text}]}]} for agenda, attivita, inbox, riassunto, written once a day from
+#                  30 minutes before the send time, and only when the digest is on.
+# Agenda, tasks and the Inbox list are read without any model; only "riassunto" calls the AI (ai-run, read-only tools,
+# fixed prompt /usr/local/share/brain/digest-prompt.md, skipped over the weekly quota). Items are plain text: mail-digest
+# escapes, truncates and strips links. Env (tests): BRAIN_DIGEST_DIR BRAIN_DIGEST_NOW BRAIN_DIGEST_PROMPT BRAIN_CAL HS_AI_RUN HS_SETTING.
+set -eu
+export PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 CLAUDE_CODE_TMPDIR=$HOME/.cache/claude-tmp
+AI_RUN=${HS_AI_RUN:-$(cd "$(dirname "$0")" && pwd)/ai-run}
+CAL=${BRAIN_CAL:-brain-cal}
+SET=${HS_SETTING:-hs-setting}
+V=$HOME/vault
+ST=$HOME/.local/state/brain
+OUT=${BRAIN_DIGEST_DIR:-/var/lib/brain-digest}
+PROMPT=${BRAIN_DIGEST_PROMPT:-/usr/local/share/brain/digest-prompt.md}
+NOTE=$V/Impostazioni/Second\ brain.md
+now=${BRAIN_DIGEST_NOW:-$(date +%s)}
+today=$(date -d "@$now" +%F)
+mkdir -p "$ST"
+exec 9>"$ST/digest-lock"
+flock -n 9 || exit 0
+log() { echo "$(date '+%F %T') digest: $*" >> "$ST/sort.log"; }
+[ -d "$OUT" ] && [ -w "$OUT" ] || exit 0 # brain-setup makes it; without it nothing to hand over
+
+# --- liveness ---------------------------------------------------------------------------------------------------
+jq -n --argjson u "$now" '{updated: $u}' > "$OUT/.alive.$$"
+chmod 644 "$OUT/.alive.$$"; mv "$OUT/.alive.$$" "$OUT/alive.json"
+
+# --- is the part due? -------------------------------------------------------------------------------------------
+want() { return 0; } # every section of the part is always built (issue 473)
+[ "$("$SET" HS_DIGEST_ENABLED 2> /dev/null || echo 1)" = 1 ] || exit 0
+if [ "$("$SET" HS_DIGEST_WEEKEND 2> /dev/null || echo 1)" = 0 ]; then
+	case $(date -d "@$now" +%u) in 6 | 7) exit 0 ;; esac
+fi
+hour=$("$SET" HS_DIGEST_HOUR 2> /dev/null || echo 7); minute=0
+case $hour in '' | *[!0-9]*) hour=7 ;; esac
+nowmin=$(( $(date -d "@$now" +%-H) * 60 + $(date -d "@$now" +%-M) ))
+[ "$nowmin" -ge $((hour * 60 + minute - 30)) ] || exit 0
+[ "$(jq -r .day "$OUT/part.json" 2> /dev/null || true)" != "$today" ] || exit 0
+
+# --- build the part ---------------------------------------------------------------------------------------------
+W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+d=$(date -d "@$now" +%Y%m%d); md=$(date -d "@$now" +%m%d)
+# ics_items KIND: items of today from a CalDAV listing on stdin (unfolded). Events: the day's, with the time and yearly
+# repeats (birthdays); tasks: not done and due today or earlier.
+ics_items() {
+	sed ':a;N;$!ba;s/\r\?\n //g' | tr -d '\r' | awk -v kind="$1" -v today="$d" -v md="$md" '
+		function jdn(y, m, d,   a, yy, mm) { a = int((14 - m) / 12); yy = y + 4800 - a; mm = m + 12 * a - 3
+			return d + int((153 * mm + 2) / 5) + 365 * yy + int(yy / 4) - int(yy / 100) + int(yy / 400) - 32045 }
+		function jd(s) { return jdn(substr(s, 1, 4) + 0, substr(s, 5, 2) + 0, substr(s, 7, 2) + 0) }
+		# does the FREQ=WEEKLY rule in rr (start dt) hit today? INTERVAL counts Monday-based weeks; BYDAY defaults to the
+		# start weekday; UNTIL, COUNT and EXDATE are honoured (the wall-clock time stays, so DST changes do not matter).
+		function weekly(   n, p, i, k, kv, iv, until, cnt, by, nb, bd, js, jt, j, c, ok) {
+			iv = 1; until = ""; cnt = 0; by = ""
+			n = split(substr(rr, 7), p, ";")
+			for (i = 1; i <= n; i++) {
+				k = index(p[i], "="); kv = substr(p[i], k + 1)
+				if (p[i] ~ /^INTERVAL=/) iv = kv + 0
+				else if (p[i] ~ /^UNTIL=/) until = substr(kv, 1, 8)
+				else if (p[i] ~ /^COUNT=/) cnt = kv + 0
+				else if (p[i] ~ /^BYDAY=/) by = kv
+			}
+			if (iv < 1) iv = 1
+			js = jd(dt); jt = jd(today)
+			if (jt < js) return 0
+			if (until != "" && today > until) return 0
+			if (index(exd, today)) return 0
+			if (by == "") by = substr("MOTUWETHFRSASU", (js % 7) * 2 + 1, 2)
+			nb = split(by, bd, ",")
+			ok = 0; for (i = 1; i <= nb; i++) if (substr(bd[i], length(bd[i]) - 1) == substr("MOTUWETHFRSASU", (jt % 7) * 2 + 1, 2)) ok = 1
+			if (!ok) return 0
+			if ((int(jt / 7) - int(js / 7)) % iv != 0) return 0
+			if (cnt > 0) {
+				c = 0
+				for (j = js; j <= jt; j++) {
+					if ((int(j / 7) - int(js / 7)) % iv != 0) continue
+					for (i = 1; i <= nb; i++) if (substr(bd[i], length(bd[i]) - 1) == substr("MOTUWETHFRSASU", (j % 7) * 2 + 1, 2)) c++
+				}
+				if (c > cnt) return 0
+			}
+			return 1
+		}
+		function emit(   day, t, txt) {
+		if (kind == "VEVENT") {
+			day = substr(dt, 1, 8)
+			if (rr ~ /FREQ=WEEKLY/) { if (!weekly()) return }
+				else if (!(day == today || (rr ~ /FREQ=YEARLY/ && substr(dt, 5, 4) == md))) return
+			t = (length(dt) >= 15 && dt !~ /Z$/) ? substr(dt, 10, 2) ":" substr(dt, 12, 2) " " : ""
+			print "k" t "\t" t s
+		} else {
+			if (st == "COMPLETED" || st == "CANCELLED") return
+			day = substr(due, 1, 8)
+			if (day == "" || day > today) return
+			print "k\t" s (day < today ? " (scaduta)" : "")
+		}
+	}
+	$0 == "BEGIN:" kind { inb = 1; s = dt = due = st = rr = exd = ""; next }
+	$0 == "END:" kind { if (inb) emit(); inb = 0; next }
+	!inb { next }
+	/^SUMMARY[:;]/ { s = substr($0, index($0, ":") + 1) }
+	/^DTSTART/ { dt = substr($0, index($0, ":") + 1) }
+	/^DUE/ { due = substr($0, index($0, ":") + 1) }
+	/^STATUS:/ { st = substr($0, 8) }
+	/^EXDATE/ { exd = exd " " substr($0, index($0, ":") + 1) }
+	/^RRULE:/ { rr = $0 }' | sort | cut -f2
+}
+if want agenda; then "$CAL" list calendario 2> /dev/null | ics_items VEVENT > "$W/agenda" || : > "$W/agenda"; fi
+if want attivita; then "$CAL" list attivita 2> /dev/null | ics_items VTODO > "$W/attivita" || : > "$W/attivita"; fi
+if want inbox; then (cd "$V/Inbox" 2> /dev/null && find . -type f ! -name '.*' ! -name '*~syncthing~*' -printf '%P\n' | sort | head -30) > "$W/inbox" || : > "$W/inbox"; fi
+if want riassunto && [ -r "$PROMPT" ]; then
+	max=$(awk -F: '/^quota_settimanale_max:/{gsub(/[ %]/,"",$2); print $2; exit}' "$NOTE" 2> /dev/null) || true
+	case $max in '' | *[!0-9]*) max=30 ;; esac
+	over=0
+	if [ -s "$ST/usage" ]; then read -r util reset < "$ST/usage"; { [ "$now" -lt "$reset" ] && [ "$util" -ge "$max" ]; } && over=1; fi
+	if [ "$over" = 0 ] && ! { [ -s "$ST/failed-at" ] && [ $((now - $(cat "$ST/failed-at"))) -lt 3600 ]; }; then
+		MODEL=$("$SET" HS_BRAIN_MODEL 2> /dev/null) || MODEL=sonnet
+		[ "$MODEL" != default ] || MODEL=
+		changed=$(cd "$V" && find . \( -name .git -o -name .obsidian -o -name .stversions -o -path ./Projects/Sumisura -o -path ./Attachments -o -path ./Impostazioni \) -prune \
+			-o -type f -mtime -1 ! -name '.*' -printf '%P\n' | sort | head -40)
+		msg="Data e ora: $(date -d "@$now" '+%F %H:%M').
+File del vault cambiati nelle ultime 24 ore:
+$(printf '%s\n' "$changed" | sed 's|^|- |')"
+		cd "$V"
+		rc=0
+		timeout 600 "$AI_RUN" -p "$msg" ${MODEL:+--model "$MODEL"} --output-format stream-json --verbose \
+			--no-session-persistence --append-system-prompt "$(cat "$PROMPT")" \
+			--strict-mcp-config --disable-slash-commands --permission-mode dontAsk --disallowedTools "WebFetch WebSearch" \
+			--allowedTools "Read Glob Grep" > "$W/run.jsonl" 2> "$W/run.err" || rc=$?
+		jq -r 'select(.type=="rate_limit_event") | .rate_limit_info.unifiedWindows.seven_day // empty
+			| "\((.utilization * 100) | round) \(.resetsAt)"' "$W/run.jsonl" 2> /dev/null | tail -1 > "$W/usage" || true
+		[ -s "$W/usage" ] && cp "$W/usage" "$ST/usage" || true
+		if [ "$rc" -eq 0 ] && jq -e 'select(.type=="result" and .is_error==false)' "$W/run.jsonl" > /dev/null 2>&1; then
+			jq -r 'select(.type=="result") | .result // empty' "$W/run.jsonl" | tail -n 8 | sed 's/^[-*•] *//' | grep -v '^ *$' > "$W/riassunto" || true
+		else
+			echo "$now" > "$ST/failed-at"; log "riassunto failed (rc=$rc)"
+		fi
+	fi
+fi
+sections='[]'
+for k in agenda attivita inbox riassunto; do
+	want "$k" || continue
+	[ "$k" != riassunto ] || [ -s "$W/riassunto" ] || continue
+	items=$(jq -Rn '[inputs | select(length > 0) | {text: .}]' < "$W/$k" 2> /dev/null || echo '[]')
+	sections=$(printf '%s' "$sections" | jq -c --arg k "$k" --argjson i "$items" '. + [{key: $k, items: $i}]')
+done
+printf '%s\n' "$sections" | jq --arg day "$today" '{day: $day, sections: .}' > "$OUT/.part.$$"
+chmod 644 "$OUT/.part.$$"; mv "$OUT/.part.$$" "$OUT/part.json"
+log "part for $today written"

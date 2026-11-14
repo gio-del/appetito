@@ -1,0 +1,104 @@
+#!/bin/sh
+# project-cd (root, hourly cron through hs-run; no Claude, issue 235): keeps the app of each Gateway
+# Project on the newest green commit of its default branch.
+# For each Project with an enabled app (column 3 of /etc/hs-projects, service linked in /etc/hs-service)
+# and without "Pausa CD" (hs-setting HS_CD_PAUSE_<NAME>): fetch the checkout, then, if origin/<default> is
+# ahead of /opt/<app>/REF, is not a commit already failed and its checks are green with `ci-ok`
+# (projects-publish commit-ci), install it through the app's own <app>-setup with HS_CD_REF (the build runs
+# as the app's user, tools from /opt/hs-tools), wait for the health probe of hs-monitor (the URL of the
+# app's row) for a few minutes and, if it fails, install the previous commit again, remember the failed
+# one and exit 1 (hs-run turns that into an issue: "X: abc123 non parte, tornato a 9f8e7d").
+# A red or pending commit is just left for the next round. State: /var/lib/project-cd/NAME.{history,failed}
+# (history = last 3 installs, "date commit describe"; NAME.installs = the last 200 for release-gate's soak), and /var/lib/edge-status/project-cd.json for the
+# dashboard and GATEWAY.md. Usage: project-cd
+# Test overrides: HS_CD_* below, HS_CD_NOUSER=1 (no runuser).
+set -u
+. "${HS_ENV_FILE:-/etc/home-server.env}"
+ST=${HS_CD_STATE:-/var/lib/project-cd} OUT=${HS_CD_OUT:-/var/lib/edge-status/project-cd.json}
+OPT=${HS_CD_OPT:-/opt} SBIN=${HS_CD_SBIN:-/usr/local/sbin} SVD=${HS_SERVICE_DIR:-/etc/hs-service}
+GP=${HS_GATEWAY_PROJECTS:-/usr/local/bin/gateway-projects} SET=${HS_SETTING_CMD:-hs-setting}
+PUB=${HS_PROJECTS_PUBLISH:-/usr/local/bin/projects-publish} PG=${HS_PROJECTS_GIT:-/usr/local/bin/projects-git}
+GRACE=${HS_CD_GRACE:-30} CHECKS=${HS_CD_CHECKS:-12} EVERY=${HS_CD_EVERY:-10}
+OH=$(getent passwd "$HS_USER" | cut -d: -f6); OH=${HS_CD_HOME:-$OH}
+MON=${HS_CD_MONITOR:-$OH/bin/hs-monitor}  # hs-monitor lives in the HS_USER home (root cron)
+BASE=https://${HS_TS_HOST:-edge.invalid}:8444 # tracker
+asu() { if [ -n "${HS_CD_NOUSER:-}" ]; then env HOME="$OH" "$@" < /dev/null; else runuser -u "$HS_USER" -- env HOME="$OH" "$@" < /dev/null; fi; }
+short() { printf %s "$1" | cut -c1-7; }
+install -d -m 755 "$ST"
+exec 9>"$ST/.lock"; flock -n 9 || { echo "project-cd: already running"; exit 0; }
+tmp=$(mktemp); lst=$(mktemp); trap 'rm -f "$tmp" "$tmp.j" "$lst"' EXIT
+rc=0
+
+# probe APP: the hs-monitor URL of the app's service answers 200 (same check as the dashboard's).
+probe_url() { sed -n "s/.*svc: '$1'.*url: '\([^']*\)'.*/\1/p" "$MON" | head -n 1; }
+probe() {
+	if [ -n "${HS_CD_PROBE:-}" ]; then $HS_CD_PROBE "$1"; return; fi
+	u=$(probe_url "$1"); [ -n "$u" ] && [ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$u")" = 200 ]
+}
+# settle APP: after a grace period the probe must pass CHECKS times in a row.
+settle() {
+	sleep "$GRACE"
+	i=0
+	while [ "$i" -lt "$CHECKS" ]; do
+		probe "$1" || return 1
+		i=$((i + 1)); [ "$i" -lt "$CHECKS" ] && sleep "$EVERY"
+	done
+	return 0
+}
+# record NAME REF DESC: append to the history, keep the last 3.
+record() {
+	echo "$(date '+%F %T') $2 $3" >> "$ST/$1.history"
+	tail -n 3 "$ST/$1.history" > "$ST/$1.history.new" && mv "$ST/$1.history.new" "$ST/$1.history"
+	# longer log of the installs, read by release-gate for the soak (issue 236); a rollback goes to NAME.rollbacks (issue 350)
+	echo "$(date '+%F %T') $2 $3" >> "$ST/$1.installs"
+	tail -n 200 "$ST/$1.installs" > "$ST/$1.installs.new" && mv "$ST/$1.installs.new" "$ST/$1.installs"
+}
+
+"$GP" > "$lst"
+while read -r name url app status _; do
+	[ "$app" != - ] && [ -n "$app" ] && [ "$status" = active ] || continue
+	[ -e "$SVD/$app" ] || continue
+	case $name in '' | *[!a-z0-9-]*) continue ;; esac
+	key=HS_CD_PAUSE_$(printf %s "$name" | tr a-z- A-Z_)
+	# a missing key is not the owner's pause: say so on the card (issue 496)
+	nokey=; paused=$("$SET" "$key" 2> /dev/null) || { echo "project-cd: $name: no setting $key, skipped"; paused=1; nokey=1; }
+	cur=$(cut -d' ' -f1 "$OPT/$app/REF" 2> /dev/null || true)
+	src=$OH/projects/$name; note=
+	if [ -n "$nokey" ]; then note="non segue main: manca l'impostazione"
+	elif [ "$paused" = 1 ]; then note=pausa
+	elif [ -z "$cur" ] || [ ! -d "$src/.git" ]; then note="non installato"
+	elif ! asu "$PG" fetch "$src" > /dev/null 2>&1; then note="fetch non riuscito"; echo "project-cd: $name: fetch failed"
+	else
+		br=$(asu git -C "$src" symbolic-ref -q --short refs/remotes/origin/HEAD 2> /dev/null) || br=origin/main
+		head=$(asu git -C "$src" rev-parse -q --verify "$br^{commit}" 2> /dev/null) || head=
+		if [ -z "$head" ] || [ "$head" = "$cur" ]; then :
+		elif ! asu git -C "$src" merge-base --is-ancestor "$cur" "$head" 2> /dev/null; then note="installato non nella storia di $br"
+		elif grep -q "^$head$" "$ST/$name.failed" 2> /dev/null; then note="$(short "$head") già fallito"
+		else
+			ci=$(asu "$PUB" commit-ci "$name" "$head" 2> /dev/null) || ci=errore
+			if [ "$ci" != green ]; then note="$(short "$head") CI $ci"; echo "project-cd: $name: $(short "$head") CI $ci, not installed"
+			else
+				ver=$(asu git -C "$src" describe --tags --always "$head" 2> /dev/null || echo "$head")
+				echo "project-cd: $name: installing $(short "$head") ($ver), now $(short "$cur")"
+				if HS_CD_REF=$head "$SBIN/$app-setup" < /dev/null && settle "$app"; then
+					record "$name" "$head" "$ver"; echo "project-cd: $name: installed $ver"
+				else
+					echo "$head" >> "$ST/$name.failed"
+					echo "$(date '+%F %T') $head $cur" >> "$ST/$name.rollbacks"; tail -n 20 "$ST/$name.rollbacks" > "$ST/$name.rollbacks.new" && mv "$ST/$name.rollbacks.new" "$ST/$name.rollbacks"
+					echo "$name: $(short "$head") non parte, tornato a $(short "$cur")"
+					HS_CD_REF=$cur "$SBIN/$app-setup" < /dev/null || echo "project-cd: $name: ROLLBACK FAILED, $app may be down" >&2
+					rc=1; note="$(short "$head") non parte, tornato a $(short "$cur")"
+					# urgent push, once per failed commit (it is in .failed from now on, so never repeated; issue 237)
+					"${HS_NOTIFY:-hs-notify}" --urgent --click "$BASE/" --action "Apri issue=$BASE/" --action "Log=$BASE/projects.html" "Installazione annullata" "$name: $(short "$head") non parte, tornato a $(short "$cur")." || true
+				fi
+			fi
+		fi
+	fi
+	now=$(cut -d' ' -f1 "$OPT/$app/REF" 2> /dev/null || true)
+	at=; [ -f "$OPT/$app/REF" ] && at=$(date -r "$OPT/$app/REF" '+%FT%T%z')
+	jq -nc --arg n "$name" --arg r "$now" --arg d "$(cut -d' ' -f2 "$OPT/$app/REF" 2> /dev/null || true)" --arg at "$at" --arg note "$note" --argjson p "${paused:-0}" \
+		--arg h "$(cat "$ST/$name.history" 2> /dev/null)" \
+		'{($n): {card: (if $r == "" then "-" else "\($r[0:7]) · \($at[8:10])/\($at[5:7]) \($at[11:16])\(if $p == 1 then " (\($note))" else "" end)" end), ref: $r, describe: $d, at: $at, paused: ($p == 1), note: $note, history: ($h | split("\n") | map(select(. != "")))}}' >> "$tmp"
+done < "$lst"
+jq -s 'add // {}' "$tmp" > "$tmp.j" && chmod 644 "$tmp.j" && mv "$tmp.j" "$OUT" 2> /dev/null || true
+exit "$rc"

@@ -142,6 +142,15 @@
     "hint": "L'AI propone ogni giorno migliorie al sistema.",
     "desc": "L'AI propone ogni giorno migliorie al sistema; le trovi nella colonna Proposte del tracker e decidi tu."
   },
+  "HS_APPETITO_AUTO": {
+    "type": "bool",
+    "default": false,
+    "group": "Manutenzione e Sviluppo automatico",
+    "level": "advanced",
+    "label": "Pubblica Appetito da solo",
+    "hint": "Ogni notte aggiorna la copia pubblica di Appetito se è cambiata.",
+    "desc": "Ogni notte, se il codice è cambiato, il server ricostruisce la copia pubblica di Appetito e la pubblica sul suo repo, dopo tutti i controlli (valori personali, segreti, attribuzione). Spenta: non pubblica nulla da sola."
+  },
   "HS_SUGGEST_HOUR": {
     "type": "int",
     "min": 0,

@@ -1,0 +1,40 @@
+#!/bin/sh
+# The third-party design skill "UI UX Pro Max" (issue 499), an owner-approved exception to "no untrusted
+# content steers the sudo session": pinned to one commit and one sha256, reviewed before the pin was set
+# (scripts: Python standard library only, no network, no subprocess; texts: design rules only), never
+# updated on its own. Run as root by the deploy. Downloads the archive of PIN_COMMIT as the unprivileged
+# user hsdocs, checks PIN_SHA256, keeps only .claude/skills/ui-ux-pro-max without scripts/tests, refuses
+# symlinks, and installs it read-only in /usr/local/share/hs-skills/ui-ux-pro-max. Nothing from the archive
+# is run here. No-op when the installed pin matches. Upgrade = review the new commit, bump both pins, deploy.
+# A wrong sha256 or a failed download installs nothing (exit 1).
+set -eu
+PIN_COMMIT=4f2dbb67e64969a9a30ab00742f2d55d66ddec2b
+PIN_SHA256=a7563a4b2019a1035d8af1aaf804074cdd00224174a067e1d0616fadad87a643
+NAME=ui-ux-pro-max
+URL=${HS_SKILL_URL:-https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/archive/$PIN_COMMIT.tar.gz}
+SHA=${HS_SKILL_SHA256:-$PIN_SHA256}
+OUT=${HS_SKILLS_DIR:-/usr/local/share/hs-skills}
+pin="$PIN_COMMIT $SHA"
+[ "$(cat "$OUT/$NAME/.pin" 2> /dev/null || true)" = "$pin" ] && exit 0
+
+W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+chmod 755 "$W"; mkdir "$W/dl"
+if [ -n "${HS_SKILL_NOUSER:-}" ]; then as() { "$@"; }
+else chown hsdocs:hsdocs "$W/dl"; as() { setpriv --reuid=hsdocs --regid=hsdocs --clear-groups --no-new-privs "$@"; }; fi
+as curl -fsSL --max-filesize 52428800 -o "$W/dl/a.tar.gz" "$URL" || { echo "hs-skill-fetch: download failed: $URL" >&2; exit 1; }
+echo "$SHA  $W/dl/a.tar.gz" | sha256sum -c --quiet > /dev/null 2>&1 || { echo "hs-skill-fetch: sha256 mismatch, nothing installed" >&2; exit 1; }
+as mkdir "$W/dl/x"
+as tar -xzf "$W/dl/a.tar.gz" -C "$W/dl/x" --strip-components=1 --no-same-owner --no-same-permissions \
+	--wildcards --exclude='*/scripts/tests' --exclude='*/scripts/tests/*' "*/.claude/skills/$NAME/*"
+src=$W/dl/x/.claude/skills/$NAME
+[ -f "$src/SKILL.md" ] && [ -f "$src/scripts/search.py" ] || { echo "hs-skill-fetch: archive without the skill, nothing installed" >&2; exit 1; }
+[ -z "$(find "$src" ! -type f ! -type d | head -1)" ] || { echo "hs-skill-fetch: links or special files in the skill, nothing installed" >&2; exit 1; }
+
+mkdir -p "$OUT"; rm -rf "$OUT/$NAME.new"
+cp -R "$src" "$OUT/$NAME.new"
+[ -n "${HS_SKILL_NOUSER:-}" ] || chown -R root:root "$OUT/$NAME.new"
+find "$OUT/$NAME.new" -type d -exec chmod 755 {} +; find "$OUT/$NAME.new" -type f -exec chmod 644 {} +
+printf '%s\n' "$pin" > "$OUT/$NAME.new/.pin"; chmod 644 "$OUT/$NAME.new/.pin"
+rm -rf "$OUT/$NAME.old"; [ -d "$OUT/$NAME" ] && mv "$OUT/$NAME" "$OUT/$NAME.old"
+mv "$OUT/$NAME.new" "$OUT/$NAME"; rm -rf "$OUT/$NAME.old"
+echo "hs-skill-fetch: installed $NAME at $(printf %s "$PIN_COMMIT" | cut -c1-7)"

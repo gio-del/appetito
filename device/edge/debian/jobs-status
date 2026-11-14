@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+// jobs-status (issue 224): summary of the scheduled jobs per category for the dashboard cards and
+// the tracker page "Attività programmate" (/var/lib/edge-status/jobs.json), run by hs-monitor.
+// Catalog = /etc/hs-jobs.json (render-schedule --json, from the "#@" lines); last result of each job =
+// /var/lib/hs-jobs/NAME.json written by hs-run ({t, rc, dur}). Trust: a file counts only if its owner is
+// the job's user (a file owned by brain only for the jobs of crontab-brain; any other user, or a name
+// not in the catalog, is ignored), and nothing but t/rc/dur is read from it.
+// Status: error (last exit code != 0), late (no run for more than twice its interval + 2 minutes),
+// ok, nodata (not run since the catalog changed, or not run by hs-run).
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const { execFileSync } = require('child_process');
+
+const CATALOG = process.env.HS_JOBS_CATALOG || '/etc/hs-jobs.json';
+const DIR = process.env.HS_JOBS_DIR || '/var/lib/hs-jobs';
+const OUT = process.env.HS_JOBS_OUT || '/var/lib/edge-status/jobs.json';
+const LIVE_DIR = process.env.HS_JOBS_LIVE_DIR || '/var/lib/edge-status';
+const NOW = process.env.HS_JOBS_NOW ? Number(process.env.HS_JOBS_NOW) : Math.floor(Date.now() / 1000);
+const brainUid = process.env.HS_JOBS_BRAIN_UID ? Number(process.env.HS_JOBS_BRAIN_UID) : (() => {
+  try { return Number(execFileSync('getent', ['passwd', 'brain'], { encoding: 'utf8' }).split(':')[2]); } catch { return -1; }
+})();
+
+const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
+const slug = c => c.toLowerCase().replace(/ /g, '_');
+
+function last(job) {
+  if (!/^[a-z0-9-]+$/.test(job.name)) return null;
+  const f = path.join(DIR, `${job.name}.json`);
+  let st;
+  try { st = fs.statSync(f); } catch { return null; }
+  if ((job.user === 'brain') !== (st.uid === brainUid)) return null;
+  const j = readJson(f, null);
+  if (!j || !Number.isFinite(j.t) || !Number.isInteger(j.rc)) return null;
+  return { t: j.t, rc: j.rc, dur: Number.isFinite(j.dur) ? j.dur : 0 };
+}
+
+function when(job) {
+  const m = /^([\w.-]+\.json) (\w+)$/.exec(job.live || '');
+  if (!m) return job.when;
+  const v = readJson(path.join(LIVE_DIR, m[1]), {})[m[2]];
+  return typeof v === 'string' && v ? v : job.when;
+}
+
+const cats = {};
+for (const job of readJson(CATALOG, [])) {
+  const r = job.name ? last(job) : null;
+  let status = 'nodata';
+  if (r) status = r.rc !== 0 ? 'error' : (job.every && NOW - r.t > 2 * job.every + 120) ? 'late' : 'ok';
+  const c = cats[slug(job.cat)] ||= { name: job.cat, ok: 0, error: 0, late: 0, nodata: 0, jobs: [] };
+  c[status]++;
+  c.jobs.push({ title: job.title, when: when(job), what: job.what, status, ...(r ? { t: r.t, rc: r.rc, dur: r.dur } : {}) });
+}
+for (const c of Object.values(cats)) {
+  const parts = [];
+  if (c.error) parts.push(`${c.error} con errore`);
+  if (c.late) parts.push(`${c.late} in ritardo`);
+  c.label = parts.length ? `⚠ ${parts.join(', ')}` : c.ok ? `✓ ${c.ok} ok` : 'in attesa del primo giro';
+  c.problem = c.error + c.late > 0;
+}
+const tmp = path.join(path.dirname(OUT), `.jobs-status-tmp-${process.pid}`);
+fs.writeFileSync(tmp, JSON.stringify({ generated: NOW, categories: cats }) + '\n', { mode: 0o664 });
+fs.renameSync(tmp, OUT);

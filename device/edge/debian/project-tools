@@ -1,0 +1,89 @@
+#!/bin/sh
+# Installs the tools a Project's CI needs (issue 231). Run as root:
+#   project-tools NAME REF
+# Reads .hs-tools from the commit REF of ~$HS_USER/projects/NAME (git show, never the working tree), one
+# line per tool and platform: "NAME VERSION PLATFORM SHA256 URL" (docs/gateway-ci.md, "CI dei Projects").
+# Lines for this machine's platform (linux-arm64 / linux-amd64) are downloaded into a temp dir, checked
+# against the sha256, unpacked by an unprivileged user and installed read-only in
+# /opt/hs-tools/NAME/TOOL-VERSION/ (bin/TOOL). Already installed = skipped. Nothing goes in /usr/local/bin.
+# HS_TOOLS_ROOT, HS_PROJECTS_DIR, HS_TOOLS_FETCH (command: URL OUT, test hook) override places/download.
+set -eu
+die() { echo "project-tools: $*" >&2; exit 2; }
+[ $# -eq 2 ] || die "uso: project-tools NAME REF"
+name=$1 ref=$2
+[ -r /etc/home-server.env ] && . /etc/home-server.env
+: "${HS_USER:=gio}"
+ROOT=${HS_TOOLS_ROOT:-/opt/hs-tools}
+if [ -z "${HS_TOOLS_ROOT:-}" ]; then [ "$(id -u)" -eq 0 ] || die "va eseguito come root"; fi
+case $name in '' | *[!A-Za-z0-9_-]* | -*) die "nome Project non valido: $name" ;; esac
+case $ref in '' | -* | *[!A-Za-z0-9._/-]*) die "ref non valido: $ref" ;; esac
+case $(uname -m) in aarch64 | arm64) plat=linux-arm64 ;; x86_64) plat=linux-amd64 ;; *) die "piattaforma non supportata" ;; esac
+home=$(getent passwd "$HS_USER" | cut -d: -f6)
+repo=${HS_PROJECTS_DIR:-$home/projects}/$name
+[ -d "$repo" ] || die "Project $name non clonato"
+gitc() { if [ "$(id -u)" -eq 0 ]; then runuser -u "$HS_USER" -- git -C "$repo" "$@"; else git -C "$repo" "$@"; fi; }
+spec=$(gitc show "$ref:.hs-tools" 2> /dev/null) || { echo "project-tools: $name@$ref senza .hs-tools"; exit 0; }
+user=
+if [ "$(id -u)" -eq 0 ]; then
+	user=hs-build
+	id "$user" > /dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --uid 902 --user-group "$user"
+fi
+priv() { if [ -n "$user" ]; then setpriv --reuid "$(id -u "$user")" --regid "$(id -g "$user")" --clear-groups --no-new-privs "$@"; else "$@"; fi; }
+fetch() {
+	if [ -n "${HS_TOOLS_FETCH:-}" ]; then "$HS_TOOLS_FETCH" "$1" "$2"; else curl -fsSL --proto '=https' --max-time 300 -o "$2" "$1"; fi
+}
+mkdir -p "$ROOT/$name"
+chmod 755 "$ROOT" "$ROOT/$name"
+tmp=$(mktemp -d /tmp/project-tools.XXXXXX)
+trap 'chmod -R u+w "$tmp" 2> /dev/null; rm -rf "$tmp"' EXIT INT TERM
+chmod 755 "$tmp"
+# Validate every line first: a bad line stops the whole file.
+printf '%s\n' "$spec" | while read -r tn tv tp sha url extra; do
+	case $tn in '' | '#'*) continue ;; esac
+	[ -z "${extra:-}" ] || die "riga con campi in più: $tn"
+	case $tn in *[!A-Za-z0-9_-]* | -*) die "nome strumento non valido: $tn" ;; esac
+	case $tv in '' | *[!A-Za-z0-9._+-]* | -* | .*) die "versione non valida: $tn $tv" ;; esac
+	case $tp in linux-arm64 | linux-amd64) ;; *) die "piattaforma non valida: $tn $tp" ;; esac
+	case $sha in *[!0-9a-f]*) die "sha256 non valido: $tn" ;; esac
+	[ ${#sha} -eq 64 ] || die "sha256 non valido: $tn"
+	case $url in https://*[!A-Za-z0-9._~:/?#@!\&=+%,-]* | https://) die "URL non valido: $tn" ;; https://*) ;; *) die "URL non https: $tn" ;; esac
+done
+printf '%s\n' "$spec" | while read -r tn tv tp sha url extra; do
+	case $tn in '' | '#'*) continue ;; esac
+	[ "$tp" = "$plat" ] || continue
+	dest=$ROOT/$name/$tn-$tv
+	[ -x "$dest/bin/$tn" ] && { echo "project-tools: $tn $tv già installato"; continue; }
+	w=$tmp/$tn-$tv
+	mkdir "$w"; chmod 777 "$w"
+	fetch "$url" "$w/dl" || die "download fallito: $tn $tv"
+	got=$(sha256sum "$w/dl" | cut -d' ' -f1)
+	[ "$got" = "$sha" ] || die "sha256 diverso per $tn $tv (atteso $sha, trovato $got)"
+	mkdir "$w/out"; chmod 777 "$w/out"
+	case $url in
+	*.tar.gz | *.tgz) priv tar -xzf "$w/dl" --no-same-owner --no-same-permissions -C "$w/out" ;;
+	*) mkdir "$w/out/bin"; cp "$w/dl" "$w/out/bin/$tn"; chmod 755 "$w/out/bin/$tn" ;;
+	esac
+	if [ ! -x "$w/out/bin/$tn" ]; then
+		# A tool shipped in a bin/ directory of its archive (Go: go/bin/go and gofmt, Node:
+		# node-v…/bin/node with npm and npx) exposes that whole directory, so its companions
+		# reach PATH too (issue 234); a lone binary elsewhere gets a link of its own.
+		f=$(find "$w/out" -type f -path "*/bin/$tn" | head -n1)
+		if [ -n "$f" ] && [ ! -e "$w/out/bin" ]; then
+			d=${f%/*}
+			ln -s "${d#"$w/out"/}" "$w/out/bin"
+		else
+			f=$(find "$w/out" -type f -name "$tn" | head -n1)
+			[ -n "$f" ] || die "$tn non trovato nell'archivio"
+			mkdir -p "$w/out/bin"
+			ln -s "../${f#"$w/out"/}" "$w/out/bin/$tn"
+		fi
+	fi
+	chmod 755 "$w/out/bin/$tn" 2> /dev/null || true
+	[ -x "$w/out/bin/$tn" ] || die "$tn non eseguibile"
+	rm -rf "$dest.new"
+	mv "$w/out" "$dest.new"
+	if [ -n "$user" ]; then chown -R root:root "$dest.new"; fi
+	chmod -R go-w,u-w "$dest.new"
+	mv "$dest.new" "$dest"
+	echo "project-tools: installato $tn $tv"
+done

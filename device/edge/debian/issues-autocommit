@@ -1,0 +1,19 @@
+#!/bin/sh
+# Commit changes to issues/ (made from the tracker web app, or by hand) once the folder has
+# been quiet for 90 s. Run by cron every minute. Commits only issues/, never other work in progress.
+cd "$HOME/home-server" || exit 1
+# Close finished epics, unblock dependants of closed issues (also after a git mv by Claude).
+/usr/local/bin/issues-housekeep "$PWD" || true
+[ -n "$(git status --porcelain --untracked-files=all -- issues/)" ] || exit 0
+[ -n "$(find issues -newermt '90 seconds ago' -print -quit)" ] && exit 0
+# A commit with a slow pre-commit check is in progress (lock written by the hook, issue 562): wait
+# for the next round, or HEAD would move under it. A lock of a dead process or older than 15 min is stale.
+lock=$(git rev-parse --git-dir)/hs-commit.lock
+if [ -f "$lock" ]; then
+  pid=$(cat "$lock" 2>/dev/null)
+  if kill -0 "${pid:-0}" 2>/dev/null && [ -z "$(find "$lock" -mmin +15 -print 2>/dev/null)" ]; then exit 0; fi
+  rm -f "$lock"
+fi
+git add -A -- issues/
+ids=$(git diff --cached --name-only -- issues/ | sed -n 's:.*/\([0-9]\{3,\}\)-.*:\1:p' | sort -u | tr '\n' ' ')
+git commit -q -m "issues: update ${ids% }" -- issues/

@@ -1,0 +1,157 @@
+#!/bin/sh
+# Local docs and changelogs of the installed app versions (issue 125): Claude greps them instead of
+# browsing. Run as root by the deploy (sudo hs-docs-fetch); reads /etc/hs-docs.list (repo: hs-docs.list):
+#   app | version | source | sha256 | paths
+# version "auto" = the installed one; a fixed one (pinned apps) only warns when the installed differs.
+# source "local": installed files (absolute paths; .gz unpacked, HTML turned into text). Else a .tar.gz URL
+# pinned by sha256, downloaded and unpacked as user hsdocs, of which only the text files under "paths"
+# (relative to the archive root) are kept. Nothing from an archive is ever run.
+# Result: /usr/local/share/hs-docs/<app>/<version>/ (root-owned) + INDEX.md. Apps whose resolved lines
+# did not change are skipped (no download); versions and apps no longer listed are removed. Apps of a
+# disabled optional service or not installed are skipped. A download or sha256 failure, or an app over
+# HS_DOCS_MAXKB, stops before anything is installed (exit 1).
+set -eu
+LIST=${HS_DOCS_LIST:-/etc/hs-docs.list}
+OUT=${HS_DOCS_DIR:-/usr/local/share/hs-docs}
+MAXKB=${HS_DOCS_MAXKB:-20480}
+SV=${HS_DOCS_SV:-/etc}
+TEXT='\.(md|mdx|markdown|rst|txt|adoc|html?|template|js|ts|json)$'
+
+# Text only: HTML -> plain text, binary files dropped. keep SRC DEST
+keep() {
+	grep -Iq . "$1" 2>/dev/null || return 0
+	mkdir -p "$(dirname "$2")"
+	case $2 in
+	*.html|*.htm) perl -0777 -pe 's/<(script|style)\b.*?<\/\1>//gis; s/<br\s*\/?>/\n/gi; s/<[^>]+>//g;
+		s/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/&#39;/\x27/g; s/&nbsp;/ /g; s/&amp;/&/g; s/\n{3,}/\n\n/g' "$1" > "${2%.*}.txt" ;;
+	*) cp "$1" "$2" ;;
+	esac
+}
+
+# Unprivileged half: WORK/todo holds the URL lines; output in WORK/out/<app>/.
+if [ "${1:-}" = --stage ]; then
+	W=$2; n=0
+	while IFS='|' read -r app ver src sha paths; do
+		n=$((n + 1)); a=$W/$n.tar.gz; x=$W/x$n
+		curl -fsSL --max-filesize 419430400 -o "$a" "$src" || { echo "hs-docs-fetch: $app: download failed: $src" >&2; exit 1; }
+		echo "$sha  $a" | sha256sum -c --quiet >/dev/null 2>&1 || { echo "hs-docs-fetch: $app: sha256 mismatch for $src, nothing installed" >&2; exit 1; }
+		mkdir "$x"; tar -xzf "$a" -C "$x" --strip-components=1 --no-same-owner --no-same-permissions
+		for p in $paths; do
+			s=$x/$p; d=$W/out/$app/$(basename "$p")
+			if [ -f "$s" ] && [ ! -L "$s" ]; then keep "$s" "$d"
+			elif [ -d "$s" ] && [ ! -L "$s" ]; then
+				(cd "$s" && find . -type f) | grep -E "$TEXT" | while IFS= read -r f; do keep "$s/$f" "$d/${f#./}"; done
+			else echo "hs-docs-fetch: $app: $p not in the archive" >&2; exit 1; fi
+		done
+		rm -rf "$a" "$x"
+	done < "$W/todo"
+	exit 0
+fi
+
+installed() {
+	case $1 in
+	caddy|radicale|syncthing|tailscale) dpkg-query -W -f '${Version}' "$1" 2>/dev/null | sed 's/^[0-9]*://' ;;
+	vaultwarden) /usr/local/sbin/vaultwarden-fetch --pin 2>/dev/null | awk '{print $3}' ;;
+	adguardhome) /opt/AdGuardHome/AdGuardHome --version 2>/dev/null | awk '{print $NF}' | sed 's/^v//' ;;
+	esac
+	return 0
+}
+
+[ -r "$LIST" ] || { echo "hs-docs-fetch: no $LIST" >&2; exit 1; }
+WORK=$(mktemp -d /var/tmp/hs-docs.XXXXXX)
+trap 'rm -rf "$WORK"' EXIT
+chmod 755 "$WORK"
+# Resolved lines (app|version|source|sha256|paths), comments and disabled/missing apps dropped.
+sed -e '/^[[:space:]]*#/d' -e 's/[[:space:]]*|[[:space:]]*/|/g' -e 's/^[[:space:]]*//; s/[[:space:]]*$//' "$LIST" | grep -v '^$' |
+while IFS='|' read -r app ver src sha paths; do
+	echo "$app" | grep -Eqx '[a-z0-9][a-z0-9-]*' || { echo "hs-docs-fetch: bad app name: $app" >&2; exit 1; }
+	[ -e "$SV/hs-sv/$app" ] && [ ! -e "$SV/hs-service/$app" ] && continue
+	inst=$(installed "$app")
+	if [ "$ver" = auto ]; then [ -n "$inst" ] || continue; ver=$inst
+	elif [ -n "$inst" ] && [ "$inst" != "$ver" ]; then
+		echo "hs-docs-fetch: $app: docs listed for $ver, installed $inst (bump hs-docs.list)" >&2; fi
+	echo "$ver" | grep -Eqx '[A-Za-z0-9][A-Za-z0-9.+~_-]*' || { echo "hs-docs-fetch: $app: bad version: $ver" >&2; exit 1; }
+	for p in $paths; do
+		case $p in /*) abs=1 ;; *) abs= ;; esac
+		case $p in *..*) abs=x ;; esac
+		[ "$abs" = "$([ "$src" = local ] && echo 1)" ] || { echo "hs-docs-fetch: $app: bad path $p for source $src" >&2; exit 1; }
+	done
+	case $src in local) ;; https://*|file://*) echo "$sha" | grep -Eqx '[0-9a-f]{64}' || { echo "hs-docs-fetch: $app: bad sha256" >&2; exit 1; } ;;
+	*) echo "hs-docs-fetch: $app: bad source $src" >&2; exit 1 ;; esac
+	echo "$app|$ver|$src|$sha|$paths"
+done > "$WORK/lines"
+
+apps=$(cut -d'|' -f1 "$WORK/lines" | sort -u)
+todo=
+for app in $apps; do
+	vers=$(awk -F'|' -v a="$app" '$1 == a { print $2 }' "$WORK/lines" | sort -u)
+	[ "$(echo "$vers" | wc -l)" = 1 ] || { echo "hs-docs-fetch: $app: lines with different versions" >&2; exit 1; }
+	awk -F'|' -v a="$app" '$1 == a' "$WORK/lines" > "$WORK/stamp.$app"
+	cmp -s "$WORK/stamp.$app" "$OUT/$app/$vers/.source" 2>/dev/null || todo="$todo $app"
+done
+
+if [ -n "$todo" ]; then
+	for app in $todo; do awk -F'|' -v a="$app" '$1 == a && $3 != "local"' "$WORK/lines"; done > "$WORK/todo"
+	if [ -s "$WORK/todo" ]; then
+		if [ "$(id -u)" = 0 ]; then
+			id hsdocs >/dev/null 2>&1 || { useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin hsdocs; echo "created user hsdocs"; }
+			install -d -o hsdocs -g hsdocs -m 700 "$WORK/stage"; cp "$WORK/todo" "$WORK/stage/todo"
+			setpriv --reuid=hsdocs --regid=hsdocs --init-groups --no-new-privs --inh-caps=-all --bounding-set=-all \
+				env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin "$0" --stage "$WORK/stage"
+		else mkdir "$WORK/stage"; cp "$WORK/todo" "$WORK/stage/todo"; "$0" --stage "$WORK/stage"; fi
+	fi
+	# Root half: copy the staged regular files, add the local ones, check the size.
+	for app in $todo; do
+		ver=$(awk -F'|' -v a="$app" '$1 == a { print $2; exit }' "$WORK/lines")
+		N=$WORK/new/$app; mkdir -p "$N"
+		if [ -d "$WORK/stage/out/$app" ]; then
+			(cd "$WORK/stage/out/$app" && find . -type f) | while IFS= read -r f; do install -D -m 644 "$WORK/stage/out/$app/$f" "$N/${f#./}"; done
+		fi
+		awk -F'|' -v a="$app" '$1 == a && $3 == "local" { print $5 }' "$WORK/lines" | tr ' ' '\n' | grep -v '^$' | while IFS= read -r p; do
+			[ -f "$p" ] || { echo "hs-docs-fetch: $app: $p missing, skipped" >&2; continue; }
+			b=$(basename "$p")
+			case $b in *.gz) zcat "$p" > "$WORK/gz"; keep "$WORK/gz" "$N/${b%.gz}" ;; *) keep "$p" "$N/$b" ;; esac
+		done
+		kb=$(du -sk "$N" | cut -f1)
+		[ "$kb" -le "$MAXKB" ] || { echo "hs-docs-fetch: $app: $kb KB of docs, over the $MAXKB KB limit, nothing installed" >&2; exit 1; }
+		cp "$WORK/stamp.$app" "$N/.source"
+		echo "$ver" > "$WORK/ver.$app"
+	done
+	for app in $todo; do
+		ver=$(cat "$WORK/ver.$app")
+		install -d -m 755 "$OUT/$app"
+		rm -rf "$OUT/$app/$ver"
+		cp -R "$WORK/new/$app" "$OUT/$app/$ver"
+		chown -R 0:0 "$OUT/$app/$ver" 2>/dev/null || true
+		chmod -R u=rwX,go=rX "$OUT/$app/$ver"
+		echo "hs-docs: $app $ver ($(find "$OUT/$app/$ver" -type f ! -name .source | wc -l) files)"
+	done
+fi
+
+# Prune: apps and versions no longer listed.
+[ -d "$OUT" ] || install -d -m 755 "$OUT"
+for d in "$OUT"/*/; do
+	[ -d "$d" ] || continue; app=$(basename "$d")
+	if ! echo "$apps" | grep -qx "$app"; then rm -rf "$d"; echo "hs-docs: removed $app"; continue; fi
+	ver=$(awk -F'|' -v a="$app" '$1 == a { print $2; exit }' "$WORK/lines")
+	for v in "$d"*/; do [ -d "$v" ] || continue
+		[ "$(basename "$v")" = "$ver" ] || { rm -rf "$v"; echo "hs-docs: removed $app $(basename "$v")"; }; done
+done
+
+# INDEX.md: app -> version -> main files.
+{
+	echo "# Documentation of the installed versions (generated by hs-docs-fetch, issue 125)"
+	echo
+	echo "Search: \`grep -rn PATTERN $OUT/<app>/\`. Total: $(du -sk "$OUT" --exclude=INDEX.md | cut -f1) KB."
+	for app in $apps; do
+		ver=$(awk -F'|' -v a="$app" '$1 == a { print $2; exit }' "$WORK/lines"); V=$OUT/$app/$ver
+		[ -d "$V" ] || continue
+		echo
+		echo "## $app $ver"
+		echo "$(find "$V" -type f ! -name .source | wc -l) files, $(du -sk "$V" | cut -f1) KB: \`$V\`"
+		(cd "$V" && find . -maxdepth 3 -type f ! -name .source | sed 's|^\./||' |
+			grep -Ei '(change|readme|documentation|config|\.env\.template|(^|/)index\.|security)' | sort | head -n 12) |
+			while IFS= read -r f; do echo "- $f"; done
+	done
+} > "$WORK/INDEX.md"
+cmp -s "$WORK/INDEX.md" "$OUT/INDEX.md" 2>/dev/null || { cp "$WORK/INDEX.md" "$OUT/INDEX.md"; chmod 644 "$OUT/INDEX.md"; }

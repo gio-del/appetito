@@ -1,0 +1,13 @@
+# crontab of user brain (cron runs jobs from $HOME, so paths are relative to it)
+PATH=/usr/local/bin:/usr/bin:/bin
+# "#@ title | when | what": see crontab-user.
+#@ [Second brain] Salvataggio vault | Ogni 15 minuti | Commit delle note
+*/15 * * * * hs-run vault-autocommit /usr/local/bin/vault-autocommit >> .local/state/vault-autocommit.log 2>&1
+#@ [Second brain] Smistamento Inbox | Ogni 5 minuti | Solo se ci sono note nuove
+*/5 * * * * hs-run brain-sort /usr/local/bin/brain-sort >> .local/state/brain/cron.log 2>&1
+#@ [Second brain] Parte del second brain nella mail | Ogni 15 minuti | Agenda, attività, Inbox e riassunto, scritti 30 minuti prima della mail del mattino
+*/15 * * * * hs-run brain-digest /usr/local/bin/brain-digest >> .local/state/brain/cron.log 2>&1
+#@ [Second brain] Mail nel vault | Ogni minuto | Sposta in Inbox/ le note arrivate per mail e i loro allegati in Attachments/Mail/
+* * * * * hs-run mail-inbox-move /usr/local/bin/mail-inbox-move >> .local/state/mail-inbox-move.log 2>&1
+#@ [Second brain] Pulizia log del vault | Ogni notte alle 4:55 | Accorcia i log dei job oltre 1 MB
+55 4 * * * hs-run log-trim-brain log-trim 1048576 .local/state/vault-autocommit.log .local/state/brain/cron.log .local/state/mail-inbox-move.log >> .local/state/log-trim.log 2>&1

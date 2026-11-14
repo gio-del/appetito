@@ -1,0 +1,16 @@
+#!/bin/sh
+# PreToolUse hook of the interactive ops session (issue 451): while ops-auto works in this folder
+# (state file $ST/working = "ID START PID", written by ops-auto), a Write/Edit/NotebookEdit outside
+# issues/ asks the owner first, so the session doesn't write files that ops-auto would then put in
+# its stash. Silent inside issues/, without the state file (or when its run is gone), and inside
+# ops-auto's own run (HS_OPS_AUTO=1). Input: the hook JSON on stdin.
+[ -z "${HS_OPS_AUTO:-}" ] || exit 0
+W=${HS_OPS_AUTO_WORKING:-$HOME/.local/state/ops-auto/working}
+[ -s "$W" ] || exit 0
+read -r id start pid < "$W"
+[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || exit 0
+f=$(jq -r '.tool_input | (.file_path // .notebook_path // "")' 2>/dev/null) || exit 0
+case $f in */issues/* | issues/*) exit 0 ;; esac
+min=$((($(date +%s) - start) / 60))
+msg="ops-auto sta lavorando la #$id in questa cartella da $min minuti: aspetta la fine o mettilo in pausa (impostazioni del tracker), altrimenti questo file finisce nel suo stash."
+jq -n --arg m "$msg" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $m}}'

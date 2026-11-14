@@ -1,0 +1,24 @@
+#!/bin/sh
+# Nightly Radicale backup (calendars and tasks), encrypted with age to the same
+# public key as vaultwarden-backup (private half only on the PC). Output goes to
+# the same Syncthing folder (vw-backup); keeps the last 14 radicale-* files.
+# Root cron: /etc/cron.d/home-server.
+set -eu
+. /etc/home-server.env
+DATA=/var/lib/radicale/collections
+OUT=/var/backups/vaultwarden
+RECIPIENT=/etc/vaultwarden-backup.age-recipient
+KEEP=14
+umask 077
+[ -s "$RECIPIENT" ] || { echo "missing $RECIPIENT" >&2; exit 1; }
+[ -d "$DATA" ] || { echo "missing $DATA" >&2; exit 1; }
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+# Shared lock on Radicale's own lock file: no write lands mid-copy.
+touch "$DATA/.Radicale.lock"
+flock -s "$DATA/.Radicale.lock" cp -a "$DATA" "$WORK/radicale"
+name=radicale-$(date +%Y%m%d-%H%M).tar.gz.age
+tar -C "$WORK" -czf - radicale | age -R "$RECIPIENT" -o "$OUT/.$name.tmp"
+mv "$OUT/.$name.tmp" "$OUT/$name"
+chown "$HS_USER:$HS_USER" "$OUT/$name"
+ls -1t "$OUT"/radicale-*.tar.gz.age | tail -n +$((KEEP + 1)) | xargs -r rm -f

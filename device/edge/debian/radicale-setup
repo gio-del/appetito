@@ -1,0 +1,36 @@
+#!/bin/sh
+# Idempotent setup for Radicale CalDAV (run as root by device/edge/deploy): package, users file
+# with the owner ($HS_USER) and brain, their passwords (owner: ~/.secrets/radicale, shown in the
+# vault by `rotate-secrets radicale`; brain: ~brain/.secrets/radicale for brain-cal), the two
+# calendars "calendario" (events) and "attivita" (tasks), runit service "radicale".
+set -eu
+. /etc/home-server.env
+command -v radicale >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends radicale python3-bcrypt >/dev/null; echo "installed radicale"; }
+command -v htpasswd >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y -q apache2-utils >/dev/null; echo "installed apache2-utils"; }
+U=/etc/radicale/users
+touch "$U"; chown root:radicale "$U"; chmod 640 "$U"
+gen() { openssl rand -base64 48 | tr -d '/+=\n' | cut -c1-32; }
+# user_pw LOGIN SECRET-FILE OWNER: create the password file if missing, keep the users file in sync.
+user_pw() {
+	if [ ! -s "$2" ]; then
+		install -d -m 700 -o "$3" -g "$3" "$(dirname "$2")"
+		(umask 077; gen > "$2"); chown "$3:$3" "$2"; echo "created $2"
+	fi
+	grep -q "^$1:" "$U" && htpasswd -vbB "$U" "$1" "$(cat "$2")" >/dev/null 2>&1 && return 0
+	htpasswd -bB "$U" "$1" "$(cat "$2")" 2>/dev/null; echo "set radicale password for $1"
+}
+OH=$(getent passwd "$HS_USER" | cut -d: -f6)
+BH=$(getent passwd brain | cut -d: -f6)
+user_pw "$HS_USER" "$OH/.secrets/radicale" "$HS_USER"
+user_pw brain "$BH/.secrets/radicale" brain
+# Calendars, created on disk (brain may not create collections).
+C=/var/lib/radicale/collections/collection-root/$HS_USER
+for cal in "calendario VEVENT Calendario" "attivita VTODO Attività"; do
+	set -- $cal
+	[ -e "$C/$1/.Radicale.props" ] && continue
+	install -d "$C/$1"
+	jq -nc --arg c "$2" --arg n "$3" '{"C:supported-calendar-component-set": $c, "D:displayname": $n, tag: "VCALENDAR"}' > "$C/$1/.Radicale.props"
+	echo "created calendar $1"
+done
+chown -R radicale:radicale /var/lib/radicale; chmod 750 /var/lib/radicale
+[ -e /etc/hs-service/radicale ] || { ln -s /etc/hs-sv/radicale /etc/hs-service/radicale; echo "enabled service radicale"; }

@@ -1,0 +1,49 @@
+# /etc/cron.d/home-server (root jobs). "#@ title | when | what": see crontab-user.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+#@ [Backup] Backup notturni | Ogni notte alle 3:37 | In fila: password (Vaultwarden), calendari, libreria, Sumisura (Master Data), stato del server (impostazioni, AdGuard, Syncthing), codice e issue, programma di studio (se attivo); tutti cifrati, sul PC. Se uno fallisce gli altri girano e l'avviso nomina quale
+37 3 * * * root hs-run backup-all /usr/local/sbin/backup-all
+#@ [Sicurezza] Certificato HTTPS | Ogni notte alle 4:17 | Rinnovo se in scadenza
+17 4 * * * root hs-run tls-renew /usr/local/sbin/tls-renew
+#@ [Sistema] Aggiornamenti server | Ogni notte alle 5:07 | Pacchetti Debian
+7 5 * * * root hs-run apt-autoupdate /usr/local/sbin/apt-autoupdate
+#@ [Sistema] Controllo aggiornamenti app | Ogni giorno alle 5:27 | Vaultwarden, AdGuard, Node, Sumisura: esito sulla dashboard; 7 giorni dopo l'uscita aggiorna ops-auto
+27 5 * * * root hs-run update-apps /usr/local/sbin/update-apps --status
+#@ [Sicurezza] Avvisi di sicurezza | Ogni giorno alle 5:37 | Vulnerabilità note e fine supporto dei pacchetti installati (OSV, endoflife.date), solo dati strutturati
+37 5 * * * root hs-run hs-advisories /usr/local/sbin/hs-advisories
+#@ [Second brain] Mail verso l'Inbox | Ogni 2 minuti | Prende le mail inoltrate all'indirizzo +edge (solo tue e verificate da Gmail) e la mail di prova della pagina Mail; spento finché non lo colleghi
+*/2 * * * * root hs-run mail-fetch /usr/local/sbin/mail-fetch
+#@ [Second brain] Mail di riepilogo | Ogni 15 minuti | Una mail al giorno (dall'ora scelta nelle Impostazioni) con sicurezza, lavoro fatto e cosa aspetta te; subito una mail se la batteria è quasi scarica; spenta finché non colleghi la mail
+*/15 * * * * root hs-run mail-digest /usr/local/sbin/mail-digest
+#@ [Progetti] Calendario di studio | Ogni 15 minuti | Crea nel tuo calendario gli eventi settimanali «Studio: …» dai giorni scritti dal tutor (calendario.md); tocca solo quelli; se ne salta una riga lo dice la mail del mattino
+*/15 * * * * root hs-run studio-calendar-sync /usr/local/sbin/studio-calendar-sync
+#@ [Progetti] LeetCode nello studio | Ogni ora | Legge dal tuo profilo LeetCode pubblico (nessuna password) gli esercizi risolti dal giorno scelto in poi e li scrive nella cartella dello studio (leetcode.json per l'app, leetcode.md per il tutor); se l'API non risponde riprova e, se continua, ti avvisa; spenta senza nome utente o senza studio
+17 * * * * root hs-run studio-leetcode /usr/local/sbin/studio-leetcode
+#@ [Progetti] Riassunto dello studio | Ogni ora del lunedì | Conta le ore, le sessioni, le parti chiuse e le lacune aperte della settimana di studio appena finita (solo numeri, dall'app Studio) per la mail del lunedì; spenta senza lo studio
+10 * * * 1 root hs-run studio-week /usr/local/sbin/studio-week
+#@ [Progetti] Cartella di studio nel Vault | Ogni minuto | Monta la cartella dello studio nel Vault (Studio/: programma, progressi, risorse e schede come note di Obsidian; Note/ è solo tua) e rimette i permessi (brain legge soltanto); non fa nulla finché lo studio è spento
+* * * * * root hs-run studio-vault /usr/local/sbin/studio-vault
+#@ [Sicurezza] Avvisi accesso SSH | Ogni minuto | Notifica ntfy a ogni login SSH sul server
+* * * * * root hs-run ssh-login-watch /usr/local/sbin/ssh-login-watch
+#@ [Progetti] Permessi e Vault di Sumisura | Ogni minuto | Dati dell'app scrivibili da Syncthing; Master Data, CV e lettere nel Vault (Projects/Sumisura)
+* * * * * root hs-run sumisura-acl /usr/local/sbin/sumisura-setup --acl
+#@ [Progetti] CV dalle richieste nel Vault | Ogni 5 minuti | Legge le note in Projects/Sumisura/Richieste e scrive accanto la bozza di CV e lettera da approvare (solo se ce n'è una nuova)
+*/5 * * * * root hs-run sumisura-tailor /usr/local/sbin/sumisura-tailor
+#@ [Progetti] Installazione dei Progetti | Ogni ora | Installa il nuovo commit verde di main delle app (Sumisura, Libreria); se non parte torna al precedente
+23 * * * * root hs-run project-cd /usr/local/sbin/project-cd
+#@ [Sistema] Claude Code aggiornato per tutti | Ogni ora | Aggiorna Claude Code per @HS_USER@, brain, Sumisura, Library e studio (gli altri utenti restavano indietro)
+17 * * * * root hs-run claude-update-all /usr/local/sbin/claude-update-all >> /var/log/claude-update-all.log 2>&1
+#@ [Sistema] Sessioni brain e studio su Claude Code aggiornato | Ogni 10 minuti | Se la sessione brain (o studio, spenta finché non attivi lo studio) gira su una versione vecchia e resta ferma, la riapre sulla stessa chat e ti avvisa
+*/10 * * * * root hs-run sessions-refresh /usr/local/sbin/sessions-refresh
+#@ [Backup] Storia del programma di studio | Ogni 15 minuti | Salva in git ogni modifica della cartella dello studio, fuori dalla portata della sessione; spenta finché non attivi lo studio
+*/15 * * * * root hs-run studio-autocommit /usr/local/sbin/studio-autocommit
+# Not cron jobs, listed on the dashboard too:
+#@ [Sistema] Pulizia app Motorola | Ogni 15 minuti | Toglie le app indesiderate
+#@ [Progetti] Permessi della cartella di studio | Ogni minuto | Rimette i permessi della cartella dello studio (l'app la legge soltanto e scrive solo le segnalazioni; il tutor ci scrive il resto); non fa nulla finché l'app Studio è spenta
+* * * * * root hs-run studio-app-perms /usr/local/sbin/studio-app-setup --perms
+#@ [Progetti] Spegnimento delle app non usate | Ogni notte alle 4:50 | Spegne l'app di un Progetto che non apri da più dei giorni scelti nelle Impostazioni (a meno che sia Sempre accesa); si riaccende con un tocco dalla dashboard
+50 4 * * * root hs-run apps-idle /usr/local/sbin/apps-idle scan
+#@ [Progetti] Richieste dalle app dei Progetti | Ogni minuto | Esegue Riaccendi, Sempre accesa e Prova chiesti dal tocco nel tracker (l'app deve esistere in `projects`; non fa nulla senza richieste)
+* * * * * root hs-run apps-idle-req /usr/local/sbin/apps-idle requests
+#@ [Sistema] Pulizia log di sistema | Ogni notte alle 4:55 | Accorcia oltre 1 MB i log di Tailscale, degli aggiornamenti Claude, delle riaperture delle sessioni brain e studio e degli accessi alle app dei Progetti (i log di @HS_USER@ e del vault hanno la loro pulizia, per i permessi)
+55 4 * * * root hs-run log-trim-system /usr/local/sbin/log-trim-system

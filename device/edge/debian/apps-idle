@@ -1,0 +1,113 @@
+#!/bin/sh
+# apps-idle (issue 477): the app of a Gateway Project (column 3 of /etc/hs-projects) stays on only while the owner
+# uses it. Caddy writes one JSON access log per app (/var/log/caddy/app-<app>.log); `scan` keeps the time of the last
+# opening in $ST/<app>.last (requests from curl, i.e. hs-monitor / project-cd probes, don't count), and turns off an
+# app idle for more than HS_APP_IDLE_DAYS (hs-setting, default 30): service link removed + `sv down`, flag $ST/<app>.off
+# (the *-setup scripts and so deploy, project-cd and update-apps don't re-enable a flagged app; hs-monitor skips an app
+# whose service isn't enabled). Never touches base services. Flag $ST/<app>.always = "Sempre accesa": never turned off.
+# Events ("YYYY-MM-DD spenta|riaccesa|sempre-accesa|auto APP") go to $ST/events.log (morning mail, dashboard card).
+# The tracker (unprivileged) asks for on|always|auto by writing $REQ/<app> (one word); `requests`, run every minute by cron,
+# applies and deletes them (validated: known app, known verb).
+# Features (issue 480): the owner-facing AI features "proposte" (ops-suggest), "smistamento" (brain-sort: newest "run: N item" in its sort.log), "cv" (sumisura-tailor: newest "done:" in tailor.log) and "domande" (questions-suggest,
+# questions-recheck-ai) follow the same rule in the same list: use = an approved proposal / an accepted suggestion or
+# a confirmed self-found answer, read from the issues and the suggestion files. Off = flag $ST/<f>.off; `gate JOB`
+# (read-only, used by hs-run) refuses the jobs of an off feature. Never maintenance (backup, security, monitor, ops-auto).
+# Usage: apps-idle scan | requests | on APP | trial APP | always APP | auto APP | state [APP]   (cron, through hs-run; root)
+set -eu
+FEATURES="proposte domande smistamento cv"
+feat_of_job() { case $1 in ops-suggest) echo proposte ;; questions-suggest|questions-recheck-ai) echo domande ;; brain-sort) echo smistamento ;; sumisura-tailor) echo cv ;; esac; }
+if [ "${1:-}" = gate ]; then  # no state dir creation, no env: runs as any user
+	f=$(feat_of_job "${2:-}"); [ -z "$f" ] || [ ! -e "${HS_APPS_IDLE_STATE:-/var/lib/apps-idle}/$f.off" ] && exit 0
+	echo "apps-idle: $2 skipped: feature $f is off (not used), turn it on in Impostazioni"; exit 1
+fi
+. "${HS_ENV_FILE:-/etc/home-server.env}"
+ST=${HS_APPS_IDLE_STATE:-/var/lib/apps-idle} LOGD=${HS_APPS_IDLE_LOGDIR:-/var/log/caddy}
+SVD=${HS_SERVICE_DIR:-/etc/hs-service} SVS=${HS_SV_DIR:-/etc/hs-sv}
+GP=${HS_GATEWAY_PROJECTS:-/usr/local/bin/gateway-projects} SET=${HS_SETTING_CMD:-hs-setting}
+REQ=${HS_APPS_IDLE_REQ:-/var/lib/apps-idle-req}
+NOW=${HS_APPS_IDLE_NOW:-$(date +%s)}
+install -d -m 755 "$ST"
+apps() { "$GP" | awk '$3 != "-" && $3 != "" { print $3 }'; }
+valid() { case $1 in '' | *[!a-z0-9-]*) return 1 ;; esac; { apps; for f in $FEATURES; do echo "$f"; done; } | grep -qx "$1"; }
+isfeat() { case " $FEATURES " in *" $1 "*) return 0 ;; esac; return 1; }
+ISS=${HS_ISSUES_DIR:-/home/$HS_USER/home-server/issues} QS=${HS_QS_DIR:-/var/lib/question-suggestions}
+feat_last() { # newest use of a feature (unix time) from data the server already has; empty if none
+	d=
+	case $1 in
+	proposte) d=$(grep -l "^Source: system" "$ISS"/open/*.md "$ISS"/done/*.md 2> /dev/null | xargs -r grep -h "^Owner-confirmed: " 2> /dev/null | sed "s/^Owner-confirmed: *//" | sort | tail -n 1) ;;
+	domande)
+		pf=$(mktemp); jq -r ".answer? // empty | .[0:30]" "$QS"/*.json 2> /dev/null | grep . > "$pf" || true
+		d=$({ [ ! -s "$pf" ] || awk -v pf="$pf" 'BEGIN { while ((getline l < pf) > 0) P[++n] = l } FNR == 1 { d = "" } /^### [0-9-]+ [0-9:]+ \(owner\)/ { d = $2; next } /^### / { d = "" } d != "" { for (i = 1; i <= n; i++) if (index($0, P[i])) { print d; break } }' "$ISS"/open/*.md "$ISS"/done/*.md 2> /dev/null
+			[ ! -s "$QS/found.json" ] || for id in $(jq -r "to_entries[] | select(.value.ai == true and .value.ok == true) | .key" "$QS/found.json" 2> /dev/null); do sed -n "s/^Closed: *//p" "$ISS"/done/$(printf %03d "$id")-*.md 2> /dev/null; done; } | grep -E "^[0-9]{4}-[0-9]{2}-[0-9]{2}\$" | sort | tail -n 1); rm -f "$pf" ;;
+	smistamento) d=$(sed -n "s/^\([0-9-]*\) [0-9:]* run: [1-9][0-9]* item.*/\1/p" "${HS_BRAIN_SORT_LOG:-/home/brain/.local/state/brain/sort.log}" 2> /dev/null | sort | tail -n 1) ;;
+	cv) d=$(sed -n "s/^\([0-9-]*\) [0-9:]* \(render \)\{0,1\}done: .*/\1/p" "${HS_TAILOR_LOG:-/var/lib/sumisura/tailor/state/tailor.log}" 2> /dev/null | sort | tail -n 1) ;;
+	esac
+	[ -n "$d" ] && date -d "$d" +%s 2> /dev/null || true
+}
+ev() { echo "$(date -d "@$NOW" +%F) $1 $2" >> "$ST/events.log"; echo "apps-idle: $2: $1"; }
+last_in_log() { # newest owner request (ts, integer) in the app's log; empty if none
+	[ -r "$LOGD/app-$1.log" ] || return 0
+	jq -r 'select((.request.headers["User-Agent"][0] // "") | test("^curl") | not) | .ts | floor' "$LOGD/app-$1.log" 2> /dev/null | sort -n | tail -n 1
+}
+cmd=${1:-}; app=${2:-}
+case $cmd in
+scan)
+	days=$("$SET" HS_APP_IDLE_DAYS 2> /dev/null) || days=30
+	for a in $(apps); do
+		l=$(last_in_log "$a"); old=$(cat "$ST/$a.last" 2> /dev/null || true)
+		[ -n "$l" ] && { [ -z "$old" ] || [ "$l" -gt "$old" ]; } && { echo "$l" > "$ST/$a.last"; old=$l; }
+		if [ -z "$old" ]; then  # first sight of a new Project app: it starts off, "Prova" tries it
+			echo "$NOW" > "$ST/$a.last"; old=$NOW
+			if [ -e "$SVD/$a" ] && [ ! -e "$ST/$a.always" ]; then sv down "$SVD/$a" > /dev/null 2>&1 || true; rm -f "$SVD/$a"; date -d "@$NOW" +%F > "$ST/$a.off"; : > "$ST/$a.new"; ev nuova "$a"; continue; fi
+		fi
+		if [ -e "$ST/$a.trial" ]; then  # trial: kept once opened after it started, else off after HS_APP_TRIAL_HOURS
+			t=$(cat "$ST/$a.trial"); hrs=$("$SET" HS_APP_TRIAL_HOURS 2> /dev/null) || hrs=24
+			if [ -n "$l" ] && [ "$l" -gt "$t" ]; then rm -f "$ST/$a.trial"
+			elif [ $((NOW - t)) -gt $((hrs * 3600)) ]; then
+				rm -f "$ST/$a.trial"; sv down "$SVD/$a" > /dev/null 2>&1 || true; rm -f "$SVD/$a"; date -d "@$NOW" +%F > "$ST/$a.off"; ev spenta "$a"
+			fi
+			continue
+		fi
+		[ -e "$ST/$a.off" ] || [ -e "$ST/$a.always" ] || [ ! -e "$SVD/$a" ] && continue
+		if [ $((NOW - old)) -gt $((days * 86400)) ]; then
+			sv down "$SVD/$a" > /dev/null 2>&1 || true; rm -f "$SVD/$a"
+			date -d "@$NOW" +%F > "$ST/$a.off"; ev spenta "$a"
+		fi
+	done
+	for f in $FEATURES; do  # features: same rule, no service to stop; jobs are refused by `gate`
+		l=$(feat_last "$f"); old=$(cat "$ST/$f.last" 2> /dev/null || true)
+		[ -n "$l" ] && { [ -z "$old" ] || [ "$l" -gt "$old" ]; } && { echo "$l" > "$ST/$f.last"; old=$l; }
+		[ -n "$old" ] || { echo "$NOW" > "$ST/$f.last"; continue; }
+		[ -e "$ST/$f.off" ] || [ -e "$ST/$f.always" ] && continue
+		if [ $((NOW - old)) -gt $((days * 86400)) ]; then date -d "@$NOW" +%F > "$ST/$f.off"; ev spenta "$f"; fi
+	done ;;
+on)
+	valid "$app" || { echo "apps-idle: unknown app '$app'" >&2; exit 2; }
+	echo "$NOW" > "$ST/$app.last"
+	if isfeat "$app"; then [ ! -e "$ST/$app.off" ] || { rm -f "$ST/$app.off"; ev riaccesa "$app"; }; exit 0; fi
+	if [ -e "$ST/$app.off" ]; then rm -f "$ST/$app.off"; rm -f "$ST/$app.new"; [ -e "$SVD/$app" ] || ln -s "$SVS/$app" "$SVD/$app"; ev riaccesa "$app"; fi ;;
+trial)
+	valid "$app" || { echo "apps-idle: unknown app '$app'" >&2; exit 2; }
+	isfeat "$app" && { echo "apps-idle: a feature has no trial" >&2; exit 2; }
+	echo "$NOW" > "$ST/$app.last"; echo "$NOW" > "$ST/$app.trial"; rm -f "$ST/$app.off"; rm -f "$ST/$app.new"; [ -e "$SVD/$app" ] || ln -s "$SVS/$app" "$SVD/$app"; ev prova "$app" ;;
+always)
+	valid "$app" || { echo "apps-idle: unknown app '$app'" >&2; exit 2; }
+	: > "$ST/$app.always"; ev sempre-accesa "$app" ;;
+auto)
+	valid "$app" || { echo "apps-idle: unknown app '$app'" >&2; exit 2; }
+	rm -f "$ST/$app.always"; echo "$NOW" > "$ST/$app.last"; ev auto "$app" ;;
+requests)
+	[ -d "$REQ" ] || exit 0
+	for f in "$REQ"/*; do
+		[ -f "$f" ] || continue
+		a=$(basename "$f"); v=$(head -c 16 "$f" | tr -d '\n'); rm -f "$f"
+		case $v in on | trial | always | auto) valid "$a" && sh "$0" "$v" "$a" || echo "apps-idle: request ignored: $a" >&2 ;; *) echo "apps-idle: request ignored: $a" >&2 ;; esac
+	done ;;
+state) # one JSON object per app: off (date or ""), new (never used, waits for Prova), always, last (unix)
+	for a in $(apps) $FEATURES; do
+		[ -z "$app" ] || [ "$app" = "$a" ] || continue
+		jq -nc --arg a "$a" --arg off "$(cat "$ST/$a.off" 2> /dev/null || true)" --arg last "$(cat "$ST/$a.last" 2> /dev/null || true)" --argjson nw "$([ -e "$ST/$a.new" ] && echo true || echo false)" --argjson al "$([ -e "$ST/$a.always" ] && echo true || echo false)" \
+			'{app: $a, off: $off, always: $al, new: $nw, last: $last}'
+	done ;;
+*) echo "usage: apps-idle scan | requests | on APP | trial APP | always APP | auto APP | state [APP]" >&2; exit 2 ;;
+esac

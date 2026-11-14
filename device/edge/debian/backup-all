@@ -1,0 +1,14 @@
+#!/bin/sh
+# backup-all (issue 479): the nightly backups in a row, one cron line. Each backup stays its own command (restore,
+# tests); a failing one does not stop the others, it is named on stderr ("backup fallito: NAME") and the exit code
+# is 1, so hs-run reports the job and hs-monitor's issue names the piece. Studio and the others that have nothing to
+# save exit 0 by themselves. HS_BACKUP_ALL_LIST (space separated commands, tests) overrides the list.
+D=${HS_BACKUP_ALL_DIR:-/usr/local/sbin}
+LIST=${HS_BACKUP_ALL_LIST:-vaultwarden-backup radicale-backup library-backup sumisura-backup state-backup repo-backup studio-backup}
+rc=0
+for b in $LIST; do
+	# Not installed (the public copy has no backup of the owner's apps): say so, it is not a failure.
+	[ -e "$D/$b" ] || { echo "backup non installato: $b"; continue; }
+	if ! "$D/$b"; then echo "backup fallito: $b" >&2; rc=1; fi
+done
+exit $rc

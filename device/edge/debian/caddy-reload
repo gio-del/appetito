@@ -1,0 +1,7 @@
+#!/bin/sh
+# Reload Caddy after editing /etc/caddy/Caddyfile. The Caddyfile uses {$HS_*}
+# placeholders, which are filled in by the process that adapts it (this one),
+# so the env file must be loaded here too. Admin API is the socket in /run/caddy (root and caddy only).
+set -eu
+set -a; . /etc/home-server.env; set +a
+exec caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --address unix//run/caddy/admin.sock

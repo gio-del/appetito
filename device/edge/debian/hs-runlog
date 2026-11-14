@@ -1,0 +1,20 @@
+#!/bin/sh
+# hs-runlog DIR NAME JSONL [ERR] (issue 051): keep a headless Claude run instead of letting the
+# next one overwrite it. Writes DIR/NAME.jsonl.gz (+ DIR/NAME.err when ERR is non-empty), DIR
+# mode 700 and files 600 (brain's runs carry vault text). Rotation: files older than
+# HS_RUNLOG_DAYS (default 30) go, then the oldest until DIR is under HS_RUNLOG_MB (default 200).
+# Used by ops-auto (~/.local/state/ops-auto/runs) and brain-sort (~brain/.local/state/brain/runs).
+set -eu
+dir=$1 name=$2 jsonl=$3 err=${4:-}
+umask 077
+mkdir -p "$dir"
+chmod 700 "$dir"
+gzip -c "$jsonl" > "$dir/.$name.tmp" && mv "$dir/.$name.tmp" "$dir/$name.jsonl.gz"
+[ -n "$err" ] && [ -s "$err" ] && cp "$err" "$dir/$name.err"
+find "$dir" -maxdepth 1 -type f -mtime +"${HS_RUNLOG_DAYS:-30}" -delete
+cap=$((${HS_RUNLOG_MB:-200} * 1024))
+while [ "$(du -sk "$dir" | cut -f1)" -gt "$cap" ]; do
+	old=$(ls -1tr "$dir" | head -1)
+	case $old in ''|"$name".*) break ;; esac # never the run just kept
+	rm -f "$dir/$old"
+done

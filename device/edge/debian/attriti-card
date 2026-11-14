@@ -1,0 +1,52 @@
+#!/usr/bin/env node
+'use strict';
+// attriti-card (issue 468; $HS_USER, no AI): weekly measure of how much the system asks of the owner.
+// Runs attriti-signals, writes /var/lib/edge-status/attriti.json for the dashboard card "Attriti" and the
+// Monday line of mail-digest, and keeps one snapshot per week (Monday date) in the history file so the
+// number can be seen going down. Measures: HITL steps waiting for an answer, open issues Blocked on user,
+// longest wait in days, ops-auto rounds that ended with the owner (3 attempts) or failed.
+// Env (tests): HS_ATTRITI_SIGNALS (command), HS_ATTRITI_CARD, HS_ATTRITI_HISTORY, HS_ATTRITI_NOW (YYYY-MM-DD).
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const HOME = process.env.HOME || require('os').homedir();
+const SIG = process.env.HS_ATTRITI_SIGNALS || path.join(HOME, 'bin/attriti-signals');
+const CARD = process.env.HS_ATTRITI_CARD || '/var/lib/edge-status/attriti.json';
+const HIST = process.env.HS_ATTRITI_HISTORY || path.join(HOME, '.local/state/attriti/history.json');
+
+let s;
+try { s = JSON.parse(execFileSync(SIG, { encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...(process.env.HS_ATTRITI_NOW ? { HS_SIGNALS_NOW: process.env.HS_ATTRITI_NOW } : {}) } })); }
+catch (e) { console.error('attriti-card: segnali non disponibili'); process.exit(1); }
+
+const today = process.env.HS_ATTRITI_NOW || new Date().toISOString().slice(0, 10);
+const d = new Date(today + 'T00:00:00Z');
+const monday = new Date(d - ((d.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10);
+const waits = (s.hitl || []).filter(h => !h.answered && h.waitedDays != null).map(h => h.waitedDays);
+const blockedDays = (s.blockedUser || []).map(b => b.days || 0);
+const now = {
+  hitlWaiting: (s.counts || {}).hitlUnanswered || 0,
+  blockedUser: (s.counts || {}).blockedUser || 0,
+  maxWaitDays: Math.max(0, ...waits, ...blockedDays),
+  roundsToOwner: (s.failedRuns || []).length,
+};
+
+let hist = {};
+try { hist = JSON.parse(fs.readFileSync(HIST, 'utf8')) || {}; } catch {}
+hist[monday] = now; // the last run of the week wins
+const weeks = Object.keys(hist).sort();
+for (const w of weeks.slice(0, -26)) delete hist[w];
+fs.mkdirSync(path.dirname(HIST), { recursive: true });
+fs.writeFileSync(HIST, JSON.stringify(hist) + '\n');
+
+const prevKey = Object.keys(hist).sort().filter(w => w < monday).pop();
+const prev = prevKey ? hist[prevKey] : null;
+const diff = (a, b) => b == null ? '' : a === b ? ' (come la settimana scorsa)' : ` (settimana scorsa ${b})`;
+const text = `${now.hitlWaiting} domande senza risposta${diff(now.hitlWaiting, prev && prev.hitlWaiting)}, ` +
+  `${now.blockedUser} issue ferme su di te${diff(now.blockedUser, prev && prev.blockedUser)}, ` +
+  `attesa più lunga ${now.maxWaitDays} giorni${diff(now.maxWaitDays, prev && prev.maxWaitDays)}`;
+const trend = !prev ? '' : (now.hitlWaiting + now.blockedUser) < (prev.hitlWaiting + prev.blockedUser) ? 'in calo'
+  : (now.hitlWaiting + now.blockedUser) > (prev.hitlWaiting + prev.blockedUser) ? 'in aumento' : 'stabile';
+const out = { updated: today, week: monday, ...now, previous: prev, trend, card: text + (trend ? ` · ${trend}` : ''), mail: 'Attriti: ' + text + '.' };
+const tmp = CARD + '.' + process.pid;
+fs.writeFileSync(tmp, JSON.stringify(out) + '\n');
+fs.renameSync(tmp, CARD);

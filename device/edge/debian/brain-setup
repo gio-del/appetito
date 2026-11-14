@@ -1,0 +1,79 @@
+#!/bin/sh
+# Idempotent setup for the second brain (run as root by device/edge/deploy): user brain
+# (no sudo, no SSH), the vault in /srv/vault owned by brain and shared with $HS_USER's
+# Syncthing through ACLs, Claude Code for brain, settings note, runit service "brain".
+# Syncthing stays with $HS_USER on purpose: it also syncs the Vaultwarden backups, which
+# brain (it reads untrusted material) must not be able to delete.
+set -eu
+. /etc/home-server.env
+V=/srv/vault
+# Fixed uid in the only range Android leaves alone (chroot uids are kernel uids shared with
+# Android): 1000-9999 are Android system ids (1001 = radio, the phone/RIL processes brain could
+# signal) and 10000+ are app uids, whose traffic Android's firewall drops (no INTERNET grant).
+BRAIN_ID=900
+id brain >/dev/null 2>&1 || { useradd --create-home --shell /bin/bash --uid $BRAIN_ID --user-group brain; echo "created user brain"; }
+H=$(getent passwd brain | cut -d: -f6)
+old=$(id -u brain)
+if [ "$old" != $BRAIN_ID ]; then
+	# Migrate: usermod refuses while Android processes run with the old uid, and those must not be
+	# killed, so edit passwd/group and re-own only brain's own paths (never a global find/chown).
+	getent passwd $BRAIN_ID >/dev/null && { echo "brain-setup: uid $BRAIN_ID taken" >&2; exit 1; }
+	[ -e /etc/hs-service/brain ] && sv down /etc/hs-service/brain >/dev/null
+	sed -i "s/^brain:x:$old:[0-9]*:/brain:x:$BRAIN_ID:$BRAIN_ID:/" /etc/passwd
+	sed -i "s/^brain:x:[0-9]*:/brain:x:$BRAIN_ID:/" /etc/group
+	for p in "$H" "$V" /var/spool/cron/crontabs/brain; do
+		[ -e "$p" ] || continue
+		find "$p" -xdev -uid "$old" -exec chown -h brain {} +
+		find "$p" -xdev -gid "$old" -exec chgrp -h brain {} +
+	done
+	[ -d "$V" ] && { setfacl -R -x "u:$old" "$V" 2>/dev/null || true; setfacl -R -x "d:u:$old" "$V" 2>/dev/null || true; }
+	# cron caches each crontab owner's uid until the crontab changes: it would keep running as $old.
+	[ -e /etc/hs-service/cron ] && sv restart /etc/hs-service/cron >/dev/null
+	echo "moved user brain from uid $old to $BRAIN_ID"
+	[ -e /etc/hs-service/brain ] && sv up /etc/hs-service/brain >/dev/null
+fi
+chmod 700 "$H"
+[ -d "$V" ] || { install -d -m 770 -o brain -g brain "$V"; echo "created $V"; }
+[ -d "$V/.git" ] && chown -R brain:brain "$V/.git"
+chown brain:brain "$V"
+[ -L "$H/vault" ] || { ln -s "$V" "$H/vault"; echo "linked $H/vault"; }
+install -d -m 700 -o brain -g brain "$H/.local" "$H/.local/state" "$H/.local/state/brain" \
+	"$H/.cache" "$H/.cache/claude-tmp"
+# Claude Code's temp/socket dir: /tmp is shared with $HS_USER's Claude (/tmp/cc-socks is theirs).
+grep -q CLAUDE_CODE_TMPDIR "$H/.profile" 2>/dev/null ||
+	{ echo 'export CLAUDE_CODE_TMPDIR=$HOME/.cache/claude-tmp' >> "$H/.profile"; chown brain:brain "$H/.profile"; echo "updated ~brain/.profile"; }
+# Settings note editable from Obsidian (preferences only: anything security-relevant stays in /etc).
+if [ ! -e "$V/Impostazioni/Second brain.md" ]; then
+	install -d -m 770 -o brain -g brain "$V/Impostazioni"
+	install -m 660 -o brain -g brain /dev/null "$V/Impostazioni/.keep"
+	install -m 660 -o brain -g brain /usr/local/share/brain/second-brain.md "$V/Impostazioni/Second brain.md"
+	echo "created Impostazioni/Second brain.md"
+fi
+# Personal documents: Syncthing versioning only, never in the vault's git history.
+[ -e "$V/.gitignore" ] && ! grep -qx 'Attachments/Documenti/' "$V/.gitignore" &&
+	{ echo 'Attachments/Documenti/' >> "$V/.gitignore"; echo "updated vault .gitignore"; }
+# brain and $HS_USER read/write everything, including what the other creates (default ACLs;
+# Syncthing has ignorePerms on this folder, so it never chmods the mask away). Re-applied
+# on every deploy, which also repairs masks narrowed by a chmod.
+# Not into Projects/Sumisura/Master Data (the app's data, bind-mounted by sumisura-vault: brain gets read-only ACLs there from sumisura-setup --acl, issue 168).
+# Nor into Studio (the study folder, bind-mounted by studio-vault: brain reads it only, issue 491).
+find "$V" \( -path "$V/Projects/Sumisura/Master Data" -o -path "$V/Studio" \) -prune -o \! -type l -exec setfacl -m "u:brain:rwX,u:$HS_USER:rwX,m::rwX" {} +
+find "$V" \( -path "$V/Projects/Sumisura/Master Data" -o -path "$V/Studio" \) -prune -o -type d \! -type l -exec setfacl -m "d:u:brain:rwX,d:u:$HS_USER:rwX,d:m::rwX" {} +
+# Claude Code (native installer, self-updating) for brain; /login is done once by the owner.
+[ -x "$H/.local/bin/claude" ] ||
+	{ su - brain -c 'curl -fsSL https://claude.ai/install.sh | bash' >/dev/null; echo "installed claude for brain"; }
+# Tracker token for brain-propose (proposals only: issues/proposed/, approved by the owner in the
+# tracker). The tracker keeps only its sha256.
+T=$H/.secrets/tracker-propose
+if [ ! -s "$T" ] || [ ! -s /var/lib/tracker/propose-token ]; then
+	install -d -m 700 -o brain -g brain "$H/.secrets"
+	(umask 077; openssl rand -hex 32 > "$T"); chown brain:brain "$T"
+	(umask 077; printf %s "$(tr -d '\n' < "$T")" | sha256sum | cut -d' ' -f1 > /var/lib/tracker/propose-token)
+	chown tracker:tracker /var/lib/tracker/propose-token
+	echo "created tracker proposal token for brain"
+fi
+# Answers to brain's questions (issue 294): the tracker writes <id>.json, brain only reads them.
+install -d -m 2750 -o tracker -g brain /var/lib/brain-answers
+# Brain's part of the digest mail (issue 414): brain writes settings.json and part.json, mail-digest (root) validates them.
+install -d -m 755 -o brain -g brain /var/lib/brain-digest
+[ -e /etc/hs-service/brain ] || { ln -s /etc/hs-sv/brain /etc/hs-service/brain; echo "enabled service brain"; }

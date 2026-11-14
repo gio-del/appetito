@@ -1,0 +1,240 @@
+#!/bin/sh
+# ops-suggest ($HS_USER's cron, hourly): daily proposals from the system (issue 028, epic 026).
+# Once a day, from HS_SUGGEST_HOUR on, runs a read-only headless Claude on each Project of the
+# Gateway list (/etc/hs-projects, via gateway-projects) that has an issues dir, with the fixed
+# rules of ops-suggest-prompt.md (+ its rules file), the feedback index of its past proposals
+# (ops-suggest-index: Source: system only, brain's never) and its preferences summary
+# (~/.local/state/ops-suggest/preferences.md, updated by every run). The JSON answer is validated
+# and each proposal POSTed to /api/propose (~/.secrets/tracker-suggest) -> Source: system.
+# Skips (no Claude) when HS_SUGGEST_ENABLED is off, when HS_SUGGEST_PENDING_MAX system proposals
+# already wait, over HS_SUGGEST_QUOTA_MAX weekly usage (last rate_limit_event of ops-auto or of
+# this job), or while ops-auto is running (its lock; held during the run, so ops-auto waits for
+# its next slot). N = min(HS_SUGGEST_MAX, pending cap - pending), counted per project (issue 270).
+# home-server also gets the cost/quality signals of ops-suggest-signals (issue 128): an optimization
+# or quality proposal must cite the id of a signal over threshold, else the validator drops it.
+# Retries every hour until a Claude run happened that day. Per project, skips Claude when the input
+# fingerprint (repo tree minus the issues dir, issue file names, feedback index, N, signals over threshold,
+# pending app updates) equals the one of its last Claude run: "niente di nuovo", counted as that day's run (issue 119).
+#   ops-suggest            cron mode
+#   ops-suggest --now      ignore enabled/hour/once-a-day (caps and quota still apply)
+#   ops-suggest --dry-run  like --now, prints the proposals, POSTs and stores nothing
+# Status for the dashboard: /var/lib/edge-status/suggest.json (+ proposals-card).
+# Every Claude call is kept in ~/.local/state/ops-suggest/runs/ (hs-runlog) and its redacted Log (ops-auto-log)
+# is written to /var/lib/ops-auto-log/suggest.json for the Log of /auto.html (issue 107).
+set -eu
+export PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8
+AI_RUN=${HS_AI_RUN:-$(cd "$(dirname "$0")" && pwd)/ai-run}  # backend wrapper (issue 249), next to the script
+. /etc/home-server.env
+D=$HOME/home-server/device/edge/debian
+ST=$HOME/.local/state/ops-suggest
+STATUS=${HS_SUGGEST_STATUS:-/var/lib/edge-status/suggest.json}
+KINDS='feature improvement cleanup security reliability docs performance optimization quality'  # also in proposals-card
+mode=cron
+case ${1:-} in --now) mode=now ;; --dry-run) mode=dry ;; '') ;; *) sed -n '18,20s/^# //p' "$0" >&2; exit 2 ;; esac
+mkdir -p "$ST"
+slot=morning  # which slot this run counts for (issue 272); only cron mode picks the evening
+today=$(date +%F)
+log() { printf "%s %s\n" "$(date "+%F %T")" "$*" >> "$ST/ops-suggest.log"; [ "$mode" = cron ] || printf "%s\n" "$*"; }
+status() { # outcome [created-ids]; skipped runs keep the last real run's data
+	[ "$mode" = dry ] && return 0
+	jq -n --arg w "$(date '+%d/%m %H:%M')" --arg o "$1" --arg c "${2:-}" --argjson p "${pending:-null}" --arg pz "${paused:-}" \
+		--arg sm "$(cat "$ST/last-day" 2>/dev/null)" --arg se "$(cat "$ST/last-day-evening" 2>/dev/null)" --arg ev "${eve:-}" \
+		--argjson prev "$(jq -c . "$STATUS" 2>/dev/null || echo "{}")" \
+		'(if ($prev | type) == "object" then $prev else {} end) + {checked: $w, outcome: $o, pending: $p, paused: ($pz | split(" ") | map(select(. != ""))),
+			slots: {morning: $sm, evening: $se, evening_hour: $ev}}
+		 + (if $c == "" then {} else {last_run: $w, created: ($c | split(" ") | map(select(. != "")))} end)' > "$STATUS.tmp" 2>/dev/null &&
+		mv "$STATUS.tmp" "$STATUS" || true
+	"$HOME/bin/proposals-card" 2>/dev/null || true # card "Proposte" (issue 030)
+}
+skip() { log "skip: $1"; status "$1"; exit 0; }
+
+if [ "$mode" = cron ]; then
+	[ "$(hs-setting HS_SUGGEST_ENABLED)" = 1 ] || skip "disattivate"
+	# Quiet skips (hourly, no log line), but the card must not keep an older outcome.
+	# Two slots a day (issue 272): morning (HS_SUGGEST_HOUR, state last-day) and evening (HS_SUGGEST_HOUR_EVENING,
+	# "no" = morning only, state last-day-evening). The evening never starts before its hour, even if the morning was missed.
+	hour=$(printf %02d "$(hs-setting HS_SUGGEST_HOUR)")
+	eve=$(hs-setting HS_SUGGEST_HOUR_EVENING 2>/dev/null) || eve=no
+	case $eve in ''|*[!0-9]*) eve="" ;; *) eve=$(printf %02d "$eve") ;; esac
+	now=${HS_SUGGEST_NOW_HOUR:-$(date +%-H)} slot=""  # override: tests
+	if [ -n "$eve" ] && [ "$now" -ge "$eve" ] && [ "$eve" -gt "$hour" ] && [ "$(cat "$ST/last-day-evening" 2>/dev/null)" != "$today" ]; then slot=evening
+	elif [ "$now" -ge "$hour" ] && [ "$(cat "$ST/last-day" 2>/dev/null)" != "$today" ]; then slot=morning; fi
+	if [ -z "$slot" ]; then
+		if [ "$(cat "$ST/last-day" 2>/dev/null)" != "$today" ] && [ "$now" -lt "$hour" ]; then status "in attesa, primo giro alle $hour:50"
+		elif [ -n "$eve" ] && [ "$eve" -gt "$hour" ] && [ "$(cat "$ST/last-day-evening" 2>/dev/null)" != "$today" ]; then status "già fatto il giro del mattino, prossimo alle $eve:50"
+		elif [ -n "$eve" ] && [ "$eve" -gt "$hour" ]; then status "già fatto oggi (mattina e sera), prossimo giro domani alle $hour:50"
+		else status "già fatto oggi, prossimo giro domani alle $hour:50"; fi
+		exit 0
+	fi
+fi
+lastfile=last-day; [ "$slot" != evening ] || lastfile=last-day-evening
+exec 9>"$ST/lock"
+flock -n 9 || exit 0
+exec 8>"${HS_SUGGEST_AUTO_LOCK:-$HOME/.local/state/ops-auto/lock}" # override: tests
+flock -n 8 || skip "rimandate: manutenzione e sviluppo automatico al lavoro"
+
+# Quota: the newest still-valid weekly utilization seen by ops-auto or by this job.
+QMAX=$(hs-setting HS_SUGGEST_QUOTA_MAX)
+util=$(cat "$HOME/.local/state/ops-auto/usage" "$ST/usage" 2>/dev/null |
+	awk -v now="$(date +%s)" '$2 > now && $1 > m { m = $1 } END { print m + 0 }')
+[ "$util" -lt "$QMAX" ] || skip "quota settimanale ${util}% (max ${QMAX}%)"
+
+PMAX=$(hs-setting HS_SUGGEST_PENDING_MAX)
+NMAX=$(hs-setting HS_SUGGEST_MAX)
+pending=0 created="" ran=0 same=0 paused=""
+TRACKER=$(readlink -f "$HOME/home-server/issues")
+# Cost and quality signals of this server's Claude jobs (issue 128): numbers and ids only, home-server only.
+signals=$(${HS_SUGGEST_SIGNALS:-$HOME/bin/ops-suggest-signals} 2>/dev/null | jq -c 'if type == "array" then . else [] end') || signals='[]'
+[ -n "$signals" ] || signals='[]'
+while read -r name url app pstatus idir rules _; do
+	[ -n "$name" ] && [ "$idir" != - ] || continue
+	# Paused from the settings page (issue 271): no Claude, no N used; pending proposals stay as they are.
+	if [ "$(hs-setting "HS_SUGGEST_PAUSE_$(printf %s "$name" | tr a-z- A-Z_)" 2>/dev/null)" = 1 ]; then
+		log "$name: proposte in pausa"; paused="$paused $name"; continue
+	fi
+	repo=$(readlink -f "$HOME/projects/$name") || { log "$name: no ~/projects/$name"; continue; }
+	# Proposals go to this server's tracker (home-server's issues/proposed). idir `github` (issue 161): the
+	# Project's issues live on its host, so the feedback index is the tracker's proposals tagged
+	# `Project: NAME` and the duplicate check also sees its GitHub issues (read-only mirror, issue 091).
+	gh=0 proj="" idxdir=$repo/$idir
+	if [ "$idir" = github ]; then gh=1 proj=$name idxdir=$TRACKER
+	else [ "$(readlink -f "$repo/$idir")" = "$TRACKER" ] || { log "$name: proposals need a tracker for $idir (issue 091)"; continue; }; fi
+	sigs='[]'; [ "$repo" != "$(readlink -f "$HOME/home-server")" ] || sigs=$signals
+	[ -d "$idxdir" ] || { log "$name: no $idxdir"; continue; }
+	idx=$("$HOME/bin/ops-suggest-index" "$idxdir" $proj)
+	ghissues='[]'
+	if [ "$gh" = 1 ]; then
+		ghissues=$(jq -c --arg p "$name" '[.projects[$p].issues[]? | select(.trust == "author" or .trust == "self-assigned") | {number, title, state}]' \
+			"${HS_PROJECTS_ISSUES:-/var/lib/edge-status/projects-issues.json}" 2>/dev/null) || ghissues='[]'
+		idx=$(printf "%s\n" "$idx" | jq -c --argjson g "$ghissues" '.titles += [$g[].title | ascii_downcase]')
+	fi
+	pending=$(printf "%s\n" "$idx" | jq .pending)
+	left=$NMAX
+	n=$((PMAX - pending)); [ "$n" -lt "$left" ] || n=$left
+	[ "$n" -gt 0 ] || { log "$name: N=0 (pending $pending/$PMAX, max $NMAX)"; continue; }
+
+	# Same inputs as the last Claude run on this project: nothing new to propose (issue 119).
+	fp=$( { git -C "$repo" ls-tree HEAD 2>/dev/null | awk -F '\t' -v d="$idir" '$2 != d'
+		if [ "$gh" = 1 ]; then printf "%s\n" "$ghissues"; else ls "$repo/$idir/open" "$repo/$idir/done"; fi; printf "%s\n" "$idx"; echo "N=$n"
+		printf "%s\n" "$sigs" | jq -c '[.[] | select(.over) | .id]'
+		jq -c .apps /var/lib/hs-updates/pending.json 2>/dev/null || true; } | sha256sum | cut -d' ' -f1)
+	if [ "$mode" = cron ] && [ "$fp" = "$(cat "$ST/fingerprint.$name" 2>/dev/null)" ]; then
+		log "$name: niente di nuovo dall'ultimo giro"; same=$((same + 1)); continue
+	fi
+
+	extra=""
+	[ "$rules" = - ] || [ -z "$rules" ] || extra=$(cat "$repo/$rules")
+	# Another Project: its own CLAUDE.md is part of the rules (issue 161), capped.
+	[ "$gh" = 0 ] || [ ! -f "$repo/CLAUDE.md" ] || extra=$(printf "%s\n\n" "$extra"; head -c 20000 "$repo/CLAUDE.md")
+	# The owner's own ideas/direction for the Project (issue 306): optional, capped, a plain file (no symlink).
+	if [ -f "$repo/ideas.md" ] && [ ! -L "$repo/ideas.md" ]; then
+		extra=$(printf "%s\n\n## Idee e direzione dell'owner (ideas.md): parti da qui\n" "$extra"; head -c 8000 "$repo/ideas.md")
+		log "$name: ideas.md letto"
+	fi
+	msg="Progetto: $name. Data: $(date '+%F %H:%M'). N = $n (massimo, 0 va bene).
+
+Feedback index (le tue proposte passate, JSON):
+$(printf "%s\n" "$idx" | jq -c '.index[]')
+
+Preferences summary attuale:
+$(cat "$ST/preferences.md" 2>/dev/null || echo '(vuoto: primo giro)')
+
+Segnali di costo e qualità (dati calcolati da ops-suggest-signals, JSON; over = sopra soglia):
+$sigs"
+	out=$ST/last-run.jsonl
+	ran=1 rc=0
+	# HS_SUGGEST_REPLAY=FILE (tests): reuse a saved stream-json answer instead of calling Claude.
+	if [ -n "${HS_SUGGEST_REPLAY:-}" ]; then cp "$HS_SUGGEST_REPLAY" "$out.replay"; mv "$out.replay" "$out"; else
+	# Read-only: --restricted drops settings files (no inherited allow rules) and confines the file
+	# tools to the repo + the status dir; dontAsk refuses everything not allowed below.
+	# Model from the settings page (issue 085): "default" = no --model, the account decides.
+	model=$(hs-setting HS_SUGGEST_MODEL 2>/dev/null) || model=default
+	[ "$model" != default ] || model=
+	log "$name: model ${model:-default}"
+	(cd "$repo" && timeout 1800 "$AI_RUN" -p "$msg" ${model:+--model "$model"} \
+		--restricted --strict-mcp-config --disable-slash-commands --permission-mode dontAsk --add-dir /var/lib/edge-status \
+		--tools Read Grep Glob Bash \
+		--allowedTools Read Grep Glob "Bash(git log *)" "Bash(git log)" "Bash(ls *)" "Bash(ls)" "Bash(date *)" "Bash(date)" \
+		--disallowedTools "Read(./$idir/proposed/**)" "Bash(ls *proposed*)" "Bash(ls *vault*)" "Bash(ls *brain*)" "Bash(ls *secret*)" \
+		--output-format stream-json --verbose --no-session-persistence --max-budget-usd 3 \
+		--append-system-prompt "$(cat "$D/ops-suggest-prompt.md"; [ -z "$extra" ] || printf '\n\n## Project rules (%s)\n%s\n' "$name" "$extra")" \
+		< /dev/null > "$out" 2> "$ST/last-run.err") || rc=$?
+	fi
+	# Keep the run (30 days / 200 MB, issue 107) and write its redacted Log for /auto.html, even when it failed.
+	if [ "$mode" != dry ]; then
+		hs-runlog "$ST/runs" "$(date +%F-%H%M)-$name" "$out" "$ST/last-run.err" || log "$name: hs-runlog failed"
+		SLOG=${HS_SUGGEST_LOG:-/var/lib/ops-auto-log/suggest.json}
+		{ node "${HS_SUGGEST_LOGGER:-$HOME/bin/ops-auto-log}" "$out" | jq -c --arg id "$name" --argjson t "$(date +%s)" '{v: 1, checked: $t, live: false, id: $id} + .' > "$SLOG.tmp" &&
+			chmod 640 "$SLOG.tmp" && mv "$SLOG.tmp" "$SLOG"; } 2>/dev/null || rm -f "$SLOG.tmp"
+	fi
+	# 5-hour limit (429): not a failure; nothing is marked done, the next hourly round tries again.
+	if [ "$rc" != 0 ] && jq -e -s 'map(select(.type == "result" and .api_error == "usage_limit_reached")) | length > 0' "$out" > /dev/null 2>&1; then
+		log "skip: rimandate: limite delle 5 ore"; status "rimandato (limite delle 5 ore)"; exit 0
+	fi
+	[ "$mode" = dry ] || echo "$today" > "$ST/$lastfile"
+	jq -r 'select(.type=="rate_limit_event") | .rate_limit_info.unifiedWindows.seven_day // empty
+		| "\((.utilization * 100) | round) \(.resetsAt)"' "$out" 2>/dev/null | tail -1 > "$ST/usage.new" || true
+	[ -s "$ST/usage.new" ] && mv "$ST/usage.new" "$ST/usage" || rm -f "$ST/usage.new"
+	res=$(jq -rs 'map(select(.type == "result")) | last | .result // ""' "$out" 2>/dev/null) || res=""
+	[ "$rc" = 0 ] && [ -n "$res" ] || { log "$name: claude rc=$rc"; status "errore (claude rc=$rc)"; echo "ops-suggest: claude rc=$rc $(tail -c 300 "$ST/last-run.err" | tr '\n' ' ')"; exit 1; }
+	# A run that never read the Project is a failed run (issue 306): no Read/Grep/Glob in the stream, answer discarded.
+	jq -e -s '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and (.name == "Read" or .name == "Grep" or .name == "Glob"))] | length > 0' "$out" > /dev/null 2>&1 ||
+		{ log "$name: nessuna lettura, risposta scartata"; continue; }
+	# The answer: a JSON object, maybe wrapped in prose or a fence.
+	ans=$(printf "%s" "$res" | perl -0777 -ne "print \$1 if /(\\{.*\\})/s" | jq -c . 2>/dev/null) && [ -n "$ans" ] ||
+		{ log "$name: answer is not JSON"; status "errore (risposta non valida)"; echo "ops-suggest: answer is not JSON"; exit 1; }
+
+	# Validate: shape, Italian sections in order, kind and mode, (HITL) consistency, no duplicate titles.
+	valid=$(printf "%s\n" "$ans" | jq -c --argjson idx "$idx" --argjson sigs "$sigs" --arg kinds "$KINDS" --argjson n "$n" '
+		($kinds | split(" ")) as $k | [$idx.titles[]] as $seen | [$sigs[] | select(.over) | .id] as $over
+		| [(.proposals // [])[] | select(type == "object")
+		  | . as $p | ($p.body // "") as $b
+		  | (if ($p.title | type) != "string" or ($p.title | length) < 5 or ($p.title | length) > 80 or ($p.title | test("\n")) then "title"
+		     elif ($k | index($p.kind)) == null then "kind \($p.kind)"
+		     elif (["afk", "hitl"] | index($p.mode)) == null then "mode"
+		     elif ($b | type) != "string" or ($b | length) > 20000 then "body"
+		     elif (["optimization", "quality"] | index($p.kind)) != null and ($over | any(. as $i | $b | contains($i)) | not) then "no signal"
+		     elif ($b | test("(?m)^# |^## Comments")) then "body headings"
+		     elif ([$b | match("(?m)^## (Problema|Proposta|Criteri di accettazione|Piano|Esecuzione)\\s*$"; "g") | .captures[0].string]
+		           != ["Problema", "Proposta", "Criteri di accettazione", "Piano", "Esecuzione"]) then "sections"
+		     elif ($p.mode == "hitl") != ($b | test("\\(HITL\\)")) then "mode vs (HITL)"
+		     elif ($seen | index($p.title | ascii_downcase)) != null then "duplicate"
+		     else "" end) as $err
+		  | {title: $p.title, err: $err, labels: ([$p.kind, $p.mode] + (if $p.epic == true then ["epic"] else [] end)), body: $b}]
+		| reduce .[] as $p ([]; if $p.err == "" and (map(.title | ascii_downcase) | index($p.title | ascii_downcase)) != null
+			then . + [$p + {err: "duplicate in batch"}] else . + [$p] end)
+		| (map(select(.err == "")) | .[:$n]) as $ok
+		| {ok: $ok, bad: map(select(.err != "") | "\(.err): \(.title)"), extra: ((map(select(.err == "")) | length) - ($ok | length))}')
+	printf "%s\n" "$valid" | jq -r '.bad[]' | while read -r l; do log "$name: dropped $l"; done
+	log "$name: N=$n, $(printf "%s\n" "$valid" | jq '.ok | length') valid, $(printf "%s\n" "$valid" | jq '.bad | length') dropped, $(printf "%s\n" "$valid" | jq .extra) over N"
+
+	[ "$mode" = dry ] || echo "$fp" > "$ST/fingerprint.$name"
+	prefs=$(printf "%s\n" "$ans" | jq -r '.preferences // empty | strings' | cut -c1-2000 | head -c 3000)
+	if [ "$mode" = dry ]; then
+		printf "%s\n" "$valid" | jq -r '.ok[] | "=== \(.title) [\(.labels | join(", "))]\n\(.body)\n"'
+		printf '=== preferences\n%s\n' "$prefs"
+		continue
+	fi
+	[ -z "$prefs" ] || { printf '%s\n' "$prefs" > "$ST/preferences.md.tmp" && mv "$ST/preferences.md.tmp" "$ST/preferences.md"; }
+	for i in $(seq 0 $(($(printf "%s\n" "$valid" | jq '.ok | length') - 1))); do
+		body=$(printf "%s\n" "$valid" | jq -c --arg proj "$proj" ".ok[$i] | {title, desc: .body, labels} + (if \$proj == \"\" then {} else {project: \$proj} end)")
+		r=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$HOME/.secrets/tracker-suggest")" |
+			curl -sS -K - -w '\n%{http_code}' -X POST -H "Host: $HS_TS_HOST:8444" -H 'Content-Type: application/json' \
+				--data-binary "$body" http://127.0.0.1:3004/api/propose) || r="curl failed
+000"
+		code=$(printf '%s' "$r" | tail -1)
+		if [ "$code" = 201 ]; then
+			id=$(printf '%s' "$r" | sed '$d' | jq -r .id); created="$created $id"; left=$((left - 1)); pending=$((pending + 1))
+			log "$name: proposed #$id"
+		else log "$name: POST failed HTTP $code $(printf '%s' "$r" | sed '$d' | head -c 200)"; fi
+	done
+done <<EOF
+$(${HS_SUGGEST_PROJECTS:-/usr/local/bin/gateway-projects})
+EOF
+
+[ "$mode" = dry ] && exit 0
+c=$(echo $created | wc -w)
+if [ "$ran" = 0 ]; then [ "$pending" -ge "$PMAX" ] && skip "proposte in attesa al massimo per ogni Project (max $PMAX)"
+	[ "$same" = 0 ] || { echo "$today" > "$ST/$lastfile"; skip "niente di nuovo dall'ultimo giro"; }
+	skip "proposte al giorno: 0"; fi
+status "$c nuove proposte" "${created:- }"

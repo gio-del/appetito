@@ -1,0 +1,13 @@
+#!/bin/sh
+# The tailnet policy pre-opens two port ranges on the server so a new HTTPS site needs no
+# policy edit: 8440-8443 for every device, 8444-8459 for the owner's devices. tailscaled
+# (userspace mode) forwards those ports to 127.0.0.1, so whatever listens there is reachable:
+# only Caddy may (its sites carry TLS and each service's own login). Run as root by
+# device/edge/deploy; a stray listener is reported, not killed.
+set -eu
+ss -ltnpH | awk '{print $4, $6}' | while read -r addr proc; do
+	port=${addr##*:}
+	case $port in *[!0-9]*|'') continue ;; esac
+	[ "$port" -ge 8440 ] && [ "$port" -le 8459 ] || continue
+	case $proc in *'"caddy"'*) ;; *) echo "ports-check: WARNING: $addr is in the tailnet-open range 8440-8459 but not Caddy: $proc" >&2 ;; esac
+done

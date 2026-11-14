@@ -1,0 +1,20 @@
+#!/bin/sh
+# Restart tailscaled. Normally it is the runit service /etc/hs-service/tailscaled
+# (sv/tailscaled/run): `sv restart`. If it still runs unsupervised (started by an old
+# debian.sh), stop that one and enable the runit service (the one-time migration, done by
+# the deploy). Detached with setsid, so running it over SSH-via-tailnet is fine: the
+# session drops for a few seconds and reconnects. Same risk as a reboot.
+set -u
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+[ -x /etc/hs-sv/tailscaled/run ] || { echo "missing /etc/hs-sv/tailscaled/run (deploy first)" >&2; exit 1; }
+setsid sh -c '
+	if [ -e /etc/hs-service/tailscaled ]; then
+		sv restart /etc/hs-service/tailscaled
+	else
+		[ -f /run/tailscaled.pid ] && kill "$(cat /run/tailscaled.pid)" 2>/dev/null
+		pkill -x tailscaled 2>/dev/null
+		for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -x tailscaled >/dev/null || break; sleep 1; done
+		rm -f /run/tailscaled.pid
+		ln -s /etc/hs-sv/tailscaled /etc/hs-service/tailscaled
+	fi
+' </dev/null >/dev/null 2>&1 &

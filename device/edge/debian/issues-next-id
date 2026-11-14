@@ -1,0 +1,4 @@
+#!/bin/sh
+# Next free issue number (issue 087): one above every file name in issues/open, done and proposed
+# (names only, proposals are never read). Use it for every issue written by hand. Usage: issues-next-id [REPO]
+exec /usr/local/bin/node /opt/hs-tracker/issues.js --next-id "${1:-$HOME/home-server}"

@@ -1,0 +1,13 @@
+#!/bin/sh
+# hs-on-android (issue 569, epic 567): exit 0 when this machine is Android (the phone's Debian chroot), 1 on a
+# normal Debian/Ubuntu. The one place that decides it: scripts and runit services that behave differently
+# (userspace Tailscale, android-sh, wake lock, per-uid firewall) ask this, never guess on their own.
+# Inside the chroot /system/build.prop is not visible, but Android's own kernel and its /proc mounts are.
+# HS_ANDROID_ROOT: prefix for the files read (tests build a fake tree).
+R=${HS_ANDROID_ROOT:-}
+[ -n "${HS_ON_ANDROID:-}" ] && [ -z "$R" ] && { [ "$HS_ON_ANDROID" = 1 ]; exit; }
+# The chroot sits under /data/local/debian; the kernel's version string carries "android" on Android kernels.
+grep -qi android "$R/proc/version" 2>/dev/null && exit 0
+[ -e "$R/system/build.prop" ] && exit 0
+[ -e "$R/data/adb" ] && exit 0
+exit 1

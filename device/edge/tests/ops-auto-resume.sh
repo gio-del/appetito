@@ -78,6 +78,18 @@ check "handover: tree clean" "$(git status --porcelain -- . ':!issues' | grep -c
 check "handover: next issue worked" "$(tail -1 "$H/prompts" | grep -c 'issues/open/201-x.md')" 1
 check "handover: interrupted dropped" "$([ -e "$ST/interrupted" ] && echo yes || echo no)" no
 
+# Timeout (rc 124, issue 574): exits 0; a real error (rc 1) still exits 1.
+cat > "$H/.local/bin/claude" <<'EOF'
+#!/bin/sh
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.1}'
+exit "$(cat "$HOME/mode")"
+EOF
+echo 124 > "$H/mode"; rc=0; "$H/bin/ops-auto" > /dev/null 2>&1 || rc=$?
+check "timeout: ops-auto exits 0" "$rc" 0
+check "timeout: line in the log" "$(grep -c 'interrotto dal timeout' "$ST/ops-auto.log")" 1
+echo 1 > "$H/mode"; rc=0; "$H/bin/ops-auto" > /dev/null 2>&1 || rc=$?
+check "real error: ops-auto exits 1" "$rc" 1
+
 rm -f "$H/hs-run.calls"; echo $(($(date +%s) - 5)) > "$ST/limited"
 "$H/bin/ops-auto-request"; sleep 1
 check "no wake without interrupted" "$([ -e "$H/hs-run.calls" ] && echo yes || echo no)" no

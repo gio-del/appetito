@@ -1,0 +1,10 @@
+# Known remedies hs-monitor tries before opening an issue (issue 116).
+# FINGERPRINT-PREFIX | ACTION [ARG] | MAX ATTEMPTS | WINDOW (hours)
+# Actions are a closed set implemented in hs-monitor (REMEDIES): sv-restart, disk-clean,
+# syncthing-rescan FOLDER. Never destructive: restarts, rescans, regenerable caches only.
+# sv-restart skips config errors (config errors: need code, an issue) and ops, brain,
+# tailscaled, cron. The issue opens when the attempts in the window are used up, saying what was tried.
+svc- | sv-restart | 1 | 6
+url- | sv-restart | 1 | 6
+disk-root | disk-clean | 1 | 24
+backup-offsite | syncthing-rescan vw-backup | 1 | 24

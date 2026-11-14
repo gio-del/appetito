@@ -1,0 +1,79 @@
+#!/bin/sh
+# owner-notify (gio's cron, every 15 min; issue 286): push to the owner's phone (hs-notify) for what waits for them.
+# Reads only /var/lib/edge-status/{proposals,release-gate}.json and issues/open/ (never the vault, never proposed/).
+# - Immediate, once per event: an open issue with `Blocked on: user` and an unticked `(HITL)` step (it stops ops-auto);
+#   a Project release `announced` (it merges at the exit time unless "Rimanda").
+# - Summary, when the set of things waiting changed: new proposals, release `serve-owner`, HITL issues already notified.
+# Texts: numbers and Project names only. State in $ST (one key per event, never repeated); cap per day: HS_OWNER_NOTIFY_MAX.
+# env (tests): HS_NOTIFY, HS_SETTING_CMD, HS_STATUS_DIR, HS_ISSUES_DIR, HS_OWNER_NOTIFY_STATE, HS_NOW
+set -eu
+export PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C
+N=${HS_NOTIFY:-hs-notify}
+SET=${HS_SETTING_CMD:-hs-setting}
+SD=${HS_STATUS_DIR:-/var/lib/edge-status}
+ISS=${HS_ISSUES_DIR:-$HOME/home-server/issues/open}
+ST=${HS_OWNER_NOTIFY_STATE:-$HOME/.local/state/owner-notify}
+[ -r /etc/home-server.env ] && . /etc/home-server.env
+BASE=https://${HS_TS_HOST:-edge.invalid}:8444 # tracker; HS_TS_HOST from /etc/home-server.env (issue 309)
+mkdir -p "$ST"
+today=$(date -d "@${HS_NOW:-$(date +%s)}" +%F)
+max=$($SET HS_OWNER_NOTIFY_MAX 2>/dev/null || echo 4)
+sent=0; [ "$(cat "$ST/day" 2>/dev/null)" = "$today" ] && sent=$(cat "$ST/count" 2>/dev/null || echo 0)
+send() { # send KEY TITLE TEXT URGENT|- CLICK [Label=URL]... (view actions only, max 3; issue 309)
+	[ "$sent" -lt "$max" ] || return 1
+	ti=$2; tx=$3; ur=$4; ck=$5; shift 5
+	args="--click"
+	[ "$ur" = urgent ] && args="--urgent --click"
+	case $# in
+	0) $N $args "$ck" "$ti" "$tx" || return 1 ;;
+	1) $N $args "$ck" --action "$1" "$ti" "$tx" || return 1 ;;
+	2) $N $args "$ck" --action "$1" --action "$2" "$ti" "$tx" || return 1 ;;
+	*) $N $args "$ck" --action "$1" --action "$2" --action "$3" "$ti" "$tx" || return 1 ;;
+	esac
+	sent=$((sent + 1)); echo "$today" > "$ST/day"; echo "$sent" > "$ST/count"
+}
+# HITL issues (immediate)
+hitl=""
+for f in "$ISS"/*.md; do
+	[ -e "$f" ] || continue
+	grep -q '^Blocked on: user' "$f" && grep -q '^- \[ \] (HITL)' "$f" || continue
+	id=$(basename "$f" | sed 's/^\([0-9]*\)-.*/\1/')
+	hitl="$hitl $id"
+	[ -e "$ST/hitl-$id" ] && continue
+	if send "hitl-$id" "Serve una tua risposta" "La issue $id aspetta un tuo passo: apri Issue → Rispondi." urgent "$BASE/#$id" "Rispondi=$BASE/#$id/rispondi" "Tutte le issue=$BASE/"; then touch "$ST/hitl-$id"; fi
+done
+# Releases
+rel=""
+if [ -r "$SD/release-gate.json" ]; then
+	for p in $(jq -r '.projects // {} | to_entries[] | select(.value.status=="announced") | .key + "@" + (.value.version // "?")' "$SD/release-gate.json"); do
+		k=$(printf '%s' "$p" | tr -c 'A-Za-z0-9.@\n' _)
+		[ -e "$ST/rel-$k" ] && continue
+		relurl=$(jq -r --arg n "${p%@*}" ".projects[\$n].url // \"\"" "$SD/release-gate.json"); case $relurl in https://github.com/*) relurl="Changelog=$relurl" ;; *) relurl="" ;; esac
+		if send "rel-$k" "Release in arrivo" "${p%@*} ${p#*@}: esce tra circa 24 ore se non la rimandi (Release nel tracker)." urgent "$BASE/projects.html" "Rimanda=$BASE/projects.html" $relurl; then touch "$ST/rel-$k"; fi
+	done
+	rel=$(jq -r '.projects // {} | to_entries[] | select(.value.status=="serve-owner") | .key + "@" + (.value.version // "?")' "$SD/release-gate.json" | tr -c 'A-Za-z0-9.@\n' _ | sort | paste -sd, -)
+fi
+# Summary: proposals + serve-owner releases; sent again only when the content changed
+prop=0
+[ -r "$SD/proposals.json" ] && prop=$(jq -r '(.pending // "0") | tostring | capture("^(?<n>[0-9]+)").n // "0"' "$SD/proposals.json" 2>/dev/null || echo 0)
+q=0 # brain questions (label question, issue 294) are in `pending` too: shown apart
+[ -r "$SD/proposals.json" ] && q=$(jq -r '(.questions // 0) | tonumber? // 0' "$SD/proposals.json" 2>/dev/null || echo 0)
+[ "$q" -gt "$prop" ] && q=$prop
+prop=$((prop - q))
+nrel=0; [ -n "$rel" ] && nrel=$(printf '%s\n' "$rel" | tr ',' '\n' | wc -l)
+total=$((prop + q + nrel))
+sig="p$prop q$q r$rel"
+if [ "$total" -eq 0 ]; then rm -f "$ST/summary"
+elif [ "$(cat "$ST/summary" 2>/dev/null)" != "$sig" ]; then
+	parts=""
+	[ "$prop" -gt 0 ] && parts="$prop proposte"
+	[ "$q" -gt 0 ] && parts="${parts:+$parts, }$q domande del brain"
+	[ "$nrel" -gt 0 ] && parts="${parts:+$parts, }$nrel release da unire"
+	if send summary "$total cose ti aspettano" "$parts. Apri il tracker per decidere." - "$BASE/" "Tracker=$BASE/"; then echo "$sig" > "$ST/summary"; fi
+fi
+# forget state of issues no longer waiting, so a later return notifies again
+for f in "$ST"/hitl-*; do
+	[ -e "$f" ] || continue
+	case " $hitl " in *" ${f##*/hitl-} "*) ;; *) rm -f "$f" ;; esac
+done
+exit 0

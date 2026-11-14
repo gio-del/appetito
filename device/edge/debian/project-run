@@ -1,0 +1,75 @@
+#!/bin/sh
+# Build/test of a Project for ops-auto without running its code as $HS_USER (issue 187). Run as root:
+#   sudo project-run NAME WORKTREE CMD [ARG...]
+# WORKTREE is a project-worktree path ($HS_WORK_DIR/NAME-N). The COMMITTED state (HEAD) is exported with
+# git archive into a fresh temp dir and CMD runs there as the Project's app user (column 3 of
+# /etc/hs-projects; the no-login user hs-build, uid 902, when the Project has no app), with
+# setpriv --no-new-privs, no supplementary groups, a minimal environment (no HOME of gio, no
+# ~/.secrets: the worktree lives in a 0700 tree the run user cannot enter). Uncommitted edits are
+# not tested: commit first. Exit status is CMD's (124 on the timeout, HS_RUN_TIMEOUT s, default 900).
+# HS_PROJECTS_FILE and HS_WORK_DIR override /etc/hs-projects and ~$HS_USER/.local/state/ops-auto/work.
+set -eu
+die() { echo "project-run: $*" >&2; exit 2; }
+[ "$(id -u)" -eq 0 ] || die "va eseguito come root (sudo project-run ...)"
+[ $# -ge 3 ] || die "uso: project-run NAME WORKTREE CMD [ARG...]"
+name=$1 wt=$2
+shift 2
+[ -r /etc/home-server.env ] && . /etc/home-server.env
+: "${HS_USER:=gio}"
+case $name in '' | *[!A-Za-z0-9_-]* | -*) die "nome Project non valido: $name" ;; esac
+LIST=${HS_PROJECTS_FILE:-/etc/hs-projects}
+app=$(awk -F'|' -v n="$name" '/^[ \t]*#/ {next} { a=$1; gsub(/[ \t]/, "", a); if (a == n) { s=$3; gsub(/[ \t]/, "", s); print s; found=1; exit } } END { if (!found) exit 1 }') < "$LIST" \
+	|| die "Project $name non in $LIST"
+home=$(getent passwd "$HS_USER" | cut -d: -f6)
+WORK=${HS_WORK_DIR:-$home/.local/state/ops-auto/work}
+real=$(realpath -e "$wt" 2> /dev/null) || die "worktree inesistente: $wt"
+case $real in "$WORK/$name"-*[!0-9]* | "$WORK/$name"-) die "worktree non valido: $wt" ;; "$WORK/$name"-[0-9]*) ;; *) die "worktree fuori da $WORK/$name-N: $wt" ;; esac
+[ -e "$real/.git" ] || die "$real non è un worktree git"
+if [ "$app" = - ] || [ -z "$app" ]; then
+	user=hs-build
+	id "$user" > /dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --uid 902 --user-group "$user"
+else
+	user=$app
+	# the app user may be the service name without dashes (studio-app runs as studioapp, issue 462)
+	id "$user" > /dev/null 2>&1 || user=$(printf %s "$app" | tr -d -)
+fi
+id "$user" > /dev/null 2>&1 || die "utente $user non esiste"
+uid=$(id -u "$user")
+[ "$uid" -ne 0 ] && [ "$(id -u "$HS_USER")" != "$uid" ] || die "utente $user non ammesso"
+# On disk, not in /tmp: /tmp is a 1 GB tmpfs, and a full ./ci (Go build and module caches plus
+# two node_modules) fills it (ENOSPC, issue 234). HS_RUN_TMP overrides.
+run=$(mktemp -d "${HS_RUN_TMP:-/var/tmp}/project-run.XXXXXX")
+trap 'rm -rf "$run"' EXIT INT TERM
+chown "$user" "$run"
+chmod 700 "$run"
+priv() { setpriv --reuid "$uid" --regid "$(id -g "$user")" --clear-groups --no-new-privs "$@"; }
+mkdir "$run/src"
+chown "$user" "$run/src"
+runuser -u "$HS_USER" -- git -C "$real" archive --format=tar HEAD | priv tar -x --no-same-owner -C "$run/src"
+cd "$run/src"
+# Tools installed by project-tools for this Project (issue 231), read-only, ahead of the system ones.
+tp=
+for b in "${HS_TOOLS_ROOT:-/opt/hs-tools}/$name"/*/bin; do [ -d "$b" ] && tp=$tp$b:; done
+# The command runs in its own session (id written to a root-owned file), so that what it leaves
+# behind (Chromium still writing its profile, a dev server) can be killed before the cleanup (issue 552).
+sidf=$(mktemp)
+cleanup() {
+	if [ -s "$sidf" ]; then
+		sid=$(cat "$sidf")
+		pkill -KILL -s "$sid" 2> /dev/null || true
+	fi
+	rm -f "$sidf"
+	n=0
+	until rm -rf "$run" 2> /dev/null || [ ! -e "$run" ]; do
+		n=$((n + 1))
+		[ "$n" -ge 5 ] && { echo "project-run: non riesco a togliere $run" >&2; return 0; }
+		sleep 1
+	done
+}
+trap cleanup EXIT INT TERM
+rc=0
+setsid -w sh -c 'echo $$ > "$1"; shift; exec "$@"' sh "$sidf" \
+	setpriv --reuid "$uid" --regid "$(id -g "$user")" --clear-groups --no-new-privs \
+	env -i PATH=${tp}/usr/local/go/bin:/opt/go/bin:/usr/local/bin:/usr/bin:/bin HOME="$run" TMPDIR="$run" LANG=C.UTF-8 CI=1 \
+	timeout "${HS_RUN_TIMEOUT:-900}" "$@" || rc=$?
+exit "$rc"

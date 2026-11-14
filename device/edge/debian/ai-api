@@ -1,0 +1,57 @@
+#!/bin/sh
+# ai-api PROVIDER ARGS...: text-only API backend of ai-run (issue 263). PROVIDER = anthropic | openai | gemini.
+# Reads the headless CLI's arguments (-p PROMPT, --model M, --append-system-prompt S; the rest is ignored) and
+# prints stream-json lines in the shape the callers parse: one `assistant` event and one `result` event.
+# Profile = ~/.secrets/ai-PROVIDER.conf (mode 600): KEY=... (required), URL=... (base URL; for `openai` it can be
+# any OpenAI-compatible server such as vLLM or llama.cpp, KEY may then be any word), MODEL=... (default model).
+# The key goes to curl through a config on stdin: never on a command line, in a log or in the output.
+set -eu
+prov=$1; shift
+prompt= model= system=
+while [ $# -gt 0 ]; do
+	case $1 in
+	-p) prompt=$2; shift ;;
+	--model) model=$2; shift ;;
+	--append-system-prompt) system=$2; shift ;;
+	esac
+	shift
+done
+conf=${AI_API_CONF:-$HOME/.secrets/ai-$prov.conf}
+[ -r "$conf" ] || { echo "ai-api: no profile $conf" >&2; exit 2; }
+KEY= URL= MODEL=
+while IFS='=' read -r k v; do
+	case $k in KEY) KEY=$v ;; URL) URL=$v ;; MODEL) MODEL=$v ;; esac
+done < "$conf"
+[ -n "$KEY" ] || { echo "ai-api: KEY missing in the $prov profile" >&2; exit 2; }
+model=${model:-$MODEL}
+[ -n "$model" ] || { echo "ai-api: no model (MODEL in the profile or --model)" >&2; exit 2; }
+case $prov in
+anthropic)
+	url=${URL:-https://api.anthropic.com}/v1/messages; hdr="x-api-key: $KEY"
+	body=$(jq -n --arg m "$model" --arg p "$prompt" --arg s "$system" \
+		'{model:$m, max_tokens:4096, messages:[{role:"user",content:$p}]} + (if $s=="" then {} else {system:$s} end)')
+	path='[.content[]? | select(.type=="text") | .text] | join("")' ;;
+openai)
+	url=${URL:-https://api.openai.com}/v1/chat/completions; hdr="Authorization: Bearer $KEY"
+	body=$(jq -n --arg m "$model" --arg p "$prompt" --arg s "$system" \
+		'{model:$m, messages:((if $s=="" then [] else [{role:"system",content:$s}] end) + [{role:"user",content:$p}])}')
+	path='.choices[0].message.content // ""' ;;
+gemini)
+	url=${URL:-https://generativelanguage.googleapis.com}/v1beta/models/$model:generateContent; hdr="x-goog-api-key: $KEY"
+	body=$(jq -n --arg p "$prompt" --arg s "$system" \
+		'{contents:[{role:"user",parts:[{text:$p}]}]} + (if $s=="" then {} else {systemInstruction:{parts:[{text:$s}]}} end)')
+	path='[.candidates[0].content.parts[]? | .text] | join("")' ;;
+*) echo "ai-api: unknown provider $prov" >&2; exit 2 ;;
+esac
+bf=$(mktemp); trap 'rm -f "$bf"' EXIT
+printf '%s' "$body" > "$bf"
+out=$(printf 'url = "%s"\nheader = "Content-Type: application/json"\nheader = "%s"\n' "$url" "$hdr" |
+	curl -sS --max-time 280 -K - --data-binary "@$bf") || { echo "ai-api: request to $prov failed" >&2; exit 1; }
+text=$(printf '%s' "$out" | jq -r "$path" 2>/dev/null) || text=
+if [ -z "$text" ]; then
+	echo "ai-api: $prov answered without text: $(printf '%s' "$out" | jq -r '.error.message // .error // empty' 2>/dev/null | head -c 200)" >&2
+	jq -nc '{type:"result",is_error:true,result:""}'
+	exit 1
+fi
+jq -nc --arg t "$text" '{type:"assistant",message:{content:[{type:"text",text:$t}]}}'
+jq -nc --arg t "$text" '{type:"result",is_error:false,result:$t}'

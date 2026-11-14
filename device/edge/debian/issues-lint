@@ -1,0 +1,5 @@
+#!/bin/sh
+# Shape-rule checker (issue 034, issues/README.md "Shape rules"): prints the open issues that break
+# a rule as JSON ([{id, rule, fp, msg}]). Same checks the tracker shows in the drawer
+# (/opt/hs-tracker/issues.js); hs-monitor turns them into monitor issues. Usage: issues-lint [REPO]
+exec /usr/local/bin/node /opt/hs-tracker/issues.js --lint "${1:-$HOME/home-server}"

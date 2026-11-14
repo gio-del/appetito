@@ -1,0 +1,11 @@
+#!/bin/sh
+# hs-security-enabled (issue 488, epic 476): exit 0 when "Security enabled" is on, 1 when off.
+# One parameter, HS_SECURITY_ENABLED in /etc/home-server.env (never a web setting: it is security
+# relevant). Missing or anything but the exact value "false" = true (secure by default for whoever
+# installs); the owner's server sets false in its home-server.env. `hs-security-enabled --print`
+# prints true|false. Scripts that behave differently ask this one place, never read the variable.
+ENVF=${HS_SETTINGS_ENV:-/etc/home-server.env}
+v=$(sed -n 's/^HS_SECURITY_ENABLED=//p' "$ENVF" 2>/dev/null | tail -1 | tr -d "\"' \r")
+[ "$v" = false ] && r=false || r=true
+[ "${1:-}" = --print ] && { echo "$r"; exit 0; }
+[ "$r" = true ]

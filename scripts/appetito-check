@@ -37,9 +37,17 @@ HS_SECRETS_ENV=$envs sh "$HS_SECRETS_CMD" dir "$dir" || exit 1
 
 # 3. Attribuzione all'AI.
 # I test dell'elenco stesso contengono apposta frasi di attribuzione come dati di prova: unica eccezione.
+# I file che definiscono la regola (appetito/rule-files, per nome e testo fisso) non contano per le sole righe
+# della regola; ogni altra loro riga e' controllata.
+rules=${HS_APPETITO_RULE_FILES:-$repo/appetito/rule-files}
 while IFS= read -r f; do
   case $f in device/edge/tests/attribution.sh|device/edge/tests/projects-publish.sh) continue ;; esac
-  if ! out=$(sh "$attr" text "$dir/$f" 2>&1); then
+  src=$dir/$f
+  if [ -f "$rules" ]; then
+    grep -v '^[[:space:]]*#' "$rules" | sed -n "s/^$(printf '%s' "$f" | sed 's|[][\.*^$/]|\\&|g') | //p" > "$tmp/skip"
+    if [ -s "$tmp/skip" ]; then grep -vF -f "$tmp/skip" "$dir/$f" > "$tmp/filtered" || true; src=$tmp/filtered; fi
+  fi
+  if ! out=$(sh "$attr" text "$src" 2>&1); then
     echo "$f: $out"; exit 1
   fi
 done < "$tmp/files"

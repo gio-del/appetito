@@ -1,0 +1,80 @@
+#!/bin/sh
+# Install and configure ntfy (push notifications, issue 230), run as root by device/edge/deploy.
+# Optional service, off by default: `sudo ntfy-setup --enable` installs it and links it into
+# /etc/hs-service/; without --enable this does nothing unless the service is already enabled (then it
+# re-applies binary, config and users: idempotent). Disabled = no process, port, card or Caddy site.
+#   - Binary at the pinned official release (PIN_*, sha256 of the tarball) in /opt/ntfy, root-owned.
+#   - User ntfy (uid 904, no login), data /var/lib/ntfy (700), 127.0.0.1:3007, Caddy on :8448.
+#   - Access: deny-all by default. User $HS_USER (admin; password in ~/.secrets/ntfy, Vaultwarden
+#     homelab/ntfy via `rotate-secrets ntfy`) and user hs, write-only on topic hs-edge, whose token is
+#     in ~/.secrets/ntfy-token (read by hs-notify).
+# Upgrade = bump PIN_*, deploy. Usage: ntfy-setup [--enable]
+set -eu
+. "${HS_ENV_FILE:-/etc/home-server.env}"
+PIN_VERSION=2.37.2
+PIN_SHA256=d440e696755f2032592ba6456995f7a9f04b8c47d288d2e3d2cffbc3d53831f6  # ntfy_<v>_linux_arm64.tar.gz
+# Fixed uid below 1000 (Android drops the network of uids >= 10000): brain 900, sumisura 901, hs-build 902, library 903.
+NTFY_ID=904
+TOPIC=hs-edge
+O=${HS_NTFY_OPT:-/opt/ntfy} L=${HS_NTFY_DATA:-/var/lib/ntfy} C=${HS_NTFY_CONF:-/etc/ntfy}
+SV=${HS_SERVICE_DIR:-/etc/hs-service}/ntfy
+OH=$(getent passwd "$HS_USER" | cut -d: -f6)
+SEC=$OH/.secrets
+[ "${HS_TEST_UID:-$(id -u)}" = 0 ] || { echo "run as root (sudo ntfy-setup)" >&2; exit 1; }
+ENABLE=; [ "${1:-}" = --enable ] && ENABLE=1
+[ -n "$ENABLE" ] || [ -L "$SV" ] || exit 0
+
+id ntfy >/dev/null 2>&1 || { useradd --system --home-dir "$L" --no-create-home --shell /usr/sbin/nologin --uid $NTFY_ID --user-group ntfy; echo "created user ntfy"; }
+install -d -m 700 -o ntfy -g ntfy "$L"
+install -d -m 755 "$C"
+restart=
+if [ "$(cat "$O/VERSION" 2>/dev/null)" != "$PIN_VERSION" ]; then
+	w=$(mktemp -d /var/tmp/ntfy.XXXXXX); trap 'rm -rf "$w"' EXIT
+	curl -fsSL -o "$w/n.tgz" "https://github.com/binwiederhier/ntfy/releases/download/v$PIN_VERSION/ntfy_${PIN_VERSION}_linux_arm64.tar.gz"
+	echo "$PIN_SHA256  $w/n.tgz" | sha256sum -c --quiet
+	mkdir "$w/x"; tar -xzf "$w/n.tgz" -C "$w/x" --no-same-owner --strip-components=1
+	[ "$("$w/x/ntfy" --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -n 1)" = "$PIN_VERSION" ] || { echo "ntfy-setup: version mismatch in the archive" >&2; exit 1; }
+	install -d -m 755 "$O.new"; install -m 755 "$w/x/ntfy" "$O.new/ntfy"; echo "$PIN_VERSION" > "$O.new/VERSION"
+	chown -R root:root "$O.new"; rm -rf "$O.old"; [ -d "$O" ] && mv "$O" "$O.old"; mv "$O.new" "$O"; rm -rf "$O.old"
+	echo "installed ntfy $PIN_VERSION"; restart=1
+fi
+
+cat > "$C/server.yml.new" <<YML
+# Rendered by ntfy-setup (issue 230): edit the script, not this file.
+base-url: https://$HS_TS_HOST:8448
+listen-http: 127.0.0.1:3007
+behind-proxy: true
+cache-file: $L/cache.db
+cache-duration: 24h
+auth-file: $L/user.db
+auth-default-access: deny-all
+enable-login: true
+enable-signup: false
+YML
+if ! cmp -s "$C/server.yml.new" "$C/server.yml" 2>/dev/null; then mv "$C/server.yml.new" "$C/server.yml"; echo "updated $C/server.yml"; restart=1
+else rm -f "$C/server.yml.new"; fi
+
+if [ ! -L "$SV" ]; then ln -s /etc/hs-sv/ntfy "$SV"; echo "enabled service ntfy"; restart=
+elif [ -n "$restart" ]; then sv restart "$SV" >/dev/null; echo "restarted ntfy"; fi
+
+# The server creates the user database on its first start.
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ -s "$L/user.db" ] && break; sleep 1; done
+[ -s "$L/user.db" ] || { echo "ntfy-setup: $L/user.db not created, is the service running?" >&2; exit 1; }
+nt() { sub=$1; shift; setpriv --reuid=ntfy --regid=ntfy --init-groups --no-new-privs "$O/ntfy" "$sub" -c "$C/server.yml" "$@"; }
+users=$(nt user list 2>/dev/null | sed -n 's/^user \([^ ]*\) .*/\1/p')
+gen() { openssl rand -base64 48 | tr -d '/+=\n' | cut -c1-"$1"; }
+install -d -m 700 -o "$HS_USER" -g "$HS_USER" "$SEC"
+# Owner login: created once, the copy in ~/.secrets/ntfy is the owner's (rotate-secrets changes both).
+if ! echo "$users" | grep -qx "$HS_USER"; then
+	pw=$(gen 32)
+	export NTFY_PASSWORD=$pw; nt user add --role=admin "$HS_USER" >/dev/null; unset NTFY_PASSWORD
+	(umask 077; printf '%s' "$pw" > "$SEC/ntfy"); chown "$HS_USER:$HS_USER" "$SEC/ntfy"; echo "created ntfy user $HS_USER (password in $SEC/ntfy)"
+fi
+# Publisher for the server's own scripts: write-only on one topic, token instead of a password.
+echo "$users" | grep -qx hs || { NTFY_PASSWORD=$(gen 32); export NTFY_PASSWORD; nt user add hs >/dev/null; unset NTFY_PASSWORD; echo "created ntfy user hs"; }
+nt access hs "$TOPIC" write-only >/dev/null
+if [ ! -s "$SEC/ntfy-token" ]; then
+	tok=$(nt token add --label hs-edge hs | grep -o 'tk_[a-z0-9]*' | head -n 1)
+	[ -n "$tok" ] || { echo "ntfy-setup: token not created" >&2; exit 1; }
+	(umask 077; printf '%s' "$tok" > "$SEC/ntfy-token"); chown "$HS_USER:$HS_USER" "$SEC/ntfy-token"; echo "created $SEC/ntfy-token"
+fi

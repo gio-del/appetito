@@ -7,6 +7,7 @@ const COLS = [
   ['proposed', 'Proposte'], ['backlog', 'Backlog'], ['todo', 'Da fare'], ['in-progress', 'In corso'], ['blocked', 'Bloccate'], ['done', 'Fatte'],
 ];
 const COL_NAME = Object.fromEntries(COLS);
+const BOARD_COLS = COLS.filter(([c]) => c !== 'proposed'); // issue 505: «Proposte» lives in «Ti aspetta»
 const PRIOS = [['urgent', 'Urgente'], ['high', 'Alta'], ['medium', 'Media'], ['low', 'Bassa'], ['none', 'Nessuna']];
 const PRIO_NAME = Object.fromEntries(PRIOS);
 const PRIO_RANK = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
@@ -15,7 +16,7 @@ const REJECT_REASONS = ['non mi interessa', 'non ora', 'troppo complessa', 'già
 const MOBILE = matchMedia('(max-width: 760px)');
 
 const $ = s => document.querySelector(s);
-const S = { staleAfter: 30, filtersOpen: localGet('filtersOpen') === '1', stale: new URLSearchParams(location.search).has('stale'), hideChildren: localGet('hideChildren') === '1', pickTab: new URLSearchParams(location.search).has('label'), issues: [], q: '', prio: '', entry: '', label: (new URLSearchParams(location.search).get('label') || '').slice(0, 40), tab: COLS.map(([c]) => c).find(c => c === new URLSearchParams(location.search).get('tab')) || localGet('tab') || 'in-progress', open: null, detail: null, project: '', pj: { projects: {} } };
+const S = { questions: 0, waitOpen: new URLSearchParams(location.search).get('tab') === 'proposed', tabChecked: false, staleAfter: 30, filtersOpen: localGet('filtersOpen') === '1', stale: new URLSearchParams(location.search).has('stale'), hideChildren: localGet('hideChildren') === '1', pickTab: new URLSearchParams(location.search).has('label'), issues: [], q: '', prio: '', entry: '', label: (new URLSearchParams(location.search).get('label') || '').slice(0, 40), tab: COLS.map(([c]) => c).find(c => c === new URLSearchParams(location.search).get('tab')) || localGet('tab') || 'in-progress', open: null, detail: null, project: '', pj: { projects: {} } };
 
 function localGet(k) { try { return localStorage.getItem('tracker.' + k); } catch { return null; } }
 function localSet(k, v) { try { localStorage.setItem('tracker.' + k, v); } catch { /* private mode */ } }
@@ -175,8 +176,8 @@ function parentChip(i) {
 function blockedChip(i) {
   if (!i.blockedOn) return null;
   const m = /^issues?\s+(#?\d{3,}(?:\s*(?:,|&|and|e)\s*#?\d{3,})*)\s*(?:\(.*\))?$/i.exec(i.blockedOn.trim());
-  if (!m) return h('span', { class: 'blocked-on', tip: 'Bloccata: la manutenzione automatica non la prende finché non si sblocca' }, '⛔ ' + i.blockedOn);
-  return h('span', { class: 'blocked-on', tip: 'La manutenzione automatica la prende quando queste issue sono chiuse' }, '⛔ Bloccata da ', m[1].match(/\d{3,}/g).map(id =>
+  if (!m) return h('span', { class: 'blocked-on', tip: 'Bloccata: la manutenzione automatica non la prende finché non si sblocca' }, icon('lock'), i.blockedOn);
+  return h('span', { class: 'blocked-on', tip: 'La manutenzione automatica la prende quando queste issue sono chiuse' }, icon('lock'), 'Bloccata da ', m[1].match(/\d{3,}/g).map(id =>
     h('button', { class: 'parent-chip', title: 'Apri la issue che la blocca',
       onclick: e => { e.stopPropagation(); openIssue(id); } }, '#' + id)));
 }
@@ -188,7 +189,7 @@ function ownerChip(i) {
 function notBeforeChip(i, full) {
   if (!i.notBefore) return null;
   const [y, m, d] = i.notBefore.split('-');
-  return h('span', { class: 'not-before', tip: `La manutenzione automatica la prende dal ${d}/${m}` }, full ? `⏳ ${d}/${m}/${y}` : `⏳ dal ${d}/${m}`);
+  return h('span', { class: 'not-before', tip: `La manutenzione automatica la prende dal ${d}/${m}` }, full ? `⏳ ${d}/${m}/${y}` : [icon('clock'), `dal ${d}/${m}`]);
 }
 // Relations in the drawer (issue 058): one chip per issue, opening it; optional × to remove the link.
 function linkChips(list, onRemove) {
@@ -269,23 +270,33 @@ function pjCard(i) {
       i.updated ? h('span', { tip: 'Aggiornata ' + new Date(i.updated).toLocaleString('it-IT') }, relTime(i.updated)) : null));
 }
 
+// Card state line (issue 505): what the card waits for, with an always visible icon; «Bloccata da #N» keeps its own chips.
+function stateLine(i) {
+  if (i.column === 'done' || i.column === 'proposed') return null;
+  const b = blockedChip(i);
+  if (/^user\b/i.test(i.blockedOn || '')) return h('span', { class: 'stl bad', tip: 'Aspetta una tua risposta o un tuo passo' }, icon('help'), 'aspetta te');
+  if (b) return h('span', { class: 'stl bad' }, b);
+  if (i.column === 'in-progress') return h('span', { class: 'stl warn', tip: 'La manutenzione automatica o Claude ci sta lavorando' }, icon('clock'), 'in corso');
+  return null;
+}
+
 function card(i) {
   const el = h('article', { class: 'card', tabindex: 0, draggable: MOBILE.matches ? null : 'true','data-id': i.id,
     onclick: () => openIssue(i.id), onkeydown: e => { if (e.key === 'Enter') openIssue(i.id); } },
-  h('div', { class: 'card-top' }, statusIcon(i.column), `#${i.id}`, prioIcon(i.priority)),
+  h('div', { class: 'card-top' }, `#${i.id}`, prioIcon(i.priority)),
   h('div', { class: 'card-title' }, i.title),
   h('div', { class: 'card-meta' },
+    stateLine(i),
     sourceBadge(i),
     projectBadge(i),
     staleBadge(i),
     parentChip(i),
-    blockedChip(i),
     notBeforeChip(i),
     ownerChip(i),
     i.labels.map(l => labelChip(l)),
-    i.children?.total ? h('span', { class: 'subs' }, '⑂', progress(i.children, 'sotto-issue chiuse')) : null,
+    i.children?.total ? h('span', { class: 'subs' }, icon('branch'), progress(i.children, 'sotto-issue chiuse')) : null,
     progress(i.tasks),
-    i.comments ? h('span', { tip: 'Commenti' }, '💬 ' + i.comments) : null,
+    i.comments ? h('span', { class: 'ncom', tip: 'Commenti' }, icon('chat'), String(i.comments)) : null,
     h('span', { tip: 'Aggiornata ' + new Date(i.updated).toLocaleString('it-IT') }, relTime(i.updated))));
   el.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', i.id); el.classList.add('dragging'); });
   el.addEventListener('dragend', () => el.classList.remove('dragging'));
@@ -297,20 +308,49 @@ function sortIssues(a, b, col) {
   return PRIO_RANK[a.priority] - PRIO_RANK[b.priority] || b.updated.localeCompare(a.updated);
 }
 
+// «Ti aspetta» (issue 505): what only the owner can decide, above the board: open questions (the Domande page)
+// and the proposals (Approva/Scarta in the drawer). Hidden when there is nothing.
+function renderWait(shown, ext) {
+  const box = $('#wait'), props = ext ? [] : S.issues.filter(i => i.column === 'proposed' && visible(i)).sort((a, b) => b.updated.localeCompare(a.updated));
+  const nq = ext ? 0 : S.questions;
+  box.replaceChildren();
+  box.hidden = !nq && !props.length;
+  if (box.hidden) return;
+  box.append(h('h2', null, 'Ti aspetta'));
+  if (nq) box.append(h('a', { class: 'wait-row', href: 'domande.html', id: 'wait-q' }, h('span', { class: 'badge b-bad' }, String(nq)),
+    h('span', { class: 't' }, h('b', null, 'Domande per te'), h('small', null, 'Una alla volta, con la risposta già pronta')), icon('chevron', 'go')));
+  if (props.length) {
+    const open = S.waitOpen;
+    box.append(h('button', { class: 'wait-row', id: 'wait-p', 'aria-expanded': String(open), onclick: () => { S.waitOpen = !S.waitOpen; renderBoard(); } },
+      h('span', { class: 'badge b-warn' }, String(props.length)),
+      h('span', { class: 't' }, h('b', null, 'Proposte da decidere'), h('small', null, 'Approva o scarta')), icon('chevron', 'go')));
+    if (open) box.append(h('div', { class: 'wait-list' }, props.map(i => h('button', { class: 'wait-prop', 'data-id': i.id, onclick: () => openIssue(i.id) },
+      h('span', { class: 'n' }, '#' + i.id), h('span', { class: 'ti' }, i.title), sourceBadge(i)))));
+  }
+}
+
 function renderBoard() {
   const board = $('#board'), tabs = $('#tabs');
   const ext = !!S.project, shown = ext ? pjItems().filter(i => !S.q || i.title.toLowerCase().includes(S.q.toLowerCase()) || i.id.includes(S.q.toLowerCase())) : S.issues.filter(visible);
   // Opened with ?label= (e.g. from the dashboard): on the phone, show the first column that has a match.
-  if (S.pickTab && S.issues.length) { S.pickTab = false; const c = COLS.find(([col]) => shown.some(i => i.column === col)); if (c) S.tab = c[0]; }
+  if (S.pickTab && S.issues.length) { S.pickTab = false; const c = BOARD_COLS.find(([col]) => shown.some(i => i.column === col)); if (c) S.tab = c[0]; }
   board.replaceChildren(); tabs.replaceChildren(); syncFilterToggle();
-  for (const [col, name] of COLS) {
+  renderWait(shown, ext);
+  // Proposals live in «Ti aspetta» (issue 505), not in a column. A saved/linked tab that no longer exists, or a
+  // column that is empty when the page opens, gives way to the first one with something inside.
+  if (!BOARD_COLS.some(([c]) => c === S.tab)) S.tab = 'in-progress';
+  if (!S.tabChecked && S.issues.length) {
+    S.tabChecked = true;
+    if (!shown.some(i => i.column === S.tab)) { const c = ['in-progress', 'todo', 'blocked', 'backlog', 'done'].find(col => shown.some(i => i.column === col)); if (c) S.tab = c; }
+  }
+  for (const [col, name] of BOARD_COLS) {
     const items = shown.filter(i => i.column === col).sort((a, b) => sortIssues(a, b, col));
     tabs.append(h('button', { role: 'tab', 'aria-selected': String(S.tab === col), 'aria-label': `${name}: ${items.length}`,
-      onclick: () => { S.tab = col; localSet('tab', col); renderBoard(); } }, statusIcon(col), h('span', { class: 'tab-name' }, name), h('span', { class: 'muted' }, items.length)));
+      onclick: () => { S.tab = col; localSet('tab', col); renderBoard(); } }, h('span', { class: 'tab-name' }, name), h('span', { class: 'tab-n' }, items.length)));
     const listEl = h('div', { class: 'col-list' }, items.length ? items.map(ext ? pjCard : card) : h('div', { class: 'empty' }, 'Nessuna issue'));
     const colEl = h('section', { class: 'col' + (S.tab === col ? ' active' : ''), 'data-col': col },
       h('div', { class: 'col-head' }, statusIcon(col), name, h('span', { class: 'count' }, items.length),
-        !ext && col !== 'done' && col !== 'proposed' && h('button', { class: 'btn ghost icon add', title: 'Nuova in ' + name, onclick: () => newIssue(col) }, '+')),
+        !ext && col !== 'done' && h('button', { class: 'btn ghost icon add', title: 'Nuova in ' + name, onclick: () => newIssue(col) }, '+')),
       listEl);
     colEl.addEventListener('dragover', e => { e.preventDefault(); colEl.classList.add('drop'); });
     colEl.addEventListener('dragleave', e => { if (!colEl.contains(e.relatedTarget)) colEl.classList.remove('drop'); });
@@ -318,10 +358,11 @@ function renderBoard() {
       e.preventDefault(); colEl.classList.remove('drop');
       const id = e.dataTransfer.getData('text/plain');
       const i = S.issues.find(x => x.id === id);
-      if (!ext && i && i.column !== col && col !== 'proposed') move(i, col);
+      if (!ext && i && i.column !== col && i.column !== 'proposed') move(i, col);
     });
     board.append(colEl);
   }
+  tabs.querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
 }
 
 function renderFilters() {
@@ -368,7 +409,7 @@ function syncFilterToggle() {
   const n = activeFilters(), t = $('#f-toggle'), open = S.filtersOpen;
   $('.filters').classList.toggle('open', open);
   t.setAttribute('aria-expanded', String(open));
-  t.textContent = n ? `Filtri · ${n}` : 'Filtri';
+  t.replaceChildren(icon('filter'), n ? `Filtri · ${n}` : 'Filtri');
   t.classList.toggle('active', n > 0);
   $('#f-reset').hidden = !n;
 }
@@ -383,7 +424,9 @@ async function refreshAuto() {
   const [ic, txt, tone] = autoState.pending ? ['hourglass', 'avvio richiesto', 'info'] : AUTO_PILL[st?.code] || ['bot', 'automatico', ''];
   const pill = $('#auto-pill');
   pill.className = `auto-pill ${tone}`;
-  pill.replaceChildren(icon(ic), h('span', { class: 'lbl' }, st?.code === 'working' && st.current ? `#${st.current.id}` : txt));
+  const state = st?.code === 'working' && st.current ? `#${st.current.id}` : txt;
+  pill.setAttribute('aria-label', `Automatico: ${state}`);
+  pill.replaceChildren(icon(ic), h('span', { class: 'tx' }, 'Automatico'), h('span', { class: 'stx' }, state));
 }
 
 async function refresh() {
@@ -395,6 +438,7 @@ async function refresh() {
     showApp();
     try { S.pj = await api('GET', '/api/projects-issues'); } catch { S.pj = { projects: {} }; }
     if (S.project && !S.pj.projects[S.project]) S.project = '';
+    try { S.questions = (await api('GET', '/api/questions')).cards.length; } catch { S.questions = 0; }
     renderFilters();
     renderBoard();
   } catch (e) { fail(e); }
@@ -787,6 +831,15 @@ $('#login-form').addEventListener('submit', async e => {
     { const m = /^#(\d+)(\/rispondi)?$/.exec(location.hash); if (m) openIssue(m[1], false, !!m[2]); }
   } catch (err) { $('#login-err').textContent = err.message; }
 });
+// Header (issue 505): icons are inline SVG, always drawn; «Menu» and «Aiuto» open one panel at a time.
+for (const [id, ic] of [['recent-link', 'history'], ['domande-link', 'help'], ['projects-link', 'folder']]) document.getElementById(id).querySelector('.ico').replaceWith(icon(ic));
+$('#menu-btn').prepend(icon('menu')); $('#new').prepend(icon('plus')); $('#help-btn').prepend(icon('help'));
+function panel(btn, box, on) { const open = on ?? box.hidden; box.hidden = !open; btn.setAttribute('aria-expanded', String(open)); }
+function closePanels() { panel($('#menu-btn'), $('#menu-panel'), false); panel($('#help-btn'), $('#help-panel'), false); }
+$('#menu-btn').addEventListener('click', e => { e.stopPropagation(); const o = $('#menu-panel').hidden; closePanels(); panel($('#menu-btn'), $('#menu-panel'), o); });
+$('#help-btn').addEventListener('click', e => { e.stopPropagation(); const o = $('#help-panel').hidden; closePanels(); panel($('#help-btn'), $('#help-panel'), o); });
+document.addEventListener('click', e => { if (!e.target.closest('#menu-panel, #help-panel')) closePanels(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePanels(); });
 $('#logout').addEventListener('click', async () => { try { await api('POST', '/api/logout'); } catch { /* ignore */ } showLogin(); });
 $('#new').addEventListener('click', () => newIssue(MOBILE.matches ? S.tab : 'todo'));
 $('#q').addEventListener('input', e => { S.q = e.target.value.trim(); renderBoard(); });
@@ -827,4 +880,4 @@ document.addEventListener('keydown', e => {
 setInterval(() => { if (!document.hidden && !$('#app').hidden) refresh(); }, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('#app').hidden) refresh(); });
 
-refresh().then(() => { const m = /^#(\d+)(\/rispondi)?$/.exec(location.hash); if (!$('#app').hidden && m) openIssue(m[1], false, !!m[2]); });
+refresh().then(() => { const m = /^#(\d+)(\/rispondi)?$/.exec(location.hash); if (!$('#app').hidden && m) openIssue(m[1], false, !!m[2]); if (!$("#app").hidden && location.hash === "#aiuto") panel($("#help-btn"), $("#help-panel"), true); });

@@ -1,0 +1,17 @@
+#!/bin/sh
+# deploy-request (issue 512): the agent's side of the deploy with "Security enabled". Leaves a request
+# for deploy-worker (which runs outside the agent's no-new-privs), waits for it, prints its output and
+# exits with its result. Called by `deploy`, never needed by hand. Usage: deploy-request [--skip-tests]
+D=${HS_DEPLOY_DIR:-/var/lib/hs-deploy}
+[ -n "$(find "$D/alive" -mmin -1 2>/dev/null)" ] ||
+	{ echo "deploy: the deploy worker is not running (sv status /etc/hs-service/deploy-worker): ask the owner" >&2; exit 1; }
+id=$(date +%s)-$$
+( set -C; echo "$id $*" > "$D/request" ) 2>/dev/null || { echo "deploy: another deploy is waiting, retry later" >&2; exit 1; }
+echo "deploy: handed to the deploy worker ($id), waiting"
+n=0
+while [ ! -e "$D/$id.rc" ]; do
+	sleep 1; n=$((n + 1))
+	[ "$n" -lt "${HS_DEPLOY_WAIT:-900}" ] || { echo "deploy: no answer from the worker in time" >&2; exit 1; }
+done
+cat "$D/$id.out"; rc=$(cat "$D/$id.rc"); rm -f "$D/$id.out" "$D/$id.rc"
+exit "$rc"

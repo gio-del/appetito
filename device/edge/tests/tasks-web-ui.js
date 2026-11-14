@@ -68,23 +68,23 @@ function front(rport, port) {
 async function main() {
   const rport = 20000 + crypto.randomInt(10000), port = rport + 1, dport = rport + 2;
   const base = `http://127.0.0.1:${port}`, pw = crypto.randomBytes(8).toString('hex');
-  fs.writeFileSync(path.join(tmp, 'users'), `gio:${pw}\n`);
+  fs.writeFileSync(path.join(tmp, 'users'), `testuser:${pw}\n`);
   fs.writeFileSync(path.join(tmp, 'config'), `[server]\nhosts = 127.0.0.1:${rport}\n[auth]\ntype = htpasswd\nhtpasswd_filename = ${tmp}/users\nhtpasswd_encryption = plain\n` +
     `[storage]\nfilesystem_folder = ${tmp}/col\n[logging]\nlevel = warning\n`);
   kids.push(spawn('python3', ['-m', 'radicale', '--config', path.join(tmp, 'config')], { stdio: ['ignore', 'ignore', 'inherit'] }));
   await waitHttp(`http://127.0.0.1:${rport}/`, 20000);
   await front(rport, port);
 
-  const basic = 'Basic ' + Buffer.from(`gio:${pw}`).toString('base64');
+  const basic = 'Basic ' + Buffer.from(`testuser:${pw}`).toString('base64');
   const dav = (method, p, body, headers = {}) => fetch(base + p, { method, headers: { authorization: basic, 'content-type': 'application/xml', ...headers }, body });
   for (const [name, comp] of [['tasks', 'VTODO'], ['cal', 'VEVENT']]) {
-    const r = await dav('MKCALENDAR', `/gio/${name}/`, `<?xml version="1.0"?><C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop>` +
+    const r = await dav('MKCALENDAR', `/testuser/${name}/`, `<?xml version="1.0"?><C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop>` +
       `<C:supported-calendar-component-set><C:comp name="${comp}"/></C:supported-calendar-component-set></D:prop></D:set></C:mkcalendar>`);
     if (r.status !== 201) throw new Error(`MKCALENDAR ${name}: ${r.status}`);
   }
   // Objects now on the server of one calendar: [{ href, text }].
   const objects = async name => {
-    const t = await (await dav('PROPFIND', `/gio/${name}/`, '<?xml version="1.0"?><propfind xmlns="DAV:"><prop><getetag/></prop></propfind>', { depth: '1' })).text();
+    const t = await (await dav('PROPFIND', `/testuser/${name}/`, '<?xml version="1.0"?><propfind xmlns="DAV:"><prop><getetag/></prop></propfind>', { depth: '1' })).text();
     const hrefs = [...t.matchAll(/<(?:\w+:)?href>([^<]+\.ics)</g)].map(m => m[1]);
     return Promise.all(hrefs.map(async href => ({ href, text: await (await dav('GET', href)).text() })));
   };
@@ -117,7 +117,7 @@ async function main() {
   await ev(`window.confirm = () => true`);
 
   // Wrong password: the app's own message, no browser prompt.
-  await fill('#login [name=user]', 'gio'); await fill('#login [name=pass]', 'sbagliata');
+  await fill('#login [name=user]', 'testuser'); await fill('#login [name=pass]', 'sbagliata');
   await ev(`document.querySelector('#login').requestSubmit()`);
   check('password sbagliata: messaggio dell\'app', await waitFor(async () => /non validi/.test(await text('#login-err') || '')), await text('#login-err'));
   await fill('#login [name=pass]', pw);

@@ -1,0 +1,40 @@
+#!/bin/sh
+# Appetito: la copia deve passare i suoi test da sola (issue 568, epic 567).
+# Costruisce la copia pubblica in una cartella temporanea (scripts/appetito-build, dal commit HEAD) ed esegue
+# li' `device/edge/check`: nessun file privato (DIREZIONE.md, docs/, issues/) e' presente. Un test che
+# fallisce perche' cerca un file privato va reso indipendente, o escluso dall'elenco con il motivo scritto.
+# Uso: scripts/appetito-selfcheck [--fast]     (--fast: solo sintassi e shellcheck, senza i test)
+# Esito in cache per contenuto (issue 578; HS_APPETITO_SELFCHECK_STAMP), test in parallelo.
+# Per i test: HS_APPETITO_BUILD_CMD (al posto di appetito-build), HS_APPETITO_CHECK_ENTRY (al posto di device/edge/check).
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd)
+fast=''
+case ${1:-} in --fast) fast=--fast; shift ;; '') ;; *) echo "uso: appetito-selfcheck [--fast]" >&2; exit 2 ;; esac
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+${HS_APPETITO_BUILD_CMD:-sh "$here/scripts/appetito-build"} "$tmp/copy" > "$tmp/build.log" 2>&1 || { tail -5 "$tmp/build.log" >&2; echo "appetito-selfcheck: la copia non si costruisce" >&2; exit 1; }
+entry=${HS_APPETITO_CHECK_ENTRY:-device/edge/check}
+[ -f "$tmp/copy/$entry" ] || { echo "appetito-selfcheck: la copia non contiene $entry" >&2; exit 1; }
+# Esito in cache per contenuto (issue 578): la stessa copia gia' verde non rigira i test (oltre 40 minuti in serie).
+# Il cron notturno 'appetito-selfcheck' la scalda, il giro di ops-auto e appetito-publish leggono l'esito.
+stamp=${HS_APPETITO_SELFCHECK_STAMP:-$HOME/.local/state/appetito-selfcheck.ok}
+sum=$(cd "$tmp/copy" && find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d" " -f1)
+if [ -z "$fast" ] && [ "$(cat "$stamp" 2> /dev/null || true)" = "$sum" ]; then
+	echo "appetito-selfcheck: ok (copia gia' verificata)"
+	exit 0
+fi
+# Fuori da qualunque repo dell'owner: ambiente pulito, nessun file dei valori. I test girano in parallelo (HS_APPETITO_SELFCHECK_JOBS, 4).
+ok=1
+(cd "$tmp/copy" && env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT sh "$entry" --fast) > "$tmp/out" 2>&1 || ok=0
+if [ -z "$fast" ] && [ -d "$tmp/copy/device/edge/tests" ]; then
+	(cd "$tmp/copy" && ls device/edge/tests/*.sh | env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT xargs -P "${HS_APPETITO_SELFCHECK_JOBS:-4}" -I{} sh -c 'sh "$1" > /dev/null 2>&1 || echo "FAIL test $1"' _ {}) >> "$tmp/out" 2>&1
+	grep -q "^FAIL test" "$tmp/out" && ok=0
+fi
+if [ "$ok" = 1 ]; then
+	[ -n "$fast" ] || { mkdir -p "$(dirname "$stamp")"; printf '%s\n' "$sum" > "$stamp"; }
+	tail -1 "$tmp/out"
+	echo "appetito-selfcheck: ok"
+else
+	grep -E 'FAIL|failed|manca' "$tmp/out" | head -30 >&2
+	echo "appetito-selfcheck: la copia non passa da sola" >&2
+	exit 1
+fi

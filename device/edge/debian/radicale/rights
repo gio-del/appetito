@@ -1,0 +1,36 @@
+# Radicale rights for home-server (/etc/radicale/rights). The owner ($HS_USER, filled in by
+# the deploy) owns everything under /<owner>/ and may also delete (D) or replace (O) whole calendars.
+# brain (second brain sorting job) may read and write events/tasks in the two calendars created by
+# radicale-setup only: it can't create other calendars, nor delete or replace one (config sets
+# permit_delete_collection / permit_overwrite_collection = False).
+# R/W = principal collections, r/w = calendars and their items.
+
+[root]
+user: .+
+collection:
+permissions: R
+
+[owner-principal]
+user: @HS_USER@
+collection: @HS_USER@
+permissions: RW
+
+[owner-calendars]
+user: @HS_USER@
+collection: @HS_USER@/[^/]+
+permissions: rwDO
+
+[brain-principal]
+user: brain
+collection: brain
+permissions: R
+
+[brain-on-owner-principal]
+user: brain
+collection: @HS_USER@
+permissions: R
+
+[brain-on-owner-calendars]
+user: brain
+collection: @HS_USER@/(calendario|attivita)
+permissions: rw

@@ -1,0 +1,41 @@
+#!/bin/sh
+# Appetito: pubblicazione automatica (issue 561, epic 476). Nessuna chiamata all'AI.
+# Una volta al giorno (cron, via hs-run): se `main` di home-server e' cambiato dall'ultima volta che e' andata
+# a buon fine, aggiorna la cartella di lavoro (fetch, solo in avanti), la ricostruisce con appetito-build e
+# pubblica con appetito-publish (l'unico che scrive su GitHub, con tutti i suoi controlli).
+# Spenta con HS_APPETITO_AUTO=0 (impostazione del tracker, default spenta). Mai con la cartella sporca.
+# Un rifiuto esce 1 con il motivo di appetito-build/appetito-publish (file e regola, mai valori); lo stato
+# non avanza, quindi il giro dopo riprova una sola volta (un giorno), senza raffiche.
+# Dice cosa ha pubblicato: riga su stdout (log) e notifica sul telefono (hs-notify).
+# Uso: scripts/appetito-auto [DIR]     DIR: default ~/appetito-pub
+# Per i test: HS_SETTING_CMD, HS_APPETITO_AUTO_STATE (cartella di stato), HS_NOTIFY, APPETITO_AUTO_BUILD_ARGS.
+set -eu
+here=$(cd "$(dirname "$0")/.." && pwd)
+die() { echo "appetito-auto: $*" >&2; exit 1; }
+dir=${1:-$HOME/appetito-pub}
+set_cmd=${HS_SETTING_CMD:-hs-setting}
+[ "$($set_cmd HS_APPETITO_AUTO 2> /dev/null || echo 0)" = 1 ] || { echo "pubblicazione automatica spenta (HS_APPETITO_AUTO)"; exit 0; }
+state=${HS_APPETITO_AUTO_STATE:-$HOME/.local/state/appetito-auto}
+mkdir -p "$state"
+src=$(git -C "$here" rev-parse HEAD)
+if [ "$(cat "$state/last" 2> /dev/null || true)" = "$src" ]; then
+	echo "niente di nuovo: home-server e' ancora a $(echo "$src" | cut -c1-7)"; exit 0
+fi
+git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 || die "$dir non e' un repo git (prima scripts/appetito-build $dir)"
+[ -z "$(git -C "$dir" status --porcelain)" ] || die "$dir ha modifiche non committate: non tocco nulla"
+export GIT_TERMINAL_PROMPT=0
+# Solo in avanti: il repo e' pubblico, il fetch non ha bisogno del token.
+git -C "$dir" fetch -q origin main || die "non riesco a leggere main del repo pubblico"
+# Copia indietro: si porta avanti. Copia avanti (un push rifiutato la notte prima): resta, appetito-publish la manda.
+if ! git -C "$dir" merge-base --is-ancestor FETCH_HEAD HEAD; then
+	git -C "$dir" merge -q --ff-only FETCH_HEAD || die "la copia locale non e' sotto main pubblicato: niente da forzare"
+fi
+# shellcheck disable=SC2086
+sh "$here/scripts/appetito-build" "$dir" ${APPETITO_AUTO_BUILD_ARGS:-} || die "appetito-build rifiutata (motivo sopra)"
+out=$(sh "$here/scripts/appetito-publish" "$dir") || { echo "$out"; die "appetito-publish rifiutata (motivo sopra)"; }
+echo "$out"
+printf '%s\n' "$src" > "$state/last"
+case $out in
+pubblicato*)
+	${HS_NOTIFY:-hs-notify} "Appetito aggiornato" "$out" > /dev/null 2>&1 || true ;;
+esac

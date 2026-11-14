@@ -1,0 +1,36 @@
+#!/bin/sh
+# Nightly backup of the server's own state (issue 311), encrypted with age to the same public key
+# as vaultwarden-backup (private half only on the PC). Fixed list of files, a missing one is skipped:
+#   settings/settings.env     web-editable settings (/var/lib/hs-settings)
+#   adguardhome/AdGuardHome.yaml   AdGuard Home config (filters, rewrites, users: bcrypt hashes)
+#   syncthing/{config.xml,cert.pem,key.pem}   Syncthing identity (device ID, key, folders, devices)
+# Never included: ~/.secrets, Tailscale state, the vault, Syncthing's index/https key.
+# Output goes to the Syncthing folder vw-backup; keeps the last 14 state-* files. Root cron.
+set -eu
+. /etc/home-server.env
+OUT=${HS_BACKUP_OUT:-/var/backups/vaultwarden}
+RECIPIENT=${HS_BACKUP_RECIPIENT:-/etc/vaultwarden-backup.age-recipient}
+SETTINGS=${HS_STATE_SETTINGS:-/var/lib/hs-settings}
+ADGUARD=${HS_STATE_ADGUARD:-/var/lib/adguardhome}
+SYNCTHING=${HS_STATE_SYNCTHING:-/home/$HS_USER/.local/state/syncthing}
+KEEP=14
+umask 077
+[ -s "$RECIPIENT" ] || { echo "missing $RECIPIENT" >&2; exit 1; }
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+S=$WORK/state
+mkdir -p "$S/settings" "$S/adguardhome" "$S/syncthing"
+n=0
+add() { # SRC DESTDIR
+	[ -f "$1" ] || return 0
+	cp -p "$1" "$S/$2/" && n=$((n + 1))
+}
+add "$SETTINGS/settings.env" settings
+add "$ADGUARD/AdGuardHome.yaml" adguardhome
+for f in config.xml cert.pem key.pem; do add "$SYNCTHING/$f" syncthing; done
+[ "$n" -gt 0 ] || { echo "no state file found" >&2; exit 1; }
+name=state-$(date +%Y%m%d-%H%M).tar.gz.age
+tar -C "$WORK" -czf - state | age -R "$RECIPIENT" -o "$OUT/.$name.tmp"
+mv "$OUT/.$name.tmp" "$OUT/$name"
+chown "$HS_USER:$HS_USER" "$OUT/$name"
+ls -1t "$OUT"/state-*.tar.gz.age | tail -n +$((KEEP + 1)) | xargs -r rm -f

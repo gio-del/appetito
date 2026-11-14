@@ -1,0 +1,25 @@
+#!/bin/sh
+# check-nightly (gio's cron, nightly; issue 142): device/edge/check on a clean clone of main, so it
+# neither sees nor touches work in progress. A test can break with no change to the repo (an installed
+# version or helper that changes). Writes the outcome to a state file that hs-monitor turns into one
+# `monitor` issue (fingerprint check-main) while it fails. Exit 0 when the check ran (green or red);
+# non-zero only when it could not run (then hs-run reports the job).
+# Env for tests: HS_CHECK_REPO (default ~/home-server), HS_CHECK_STATE (default
+# ~/.local/state/check-nightly/last.json).
+set -u
+REPO=${HS_CHECK_REPO:-$HOME/home-server}
+STATE=${HS_CHECK_STATE:-$HOME/.local/state/check-nightly/last.json}
+T=$(mktemp -d) || exit 1
+trap 'rm -rf "$T"' EXIT
+git clone -q --shared --branch main "$REPO" "$T/repo" || { echo "check-nightly: clone of main failed"; exit 1; }
+commit=$(git -C "$T/repo" rev-parse --short HEAD)
+"$T/repo/device/edge/check" > "$T/out" 2>&1; rc=$?
+cat "$T/out"
+mkdir -p "$(dirname "$STATE")"
+# FAIL lines and their indented detail, as written by device/edge/check.
+awk '/^FAIL /{f=1; print; next} /^    /{if (f) print; next} {f=0}' "$T/out" | head -80 > "$T/fails"
+jq -n --argjson when "$(date +%s)000" --arg commit "$commit" --argjson ok "$([ "$rc" -eq 0 ] && echo true || echo false)" \
+	--rawfile fails "$T/fails" --arg last "$(tail -n 1 "$T/out")" \
+	'{when: $when, commit: $commit, ok: $ok, last: $last, fails: ($fails | split("\n") | map(select(length > 0)) | map(.[0:300]))}' > "$STATE.tmp" &&
+	mv "$STATE.tmp" "$STATE"
+echo "check-nightly: main $commit $([ "$rc" -eq 0 ] && echo ok || echo FAILED)"

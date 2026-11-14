@@ -1,0 +1,82 @@
+#!/bin/sh
+# Keep the server's Gateway root ~/projects (issue 018) in line with /etc/hs-projects: one folder
+# per Project. home-server is a link to ~/home-server; any other Project is cloned once, when
+# missing, then kept in line with its remote (issue 180): `git fetch`, and a fast-forward merge
+# only when it can't hurt: checkout on the default branch, clean working tree, no unpublished
+# local commits, ops-auto not running. Otherwise nothing is touched and the reason (on <branch>,
+# dirty, ahead N, in uso) goes in GATEWAY.md. Never reset, checkout or stash. An unreachable
+# remote is a warning, not a failure. Each Project has a row in GATEWAY.md (issue 093): Status
+# from the list, Checkpoint = the HEAD of its folder plus where it stands against origin, Last
+# Updated = that commit's date (leftover branches/worktrees that project-worktree prune kept, with the reason, issue 295); the rest of the file is left alone.
+# Run as $HS_USER by device/edge/deploy and hourly from the crontab.
+# HS_OPSAUTO_LOCK overrides ops-auto's lock file (tests).
+set -eu
+G=$HOME/projects
+LOCK=${HS_OPSAUTO_LOCK:-$HOME/.local/state/ops-auto/lock}
+export GIT_TERMINAL_PROMPT=0
+install -d "$G"
+
+# Fetch and, when safe, fast-forward $1; prints the state for GATEWAY.md.
+pull_state() {
+	d=$1; notes=""
+	if ! timeout 60 /usr/local/bin/projects-git fetch "$d" 2>/dev/null; then
+		echo "gateway-sync: ${d##*/}: origin unreachable" >&2; notes=" origin irraggiungibile"
+	fi
+	br=$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) || br=origin/main
+	git -C "$d" rev-parse -q --verify "$br" >/dev/null || { echo "?$notes"; return; }
+	git -C "$d" rev-parse -q --verify HEAD >/dev/null || { echo "?$notes"; return; }
+	cur=$(git -C "$d" symbolic-ref -q --short HEAD) || cur=detached
+	set -- $(git -C "$d" rev-list --left-right --count "HEAD...$br")
+	ahead=$1; behind=$2; blk=""
+	[ "$cur" = "${br#origin/}" ] || blk="$blk su $cur,"
+	[ -z "$(git -C "$d" status --porcelain 2>/dev/null)" ] || blk="$blk dirty,"
+	[ "$ahead" -eq 0 ] || blk="$blk ahead $ahead,"
+	if [ "$behind" -gt 0 ] && [ -z "$blk" ]; then
+		if ! { exec 8>>"$LOCK" && flock -n 8; } 2>/dev/null; then blk=" in uso,"
+		elif git -C "$d" merge -q --ff-only "$br" >/dev/null 2>&1; then
+			echo "gateway-sync: ${d##*/}: fast-forwarded $behind commit(s)" >&2; behind=0
+		else blk=" ff non riuscito,"; fi
+		exec 8>&-
+	fi
+	# green PRs the server does not merge (issue 349)
+	pm=$(jq -r --arg p "${d##*/}" '[.prs[]? | select(.project == $p) | "PR #\(.pr) da unire a mano"] | join(", ")' "${HS_PRS_FILE:-/var/lib/edge-status/prs-to-merge.json}" 2>/dev/null) || pm=""
+	[ -z "$pm" ] || notes="$notes, $pm"
+	lf=${HS_LEFTOVERS_DIR:-$HOME/.local/state/ops-auto/leftovers}/${d##*/}
+	[ ! -s "$lf" ] || notes="$notes, rimasti: $(tr '\n' ';' < "$lf" | sed 's/;$//; s/;/; /g')"
+	s="${br}"
+	[ "$behind" -eq 0 ] || s="$s behind $behind"
+	[ -z "$blk" ] || s="$s (non aggiornato:${blk%,})"
+	echo "$s$notes"
+}
+
+/usr/local/bin/gateway-projects | while read -r name url app status _; do
+	case $name in ''|*[!a-z0-9-]*) echo "gateway-sync: bad Project name '$name'" >&2; continue ;; esac
+	if [ "$url" = - ]; then
+		[ "$name" = home-server ] || { echo "gateway-sync: $name has no git URL" >&2; continue; }
+		[ -L "$G/$name" ] || { ln -s "$HOME/home-server" "$G/$name"; echo "linked $G/$name"; }
+		sync=""
+	else
+		if [ ! -e "$G/$name" ]; then
+			/usr/local/bin/projects-git clone "$url" "$G/$name" && echo "cloned $name into $G/$name"
+		fi
+		sync=""
+		[ ! -d "$G/$name/.git" ] || sync=$(pull_state "$G/$name")
+	fi
+	[ -f "$G/GATEWAY.md" ] || printf '%s\n' "# Gateway" "" \
+		"Snapshot of every Project tracked by this Gateway (the server's). Kept by \`gateway-sync\` (hourly; see \`CONTEXT.md\` for the terms) from home-server's \`device/edge/debian/projects\`." "" \
+		"| Project | Path | Status | Checkpoint | Last Updated |" "|---|---|---|---|---|" > "$G/GATEWAY.md"
+	# Refresh the Project's row, or add it right after the table's last row (per-Project sections
+	# may follow the table). Rewritten only when it changes.
+	head=$(git -C "$G/$name" rev-parse --short HEAD 2>/dev/null) || head=—
+	[ -z "$sync" ] || head="$head, $sync"
+	# the commit the app runs, as project-cd (issue 235) last saw it
+	inst=$(jq -r --arg n "$name" '.[$n] // empty | select(.ref != "") | "installato \(.ref[0:7]) alle \(.at[8:10])/\(.at[5:7]) \(.at[11:16])"' "${HS_CD_OUT:-/var/lib/edge-status/project-cd.json}" 2>/dev/null) || inst=
+	[ -z "$inst" ] || head="$head, $inst"
+	when=$(git -C "$G/$name" log -1 --format=%cs 2>/dev/null) || when=$(date +%F)
+	row=$(printf '| %s | `./%s` | %s | %s | %s |' "$name" "$name" "$status" "$head" "$when")
+	grep -qxF "$row" "$G/GATEWAY.md" && continue
+	awk -v name="$name" -v row="$row" '{ l[NR] = $0 } /^\|/ { last = NR } index($0, "| " name " |") == 1 { at = NR }
+		END { for (i = 1; i <= NR; i++) { if (i == at) { print row; continue } print l[i]; if (!at && i == last) print row } }' \
+		"$G/GATEWAY.md" > "$G/.GATEWAY.md.tmp" && mv "$G/.GATEWAY.md.tmp" "$G/GATEWAY.md"
+	echo "GATEWAY.md: $row"
+done

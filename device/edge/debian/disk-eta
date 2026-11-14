@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+// Days until the disk is full (issue 357): reads dashboard-stats' daily samples (JSON Lines {t, used, total},
+// bytes) and prints {"state": "none"|"stable"|"days", "days": N, "per_day": bytes}. Least-squares slope
+// over the last 14 days before the newest sample; fewer than 3 samples in that window = "none" (no
+// estimate), slope <= 0 = "stable". Usage: disk-eta FILE   (deterministic, no I/O besides FILE).
+'use strict';
+const fs = require('fs');
+const DAY = 86400, WINDOW = 14;
+function eta(text) {
+  const rows = String(text || '').split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(r => r && [r.t, r.used, r.total].every(Number.isFinite)).sort((a, b) => a.t - b.t);
+  if (!rows.length) return { state: 'none' };
+  const last = rows[rows.length - 1];
+  const w = rows.filter(r => r.t >= last.t - WINDOW * DAY);
+  if (w.length < 3 || last.t - w[0].t < 2 * DAY - 3600) return { state: 'none' };
+  const n = w.length, x = w.map(r => (r.t - w[0].t) / DAY), y = w.map(r => r.used);
+  const mx = x.reduce((a, b) => a + b, 0) / n, my = y.reduce((a, b) => a + b, 0) / n;
+  const sxx = x.reduce((a, v) => a + (v - mx) ** 2, 0), sxy = x.reduce((a, v, i) => a + (v - mx) * (y[i] - my), 0);
+  const slope = sxx ? sxy / sxx : 0;
+  if (slope <= 0) return { state: 'stable' };
+  return { state: 'days', days: Math.max(0, Math.round((last.total - last.used) / slope)), per_day: Math.round(slope) };
+}
+if (require.main === module) {
+  let text = '';
+  try { text = fs.readFileSync(process.argv[2], 'utf8'); } catch {}
+  console.log(JSON.stringify(eta(text)));
+}
+module.exports = { eta };

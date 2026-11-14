@@ -1,0 +1,8 @@
+# Jobs that skip or change something of the owner's (issue 468): job | what it skips or changes | where the owner is told (empty = nowhere)
+# One list, read by attriti-signals: a line with an empty last field is friction; add a line when a job gets such a case.
+mail-digest | riepilogo non inviato nel weekend perché «Mail anche nel weekend» è spenta nelle Impostazioni | mail di una riga «Riepilogo sospeso» e riga in cima al primo riepilogo dopo il weekend (518)
+ops-auto | giri fermi per file non committati | notifica «ops-auto fermo» dopo 3 ore
+ops-auto | modifiche non sue messe nello stash a fine giro | notifica «Trovate a fine giro modifiche non sue»
+studio-calendar-sync | righe di calendario.md fuori formato (non diventano eventi) | riga «Calendario: riga N scartata» nella mail del mattino
+apps-idle | app di un Project nuovo spenta finché non la provi, app spenta perché non usata | riga «APP DEI PROGETTI» nella mail del mattino e pulsanti in Impostazioni
+studio-leetcode | risposte dell API con campi strani (slug non validi, invii precedenti alla data scelta) | riga «dropped» nel log del job; se l API fallisce il job va in errore e hs-monitor apre una issue

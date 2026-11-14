@@ -1,0 +1,63 @@
+# Clean-install proof (issue 570): every push installs this copy from zero on a stock Ubuntu 24.04 and
+# Debian 13 and checks the result. Target: under 30 minutes in total (the time is printed).
+name: install
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 4 * * 1'
+permissions:
+  contents: read
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-24.04
+            runs-on: ubuntu-24.04
+          - name: debian-13
+            runs-on: ubuntu-24.04
+            container: debian:13
+    name: install on ${{ matrix.name }}
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 40
+    container: ${{ matrix.container }}
+    steps:
+      - name: Base tools (Debian container only)
+        if: matrix.container
+        run: apt-get update -q && apt-get install -y -q --no-install-recommends sudo git ca-certificates iproute2 procps systemd
+      - uses: actions/checkout@v4
+      - name: Install
+        run: |
+          date +%s > /tmp/install-start
+          sudo ./install.sh --no-tailscale --user tester
+      - name: Start the base services
+        run: |
+          # A container has no systemd as PID 1: run the supervisor directly there.
+          if [ ! -d /run/systemd/system ]; then
+            sudo sh -c 'nohup runsvdir -P /etc/hs-service >/tmp/runsvdir.log 2>&1 &'
+          fi
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:3004/healthz >/dev/null 2>&1 && break; sleep 2; done
+      - name: Checks
+        run: |
+          set -eu
+          fail() { echo "FAIL: $*"; exit 1; }
+          curl -fsS http://127.0.0.1:3004/healthz | grep -qx ok || fail "tracker does not answer on 127.0.0.1:3004"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3004' http://127.0.0.1:3004/api/issues || true)
+          [ "$code" = 401 ] || [ "$code" = 421 ] || fail "tracker API should refuse an anonymous call (got $code)"
+          for s in tracker caddy syncthing; do
+            sudo sv status "/etc/hs-service/$s" | grep -q '^run:' || fail "service $s is not running: $(sudo sv status /etc/hs-service/$s)"
+          done
+          # A test issue made with the tool of the copy lands in issues/open, where the board reads.
+          H=/home/tester/home-server
+          f=$(sudo -u tester sh -c "cd $H && device/edge/debian/issues-new 'Prova di installazione' --status backlog" | head -1)
+          [ -f "$f" ] || [ -f "$H/$f" ] || fail "issues-new did not create an issue ($f)"
+          # Nothing may listen beyond loopback (tailnet and LAN are not part of this setup; sshd and DNS stub excepted).
+          bad=$(sudo ss -ltnH | awk '{print $4}' | grep -Ev '^(127\.|\[::1\]|\[::\]:22$|0\.0\.0\.0:22$|127\.0\.0\.53)' || true)
+          [ -z "$bad" ] || fail "listening beyond 127.0.0.1: $bad"
+          sudo -u tester sh -c "cd $H && scripts/security-audit" || fail "security-audit"
+      - name: Time
+        if: always()
+        run: echo "total: $(( $(date +%s) - $(cat /tmp/install-start 2>/dev/null || date +%s) )) s"

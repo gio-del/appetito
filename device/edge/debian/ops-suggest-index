@@ -1,0 +1,87 @@
+#!/usr/bin/env node
+'use strict';
+// ops-suggest-index ISSUES-DIR (issue 028): the feedback index for ops-suggest, deterministic, no
+// Claude. Prints JSON {pending, index, titles}:
+// - index: every proposal with `Source: system` in {proposed,open,done}/, as id, title, kinds, date,
+//   outcome (pending / approved todo|backlog|in-progress / blocked / done / rejected) plus the
+//   owner's reason and Approvata:/Scartata: notes.
+// - pending: how many system proposals of this Project wait in proposed/ (issue 270).
+// - PROJECT (issue 161): only issues tagged `Project: PROJECT` (none given: only untagged ones) are indexed.
+// - titles: lowercased titles of open/done issues and of system proposals (duplicate check).
+// - signal (issue 143): for a done (not rejected) optimization/quality proposal that cites a signal of
+//   ops-suggest-signals, "segnale sig-X: prima N, dopo M": its main value in the 7 days ending at
+//   Opened: and in the last 7 days (HS_INDEX_SIGNALS: the signals command, tests). Only id and numbers.
+// Brain's proposals (Source: brain, or label proposed without Source) are skipped: their text is
+// untrusted and must never reach the generator.
+const fs = require('node:fs');
+const path = require('node:path');
+const { parse, getField } = require(process.env.HS_ISSUES_JS || '/opt/hs-tracker/issues.js');
+
+const dir = process.argv[2];
+const project = process.argv[3] || ''; // issue 161: a Project tracked elsewhere sees only the proposals tagged `Project: NAME`
+if (!dir) { console.error('usage: ops-suggest-index ISSUES-DIR [PROJECT]'); process.exit(2); }
+// Main value of each signal of ops-suggest-signals (an id not here is not a signal; the test checks
+// that every id there has one).
+const maxOf = (a, k) => (a || []).reduce((n, x) => Math.max(n, x[k] || 0), 0);
+const MAIN = {
+  'sig-cost-7d': s => s.usd, 'sig-prefix': s => s.avgPrefixTokens, 'sig-retries': s => s.count,
+  'sig-handed-over': s => s.count, 'sig-denied': s => s.count, 'sig-errors': s => s.count,
+  'sig-context-size': s => s.toolOutputKBPerRun, 'sig-explore': s => s.readCommandsPerRun,
+  'sig-monitor-repeat': s => maxOf(s.kinds14d, 'count'), 'sig-lint-repeat': s => maxOf(s.kinds14d, 'count'),
+  'sig-advisories-open': s => s.oldestDays, 'sig-apps-behind': s => maxOf(s.apps, 'days'), 'sig-reverts': s => s.count,
+  'sig-deploy-failed': s => s.failedCheck + s.failedInstall, 'sig-quota-unused': s => s.unusedPct,
+};
+const SIGNALS = process.env.HS_INDEX_SIGNALS || path.join(process.env.HOME || require('os').homedir(), 'bin/ops-suggest-signals');
+const signalRuns = {};
+const signalsAt = d => { // d: YYYY-MM-DD, or '' for today; one run per date
+  if (!(d in signalRuns)) {
+    try {
+      const env = Object.assign({}, process.env); if (d) env.HS_SIGNALS_NOW = d; else delete env.HS_SIGNALS_NOW;
+      const a = JSON.parse(require('node:child_process').execFileSync(SIGNALS, [], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 20 }));
+      signalRuns[d] = Array.isArray(a) ? a : [];
+    } catch { signalRuns[d] = []; }
+  }
+  return signalRuns[d];
+};
+const value = (d, id) => {
+  const s = signalsAt(d).find(x => x.id === id);
+  const v = s ? MAIN[id](s) : null;
+  return typeof v === 'number' && isFinite(v) ? v : 'n/d';
+};
+const out = { pending: 0, index: [], titles: [] };
+for (const state of ['proposed', 'open', 'done']) {
+  let files = [];
+  try { files = fs.readdirSync(path.join(dir, state)).filter(f => /^\d+-.*\.md$/.test(f)).sort(); } catch { continue; }
+  for (const f of files) {
+    const p = parse(fs.readFileSync(path.join(dir, state, f), 'utf8'));
+    const labels = (getField(p, 'Labels') || '').split(',').map(s => s.trim()).filter(Boolean);
+    const source = getField(p, 'Source') || (labels.includes('proposed') ? 'brain' : '');
+    if (source === 'brain') continue; // never read further
+    const mine = (getField(p, 'Project') || '').trim();
+    if (mine !== project) continue;
+    if (state === 'proposed' && source === 'system') out.pending++; // the cap is per Project (issue 270)
+    out.titles.push(p.title.toLowerCase());
+    if (source !== 'system') continue;
+    let outcome;
+    if (state === 'proposed') outcome = 'pending';
+    else if (state === 'done') outcome = labels.includes('scartata') ? 'rejected' : 'done';
+    else if ((getField(p, 'Blocked on') || '-') !== '-') outcome = 'blocked';
+    else outcome = 'approved ' + (getField(p, 'Status') || 'todo');
+    const notes = p.comments.map(c => c.text).filter(t => /^(Approvata|Scartata)\b/.test(t)).map(t => t.slice(0, 300));
+    let signal;
+    const opened = (getField(p, 'Opened') || '').slice(0, 10);
+    if (outcome === 'done' && labels.some(l => l === 'optimization' || l === 'quality') && /^\d{4}-\d\d-\d\d$/.test(opened)) {
+      const id = (p.desc.match(/\bsig-[a-z0-9-]*[a-z0-9]/g) || []).find(x => Object.hasOwn(MAIN, x));
+      if (id) signal = `segnale ${id}: prima ${value(opened, id)}, dopo ${value('', id)}`;
+    }
+    out.index.push({
+      id: f.slice(0, f.indexOf('-')), title: p.title,
+      kinds: labels.filter(l => !['proposed', 'scartata'].includes(l)),
+      date: getField(p, 'Opened') || '', outcome,
+      ...(getField(p, 'Reject-reason') ? { reason: getField(p, 'Reject-reason') } : {}),
+      ...(notes.length ? { notes } : {}),
+      ...(signal ? { signal } : {}),
+    });
+  }
+}
+process.stdout.write(JSON.stringify(out) + '\n');

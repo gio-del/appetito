@@ -1,0 +1,8 @@
+#!/bin/sh
+# Commit every change in a folder: the vault by default (cron of user brain, every 15 min), or DIR (studio-autocommit,
+# issue 448, which sets GIT_DIR outside the folder). Hooks off: these folders hold text written by agents.
+# Usage: vault-autocommit [DIR]
+cd "${1:-$HOME/vault}" || exit 1
+git add -A
+git diff --cached --quiet && exit 0
+git -c core.hooksPath=/dev/null commit -qm "auto: $(date "+%Y-%m-%d %H:%M") ($(git diff --cached --name-only | wc -l) files)"

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Issue housekeeping (issue 033): close epics whose children are all done, unblock issues whose
+# "Blocked on: issue NNN" blockers are done. Same rules the tracker applies after every edit
+# (/opt/hs-tracker/issues.js); this catches closes made with git mv. Usage: issues-housekeep [REPO]
+exec /usr/local/bin/node /opt/hs-tracker/issues.js "${1:-$HOME/home-server}"

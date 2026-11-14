@@ -1120,7 +1120,7 @@ async function appsAction(b) {
 
 // ---------- Cosa è successo (/recent.html, issue 326) ----------
 // Last 7 days, by day, from files already there: Closed: of issues/done, rejected proposals, outcomes of deploy.log
-// (copied by the deploy into edge-status: the tracker cannot read gio's home). Only ids, titles, dates and the
+// (copied by the deploy into edge-status: the tracker cannot read the user's home). Only ids, titles, dates and the
 // deploy's fixed short outcome; never log text.
 const DEPLOY_LOG = process.env.TRACKER_DEPLOY_LOG || '/var/lib/edge-status/deploy.log';
 const RECENT_DAYS = 7;

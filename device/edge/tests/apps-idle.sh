@@ -29,8 +29,11 @@ grep -q "^downwards\|sumisura" "$t/sv.log" || fail "no sv down"
 [ "$(cat "$t/st/sumisura.last")" = $((NOW - 40 * 86400)) ] || fail "curl probe counted as use"
 grep -q "spenta sumisura" "$t/st/events.log" || fail "no event"
 # the setup scripts respect the flag
-grep -q 'apps-idle/sumisura.off' "$D/sumisura-setup" && grep -q 'apps-idle/library.off' "$D/library-setup" \
-	&& grep -q 'apps-idle/studio-app.off' "$D/studio-app-setup" || fail "a setup script ignores the flag"
+# (a setup script of a Project that is not in the public copy is skipped, issue 584)
+for pair in sumisura:sumisura library:library studio-app:studio-app; do
+	[ -e "$D/${pair%:*}-setup" ] || continue
+	grep -q "apps-idle/${pair#*:}.off" "$D/${pair%:*}-setup" || fail "a setup script ignores the flag"
+done
 # always: library idle later but flagged
 line $((NOW - 100 * 86400)) Mozilla/5.0 > "$t/log/app-library.log"; echo $((NOW - 100 * 86400)) > "$t/st/library.last"
 sh "$A" always library >/dev/null; sh "$A" scan >/dev/null

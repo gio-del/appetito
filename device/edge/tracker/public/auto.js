@@ -41,6 +41,7 @@ const OUTCOMES = {
   partial: ['Parziale', 'half', 'info', 'Lavoro a metà: riprende al prossimo giro'],
   pr: ['PR aperta', 'half', 'info', 'Pull request aperta sul Project: la issue si chiude quando la unisci'],
   prfix: ['PR corretta', 'half', 'info', 'La CI della PR era rossa: ops-auto ha corretto e aggiornato la stessa PR'],
+  timeout: ['Interrotto: tempo scaduto', 'half', 'warn', 'Il giro ha raggiunto il limite di tempo (1 ora): il lavoro salvato riprende al prossimo giro'],
   error: ['Errore', 'x', 'bad', 'Il backend AI è uscito con un errore'],
   lost: ['Interrotta', 'lost', 'muted', 'Il giro si è fermato senza esito (riavvio, timeout)'],
   gaveup: ['A te (3 tentativi)', 'flag', 'bad', 'Non chiusa in 3 tentativi, o CI ancora rossa dopo 3 correzioni: passata a te'],
@@ -51,7 +52,7 @@ const STATES = {
   idle: ['In attesa', 'moon', 'calm', 'Aspetta il prossimo giro programmato (:07 e :37)'],
   empty: ['Niente in coda', 'done', 'ok', 'Nessuna issue da lavorare'],
   paused: ['In pausa', 'pause', 'warn', 'Messo in pausa dalla pagina Impostazioni'],
-  quota: ['Fermo per la quota', 'gauge', 'warn', 'Quota settimanale oltre il limite dei giri programmati: Avvia ora funziona fino al limite per l\'avvio manuale (pagina Impostazioni)'],
+  quota: ['Fermo per la quota', 'gauge', 'warn', 'Quota settimanale oltre il limite dei giri programmati: Avvia ora funziona fino al limite per l\'avvio manuale (pagina Impostazioni). Se hai azzerato la quota, avvia un giro a mano'],
   error: ['Errore all\'ultimo giro', 'alert', 'bad', 'L\'ultimo giro è finito con un errore (riprova al prossimo)'],
   resume: ['Riprende', 'half', 'info', 'Un giro interrotto (limite 5 ore, timeout, errore) ha lasciato lavoro non committato: il prossimo giro riprende quella issue da lì'],
   dirty: ['Modifiche da committare', 'branch', 'warn', 'Nel repo ci sono modifiche non salvate: non parte finché non sono committate'],
@@ -197,7 +198,7 @@ function renderHero(st) {
     if (st.code === 'error' && st.last) chips.append(badge('alert', st.last.text, 'bad', `Ultimo esito, ${st.last.when}`));
     if (st.request && st.request.handled) {
       const r = st.request, ok = r.result === 'started';
-      chips.append(badge(ok ? 'hand' : 'x', ok ? `Avviato a mano ${ago(r.handled)}` : `Avvio rifiutato: ${r.reason}`, ok ? 'ok' : 'warn',
+      chips.append(badge(ok ? 'hand' : 'x', ok ? `Ultimo avvio a mano ${ago(r.handled)}` : `Avvio rifiutato: ${r.reason}`, ok ? 'ok' : 'warn',
         `Ultima richiesta manuale${r.issue ? ' su #' + r.issue : ''}`));
     }
   }
@@ -299,6 +300,7 @@ function renderCurrent(st) {
       todoView(L.todo) || '', toolCounts(L.counts), toolStrip(L.tools, true), logBox);
   } else {
     box.replaceChildren(h('div', { class: 'sec-h' }, icon('activity'), h('span', null, 'Ultima issue lavorata: cosa ha fatto')),
+      lr.id ? h('div', { class: 'last-who' }, issueLink(lr.id, lr.title), h('div', { class: 'last-meta' }, lr.outcome ? outcomeBadge(lr.outcome) : null, lr.end ? h('span', { class: 'muted' }, `finita ${ago(lr.end)}`) : null)) : null,
       toolCounts(lr.counts), toolStrip(lr.tools, false), logBox);
   }
   // re-attached: put the log back where it was (or at the bottom while following)

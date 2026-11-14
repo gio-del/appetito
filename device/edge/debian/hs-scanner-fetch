@@ -1,0 +1,41 @@
+#!/bin/sh
+# Secrets scanner gitleaks (issue 529, epic 526): one pinned release, one sha256 of the tarball, installed
+# read-only as /usr/local/lib/hs/gitleaks (root:root 755, not writable by group or others) and never updated
+# on its own (update-apps only reports a newer version). Run as root by the deploy. The tarball comes from a
+# local copy already checked by the owner (HS_SCANNER_LOCAL, default the owner's hs-downloads folder) or, if
+# missing, from the official release URL, downloaded as the unprivileged user hsdocs. Checks the sha256 first;
+# only the `gitleaks` file is extracted, and nothing from the archive is run here. No-op when the installed pin
+# matches. Upgrade = review the release, bump both pins, deploy. A wrong sha256 installs nothing (exit 1).
+set -eu
+PIN_VERSION=8.30.1
+PIN_SHA256=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+FILE=gitleaks_${PIN_VERSION}_linux_arm64.tar.gz
+SHA=${HS_SCANNER_SHA256:-$PIN_SHA256}
+URL=${HS_SCANNER_URL:-https://github.com/gitleaks/gitleaks/releases/download/v$PIN_VERSION/$FILE}
+OUT=${HS_SCANNER_DIR:-/usr/local/lib/hs}
+# personal value: the owner's user name comes from the env file, not a literal
+[ -r /etc/home-server.env ] && . /etc/home-server.env
+LOCAL=${HS_SCANNER_LOCAL:-/home/${HS_USER:-}/.local/state/hs-downloads/$FILE}
+pin="$PIN_VERSION $SHA"
+[ "$(cat "$OUT/gitleaks.pin" 2> /dev/null || true)" = "$pin" ] && exit 0
+
+W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+chmod 755 "$W"; mkdir "$W/dl"
+if [ -n "${HS_SCANNER_NOUSER:-}" ]; then as() { "$@"; }
+else chown hsdocs:hsdocs "$W/dl"; as() { setpriv --reuid=hsdocs --regid=hsdocs --clear-groups --no-new-privs "$@"; }; fi
+if [ -f "$LOCAL" ] && echo "$SHA  $LOCAL" | sha256sum -c --quiet > /dev/null 2>&1; then
+	cp "$LOCAL" "$W/dl/a.tar.gz"; [ -n "${HS_SCANNER_NOUSER:-}" ] || chown hsdocs:hsdocs "$W/dl/a.tar.gz"
+else
+	as curl -fsSL --max-filesize 52428800 -o "$W/dl/a.tar.gz" "$URL" || { echo "hs-scanner-fetch: download failed: $URL" >&2; exit 1; }
+fi
+echo "$SHA  $W/dl/a.tar.gz" | sha256sum -c --quiet > /dev/null 2>&1 || { echo "hs-scanner-fetch: sha256 mismatch, nothing installed" >&2; exit 1; }
+as mkdir "$W/dl/x"
+as tar -xzf "$W/dl/a.tar.gz" -C "$W/dl/x" --no-same-owner --no-same-permissions gitleaks 2> /dev/null || { echo "hs-scanner-fetch: archive without gitleaks, nothing installed" >&2; exit 1; }
+[ -f "$W/dl/x/gitleaks" ] && [ ! -L "$W/dl/x/gitleaks" ] || { echo "hs-scanner-fetch: gitleaks is not a regular file, nothing installed" >&2; exit 1; }
+
+mkdir -p "$OUT"; chmod 755 "$OUT"
+install -m 755 "$W/dl/x/gitleaks" "$OUT/gitleaks.new"
+[ -n "${HS_SCANNER_NOUSER:-}" ] || chown root:root "$OUT/gitleaks.new"
+mv "$OUT/gitleaks.new" "$OUT/gitleaks"
+printf '%s\n' "$pin" > "$OUT/gitleaks.pin"; chmod 644 "$OUT/gitleaks.pin"
+echo "hs-scanner-fetch: installed gitleaks $PIN_VERSION"

@@ -1,0 +1,62 @@
+#!/bin/sh
+# ops-refresh (issue 421): keeps the interactive ops session on the installed Claude Code. The updater moves
+# ~/.local/bin/claude to the new version but the running process keeps the old one, and /restart is refused
+# while Remote Control is connected. If the running binary differs from the installed one AND the session has
+# been idle for HS_OPS_REFRESH_IDLE_MIN minutes (tmux window activity and newest transcript), kill the tmux
+# session: the runit service `ops` opens a new one on the new version. Never touches a session in use.
+# Before killing, the id of the running conversation (newest transcript) goes to OPS_REFRESH_RESUME_FILE; sv/ops/run reopens
+# once with `--resume <id> --remote-control ops` (probed 2026-11-07: they work together), so the chat is not lost (issue 441).
+# hs-notify tells the owner: once per new version when deferred, and at every restart. Env overrides (tests): OPS_REFRESH_RESUME_FILE, OPS_REFRESH_NOTIFY, OPS_REFRESH_DEFER_FILE, OPS_REFRESH_SESSION, OPS_REFRESH_LINK, OPS_REFRESH_IDLE_MIN, OPS_REFRESH_TRANSCRIPTS, OPS_REFRESH_NOW.
+set -eu
+SESSION=${OPS_REFRESH_SESSION:-ops}
+LINK=${OPS_REFRESH_LINK:-$HOME/.local/bin/claude}
+TRANS=${OPS_REFRESH_TRANSCRIPTS:-$HOME/.claude/projects/$(printf %s "$HOME/home-server" | tr '/.' '--')}
+IDLE=${OPS_REFRESH_IDLE_MIN:-$(hs-setting HS_OPS_REFRESH_IDLE_MIN 2>/dev/null || echo 15)}
+NOW=${OPS_REFRESH_NOW:-$(date +%s)}
+log() { echo "$(date '+%F %T') ops-refresh: $*"; }
+RESUME=${OPS_REFRESH_RESUME_FILE:-$HOME/.local/state/ops-resume-id}
+DEFER=${OPS_REFRESH_DEFER_FILE:-$HOME/.local/state/ops-refresh-notified}
+NOTIFY=${OPS_REFRESH_NOTIFY:-hs-notify}
+ver() { b=$(basename "$1"); [ "$b" != claude ] || b=$(basename "$(dirname "$1")"); echo "$b"; }
+
+tmux has-session -t "$SESSION" 2>/dev/null || exit 0
+installed=$(readlink -f "$LINK" 2>/dev/null) || exit 0
+[ -n "$installed" ] && [ -x "$installed" ] || exit 0
+
+# Running binary: the pane's process or a descendant whose exe is not a shell.
+running=""
+pids=$(tmux list-panes -t "$SESSION" -F '#{pane_pid}')
+while [ -n "$pids" ] && [ -z "$running" ]; do
+	next=""
+	for p in $pids; do
+		exe=$(readlink "/proc/$p/exe" 2>/dev/null | sed 's/ (deleted)$//') || exe=""
+		case $(basename "${exe:-x}") in
+		sh|bash|dash|"") ;;
+		*) running=$exe; break ;;
+		esac
+		next="$next $(pgrep -P "$p" 2>/dev/null || true)"
+	done
+	pids=$next
+done
+[ -n "$running" ] || exit 0
+[ "$running" = "$installed" ] && exit 0
+
+# Idle check: newest of tmux activity and transcript mtime.
+last=$(tmux display-message -p -t "$SESSION" '#{window_activity}' 2>/dev/null || echo 0)
+t=$(find "$TRANS" -maxdepth 1 -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
+[ -n "$t" ] && [ "$t" -gt "$last" ] && last=$t
+age=$((NOW - last))
+if [ "$age" -lt $((IDLE * 60)) ]; then
+	log "new version installed ($running -> $installed) but session active ${age}s ago, retry next round"
+	if [ "$(cat "$DEFER" 2>/dev/null)" != "$installed" ]; then
+		echo "$installed" > "$DEFER"
+		"$NOTIFY" "Sessione ops: versione nuova in attesa" "Claude Code $(ver "$running") -> $(ver "$installed"): la sessione è in uso, la riapro (stessa chat) appena resta ferma $IDLE minuti." || true
+	fi
+	exit 0
+fi
+log "restarting session $SESSION: $running -> $installed (idle ${age}s)"
+id=$(find "$TRANS" -maxdepth 1 -name "*.jsonl" -size +0 -printf "%T@ %f\n" 2>/dev/null | sort -n | tail -1 | cut -d" " -f2)
+id=${id%.jsonl}
+if [ -n "$id" ]; then echo "$id" > "$RESUME"; out="stessa chat ripresa"; else rm -f "$RESUME"; out="nessuna chat in corso, sessione nuova"; fi
+tmux kill-session -t "$SESSION"
+"$NOTIFY" "Sessione ops riavviata" "Claude Code $(ver "$running") -> $(ver "$installed"): $out." || true

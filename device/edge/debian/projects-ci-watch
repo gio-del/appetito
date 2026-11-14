@@ -1,0 +1,241 @@
+#!/bin/sh
+# Cron every 5 minutes ($HS_USER; issue 206): follows the CI of the pull requests ops-auto opened on the
+# Projects. No Claude, no token here (the state comes from `projects-publish ci`, the one holding it).
+# For each state file $ST/pr/ID (ID = sumisura-215; its content is the PR url) the PR's check state is read:
+#   merged  -> forget the PR (state files and CI counters)
+#   red     -> the issue goes back to the queue: the file pr/ID is removed, the failed checks and annotations
+#              are kept in $ST/ci/ID (data for the next run) and $ST/ci-tries/ID counts the reds; the next
+#              ops-auto run resumes the same branch, fixes it and pushes to the same PR; after 3 fixes
+#              ops-auto hands the issue to the owner
+#   conflict -> like red: the PR conflicts with main; the next run merges origin/main into the branch, reruns ./ci and pushes (same limit of 3)
+#   closed  -> forget the PR (closed without merge, e.g. replaced by a newer one, issue 219)
+#   red on an issue already closed on GitHub -> forget it too, no re-queue
+#   behind  -> green but the branch lacks the new main: `projects-publish update-branch` once per head (issue 323)
+#   green   -> `projects-publish merge` (the server merges: head unchanged, ci-ok, ruleset on main, no sensitive file; issue 232);
+#              a refusal is logged once per reason and the PR stays (the owner merges what touches .github/, dependencies, deploy)
+#   pending -> nothing
+# Then, for each Project on GitHub, `projects-publish prune` (deletes the remote issue/* branches whose PR is merged), `project-worktree prune` (the same for local branches and worktrees, issue 295) and `projects-publish rules`: main without its ruleset -> one local (HITL) issue per Project
+# with the exact clicks (marker line "Ruleset: NAME"), closed by itself once the ruleset is seen.
+# A Project without ./ci, .hs-tools or a ci-ok workflow gets one issue on its GitHub (label ci); with no CI at all its other issues wait ($ST/noci/NAME).
+# Open issues that a commit on origin/<default> already closes (Fixes/Closes #N) are logged once, not touched (issue 282).
+# env (for tests): HS_PUBLISH_CMD (projects-publish), HS_WORKTREE_CMD (project-worktree), HS_PROJECTS_DIR, HS_OPS_AUTO_STATE, HS_PROJECTS_CMD (gateway-projects), HS_ISSUES_NEW (issues-new), ISSUES_REPO
+set -eu
+export PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8
+ST=${HS_OPS_AUTO_STATE:-$HOME/.local/state/ops-auto}
+PUB=${HS_PUBLISH_CMD:-projects-publish}
+PROJ=${HS_PROJECTS_DIR:-$HOME/projects}
+log() { echo "$(date '+%F %T') $*" >> "$ST/ops-auto.log"; }
+[ -r /etc/home-server.env ] && . /etc/home-server.env
+BASE=https://${HS_TS_HOST:-edge.invalid}:8444 # tracker; HS_TS_HOST from /etc/home-server.env
+# ntf KEY TITLE TEXT CLICK [Label=URL]... (issue 237): one push per KEY, ever ($ST/notified/KEY); texts hold Project names, numbers
+# and short commits only. A failed send leaves no state, so the next round retries; hs-notify does nothing while ntfy is off.
+ntf() {
+	[ ! -e "$ST/notified/$1" ] || return 0
+	k=$1 ti=$2 tx=$3 ck=$4; shift 4
+	case $# in
+	0) "${HS_NOTIFY:-hs-notify}" --click "$ck" "$ti" "$tx" ;;
+	1) "${HS_NOTIFY:-hs-notify}" --click "$ck" --action "$1" "$ti" "$tx" ;;
+	*) "${HS_NOTIFY:-hs-notify}" --click "$ck" --action "$1" --action "$2" "$ti" "$tx" ;;
+	esac && : > "$ST/notified/$k" || true
+}
+mkdir -p "$ST/ci" "$ST/ci-tries" "$ST/notified"
+# PRs the owner has to merge (issue 349): green PRs the server refused to merge (merge-note/ID), listed during the round and written to $PRS after it
+PRS=${HS_PRS_OUT:-/var/lib/edge-status/prs-to-merge.json}
+L=$(mktemp)
+trap 'rm -f "$L"' EXIT
+listpr() { if [ -s "$ST/merge-note/$1" ]; then echo "$1" >> "$L"; fi; }
+for f in "$ST"/pr/*; do
+	[ -e "$f" ] || continue
+	id=${f##*/}
+	case $id in *-[0-9]*) ;; *) continue ;; esac
+	name=${id%-*} num=${id##*-}
+	br=$(git -C "$PROJ/$name" for-each-ref --format='%(refname:short)' "refs/heads/issue/$num-*" 2> /dev/null | head -n 1)
+	# a PR opened before issue 202 sits on a claude/N-* branch: read-only here, ops-auto renames it to issue/ when it fixes
+	[ -n "$br" ] || br=$(git -C "$PROJ/$name" for-each-ref --format='%(refname:short)' "refs/heads/claude/$num-*" 2> /dev/null | head -n 1)
+	[ -n "$br" ] || continue
+	out=$("$PUB" ci "$name" "$br" 2> /dev/null) || { echo "projects-ci-watch: $name#$num: stato della CI non leggibile" >&2; listpr "$id"; continue; }
+	kind=$(printf '%s\n' "$out" | head -n 1)
+	case $kind in
+	merged)
+		rm -f "$f" "$ST/ci/$id" "$ST/ci-tries/$id" "$ST/merge-note/$id" "$ST/merge-note/$id".behind "$ST/merge-note/$id".head; log "$name#$num: PR unita, CI a posto"
+		# safety net (issue 282): the PR was merged but its issue is still open (no Fixes keyword): close it through projects-issue-apply
+		if [ "$("$PUB" issue-state "$name" "$num" 2> /dev/null)" = open ] && [ -d "${HS_WRITES_DIR:-/var/lib/projects-writes}" ]; then
+			W=${HS_WRITES_DIR:-/var/lib/projects-writes}
+			for act in comment close; do
+				rid=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+				jq -n --arg id "$rid" --argjson at "$(date +%s)" --arg p "$name" --argjson n "$num" --arg a "$act" '{id:$id, at:$at, project:$p, number:$n, action:$a} + (if $a == "comment" then {text:"Chiusa dal server: la PR di questa issue è stata unita ma la issue era rimasta aperta."} else {} end)' > "$W/$rid.req.json"
+				sleep 1
+			done
+			log "$name#$num: PR unita ma issue ancora aperta, chiusa dal server"
+		fi ;;
+	closed) rm -f "$f" "$ST/ci/$id" "$ST/ci-tries/$id" "$ST/merge-note/$id" "$ST/merge-note/$id".behind "$ST/merge-note/$id".head; log "$name#$num: PR chiusa senza unione, non la seguo più" ;;
+	red | conflict)
+		# the issue was closed on GitHub meanwhile (e.g. fixed by another PR): nothing to fix, forget it (issue 219)
+		if [ "$("$PUB" issue-state "$name" "$num" 2> /dev/null)" = closed ]; then
+			rm -f "$f" "$ST/ci/$id" "$ST/ci-tries/$id" "$ST/merge-note/$id" "$ST/merge-note/$id".behind "$ST/merge-note/$id".head; log "$name#$num: CI rossa ma issue chiusa, non torna in coda"; continue
+		fi
+		tries=$(($(cat "$ST/ci-tries/$id" 2> /dev/null || echo 0) + 1))
+		printf '%s\n' "$out" | tail -n +2 > "$ST/ci/$id.tmp" && mv "$ST/ci/$id.tmp" "$ST/ci/$id"
+		echo "$tries" > "$ST/ci-tries/$id"
+		# red again after 3 fixes: ops-auto hands the issue over (issue 237); the PR url is in $f, which goes now
+		if [ "$tries" -gt 3 ]; then
+			pru=$(cat "$f" 2> /dev/null || true)
+			case $pru in https://github.com/*) ntf "cired-$id" "CI rossa dopo 3 correzioni" "$name#$num: la CI della PR è ancora rossa dopo 3 correzioni." "$pru" "Apri PR=$pru" "Apri issue=$BASE/" ;; esac
+		fi
+		rm -f "$f"
+		log "$name#$num: $([ "$kind" = conflict ] && echo conflitto con main || echo CI rossa) (rosso numero $tries), torna in coda: $(grep '^check: ' "$ST/ci/$id" | cut -c8- | tr '\n' ',' | cut -c1-200)" ;;
+	behind)
+		# CI green but the branch lacks the new main (ruleset strict, issue 323): update it once per head; the CI restarts on the new head and the next round merges
+		sha=$(printf '%s\n' "$out" | sed -n '2s/^head //p'); pr=$(cat "$f"); pr=${pr##*/}
+		mkdir -p "$ST/merge-note"
+		[ "$(cat "$ST/merge-note/$id.behind" 2> /dev/null || true)" != "$sha" ] || continue
+		printf '%s\n' "$sha" > "$ST/merge-note/$id.behind"
+		if msg=$("$PUB" update-branch "$name" "$pr" "$sha" 2>&1); then
+			rm -f "$ST/merge-note/$id"; log "$name#$num: ramo non aggiornato rispetto a main, aggiornato dal server ($msg)"
+		else
+			# conflict: back to ops-auto like a conflicting PR
+			tries=$(($(cat "$ST/ci-tries/$id" 2> /dev/null || echo 0) + 1))
+			printf 'check: conflitto con main\n  aggiornamento del ramo rifiutato: unisci origin/main nel branch (git merge origin/main), risolvi i conflitti, riesegui ./ci e fai il push\n' > "$ST/ci/$id"
+			echo "$tries" > "$ST/ci-tries/$id"; rm -f "$f" "$ST/merge-note/$id".behind "$ST/merge-note/$id".head
+			log "$name#$num: ramo non aggiornabile ($(printf '%s' "$msg" | head -n 1 | cut -c1-150)), torna in coda (rosso numero $tries)"
+		fi ;;
+	green)
+		sha=$(printf '%s\n' "$out" | sed -n '2s/^head //p'); pr=$(cat "$f"); pr=${pr##*/}
+		mkdir -p "$ST/merge-note"
+		# a refusal noted for an older head must not outlive it (issue 323)
+		[ "$(cat "$ST/merge-note/$id.head" 2> /dev/null || true)" = "$sha" ] || { rm -f "$ST/merge-note/$id"; printf '%s\n' "$sha" > "$ST/merge-note/$id.head"; }
+		if msg=$("$PUB" merge "$name" "$pr" "$sha" 2>&1); then
+			rm -f "$f" "$ST/ci/$id" "$ST/ci-tries/$id" "$ST/merge-note/$id" "$ST/merge-note/$id".behind "$ST/merge-note/$id".head; log "$name#$num: PR unita dal server, CI verde"
+		elif [ "$msg" != "$(cat "$ST/merge-note/$id" 2> /dev/null || true)" ]; then
+			printf '%s\n' "$msg" > "$ST/merge-note/$id"; log "$name#$num: CI verde ma non unisco: $(printf '%s' "$msg" | head -n 1 | cut -c1-200)"
+			# the owner has to merge it (issue 237); one push per PR and head
+			case $(cat "$f" 2> /dev/null || true) in https://github.com/*) pru=$(cat "$f"); ntf "pr-$id-$(printf %s "$sha" | cut -c1-7)" "PR da unire" "$name#$num: CI verde, ma la unione tocca a te." "$pru" "Apri PR=$pru" "Vedi CI=$pru/checks" ;; esac
+		fi
+		listpr "$id" ;;
+	esac
+done
+# the list for the tracker, watch and dashboard (issue 349); `since` is kept from the previous file
+MIRROR=${HS_ISSUES_MIRROR:-/var/lib/edge-status/projects-issues.json}
+prev=$(cat "$PRS" 2> /dev/null || echo '{}'); printf '%s' "$prev" | jq -e . > /dev/null 2>&1 || prev='{}'
+{
+	while read -r id; do
+		name=${id%-*}; num=${id##*-}; url=$(cat "$ST/pr/$id" 2> /dev/null || true)
+		title=$(jq -r --arg p "$name" --argjson n "$num" '.projects[$p].issues[]? | select(.number == $n) | .title' "$MIRROR" 2> /dev/null | head -n 1 || true)
+		jq -n --arg p "$name" --arg id "$id" --arg url "$url" --arg t "$title" --arg r "$(head -n 1 "$ST/merge-note/$id" | cut -c1-200)" --argjson prev "$prev" --argjson now "$(date +%s)" \
+			'{project:$p, issue:($id | sub("^.*-"; "") | tonumber), pr:($url | capture("/pull/(?<n>[0-9]+)$").n? // "" | if . == "" then 0 else tonumber end), url:$url, title:($t | .[0:100]), reason:$r,
+			  since:(([$prev.prs[]? | select(.project == $p and .url == $url) | .since] | first) // $now)}'
+	done < "$L"
+} | jq -s --argjson now "$(date +%s)" '{updated:$now, prs:., card:(if length == 0 then "nessuna" else (map("\(.project)#\(.pr)") | join(", ")) end)}' > "$PRS.tmp" 2> /dev/null && mv "$PRS.tmp" "$PRS" || rm -f "$PRS.tmp"
+
+# A Project without the CI contract (issue 232): on origin/<default> missing ./ci, .hs-tools or a workflow with the job ci-ok ->
+# one issue on the Project's own GitHub (label ci, created once: $ST/ci-issue/NAME) asking for them; with no CI at all
+# (no ./ci, no workflow) $ST/noci/NAME blocks the Project's other issues in ops-auto's queue (tracker/issues.js, projectQueue).
+mkdir -p "$ST/ci-issue" "$ST/noci"
+for name in $(${HS_PROJECTS_CMD:-gateway-projects} 2> /dev/null | awk '$2 ~ /^https:\/\/github\.com\// { print $1 }'); do
+	d=$PROJ/$name
+	base=$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2> /dev/null || echo origin/main)
+	git -C "$d" rev-parse -q --verify "$base^{commit}" > /dev/null 2>&1 || continue
+	hasci=0; git -C "$d" cat-file -e "$base:ci" 2> /dev/null && hasci=1
+	hastools=0; git -C "$d" cat-file -e "$base:.hs-tools" 2> /dev/null && hastools=1
+	haswf=0; [ -n "$(git -C "$d" ls-tree --name-only "$base" .github/workflows/ 2> /dev/null)" ] && haswf=1
+	hasok=0; git -C "$d" grep -q 'ci-ok' "$base" -- .github/workflows 2> /dev/null && hasok=1
+	if [ "$hasci" = 0 ] && [ "$haswf" = 0 ]; then touch "$ST/noci/$name"; else rm -f "$ST/noci/$name"; fi
+	[ "$hasci$hastools$hasok" != 111 ] || continue
+	[ ! -e "$ST/ci-issue/$name" ] || continue
+	bf=$(mktemp)
+	cat > "$bf" <<EOT
+Il server lavora e unisce le PR di questo repository solo con la CI del contratto dei Projects:
+
+- \`./ci\` eseguibile alla radice (sezioni opzionali, esce con errore al primo controllo fallito, nessun segreto);
+- \`.hs-tools\` con gli strumenti, versione e sha256 (una riga per strumento e piattaforma: \`NOME VERSIONE PIATTAFORMA SHA256 URL\`);
+- un workflow GitHub che esegue \`./ci\` e ha un job finale chiamato \`ci-ok\`, che dipende da tutti gli altri.
+
+Mancano ora: $([ "$hasci" = 1 ] || printf './ci ')$([ "$hastools" = 1 ] || printf '.hs-tools ')$([ "$hasok" = 1 ] || printf 'job-ci-ok'). Finché il repository non ha nessuna CI, le altre issue restano ferme.
+EOT
+	if res=$("$PUB" issue "$name" "CI: ./ci, .hs-tools e workflow con ci-ok" "$bf" ci 2> /dev/null); then
+		printf '%s\n' "$res" > "$ST/ci-issue/$name"; log "$name: CI del contratto mancante, issue $res"
+	else
+		log "$name: CI del contratto mancante, issue non creata"
+	fi
+	rm -f "$bf"
+done
+
+# Open issues whose fix is already on origin/<default> (issue 282): a commit there says Fixes/Closes/Resolves #N, yet the mirror still lists N open
+# (a PR merged without the keyword in its body, or the issue reopened). Only reported, once per issue ($ST/merged-open/NAME-N): the owner or the safety net above decides.
+mkdir -p "$ST/merged-open"
+MIRROR=${HS_ISSUES_MIRROR:-/var/lib/edge-status/projects-issues.json}
+if [ -r "$MIRROR" ]; then
+	for name in $(${HS_PROJECTS_CMD:-gateway-projects} 2> /dev/null | awk '$2 ~ /^https:\/\/github\.com\// { print $1 }'); do
+		d=$PROJ/$name
+		base=$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2> /dev/null || echo origin/main)
+		git -C "$d" rev-parse -q --verify "$base^{commit}" > /dev/null 2>&1 || continue
+		for n in $(jq -r --arg p "$name" '.projects[$p] | select(.stale == false) | .issues[]? | select(.state == "open") | .number' "$MIRROR" 2> /dev/null); do
+			[ ! -e "$ST/merged-open/$name-$n" ] || continue
+			if [ -n "$(git -C "$d" log "$base" -n 1 -i -E --grep="(fix(es|ed)?|close[sd]?|resolve[sd]?):? #$n([^0-9]|\$)" --format=%h 2> /dev/null)" ]; then
+				: > "$ST/merged-open/$name-$n"; log "$name#$n: aperta ma $base ha già un commit che la chiude (Fixes/Closes #$n), da controllare"
+			fi
+		done
+	done
+fi
+
+# Work done but not published (issue 334): ops-auto records in $ST/handover/ID ("format" or "other", then the local branch) when it
+# hands over an issue with unpublished commits. A format refusal is our fault, not the owner's: once per issue needs-owner is taken
+# off (projects-issue-apply) and the queue publishes again. Other reasons stay with the owner (the card and /auto.html list them).
+if [ -r "$MIRROR" ] && [ -d "${HS_WRITES_DIR:-/var/lib/projects-writes}" ]; then
+	W=${HS_WRITES_DIR:-/var/lib/projects-writes}
+	for f in "$ST"/handover/*; do
+		[ -f "$f" ] || continue
+		case $f in *.retried) continue ;; esac
+		id=${f##*/}; name=${id%-*}; num=${id##*-}
+		kind=$(sed -n 1p "$f")
+		case $kind in format) ;; machine) # a block of the machine, no question: one automatic retry after a day (issue 536)
+			hat=$(sed -n 3p "$f"); case $hat in '' | *[!0-9]*) hat=$(stat -c %Y "$f") ;; esac
+			[ $(($(date +%s) - hat)) -ge "${HS_HANDOVER_RETRY_SECS:-86400}" ] || continue ;;
+		*) continue ;; esac
+		[ ! -e "$f.retried" ] || continue
+		[ ! -e "$ST/pr/$id" ] || continue
+		jq -e --arg p "$name" --argjson n "$num" '.projects[$p] | select(.stale == false) | .issues[]? | select(.number == $n and .state == "open") | select(any(.labels[]?; (if type == "object" then .name else . end) == "needs-owner"))' "$MIRROR" > /dev/null 2>&1 || continue
+		: > "$f.retried"
+		rid=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+		jq -n --arg id "$rid" --argjson at "$(date +%s)" --arg p "$name" --argjson n "$num" '{id:$id, at:$at, project:$p, number:$n, action:"label-remove", label:"needs-owner"}' > "$W/$rid.req.json"
+		log "$name#$num: lavoro non pubblicato fermo per un difetto nostro ($kind), needs-owner tolta (un solo tentativo)"
+	done
+fi
+
+# main without its ruleset (issue 232): the server only merges where GitHub itself blocks direct pushes and demands ci-ok
+REPO=${ISSUES_REPO:-$HOME/home-server}
+NEWISSUE=${HS_ISSUES_NEW:-issues-new}
+for name in $(${HS_PROJECTS_CMD:-gateway-projects} 2> /dev/null | awk '$2 ~ /^https:\/\/github\.com\// { print $1 }'); do
+	"$PUB" prune "$name" > /dev/null 2>&1 || true # leftovers of merged PRs: no stale issue/* branches on the remote
+	${HS_WORKTREE_CMD:-project-worktree} prune "$name" > /dev/null 2>&1 || true # and no stale local branches/worktrees (issue 295)
+	rj=$("$PUB" rules "$name" 2> /dev/null) || continue
+	have=$(grep -lx "Ruleset: $name" "$REPO"/issues/open/*.md 2> /dev/null | head -n 1 || true)
+	if printf '%s' "$rj" | jq -e '.ok' > /dev/null; then
+		[ -n "$have" ] || continue
+		sed -i "s/^\(- \[\) \] (HITL)/\1x] (HITL)/" "$have"
+		printf '\nClosed: %s\n\nChiusa da sola (%s): il ruleset di `main` è attivo (niente push diretti, PR obbligatoria, check ci-ok).\n' "$(date +%F)" "$(date +%F)" >> "$have"
+		git -C "$REPO" mv "$have" "$REPO/issues/done/" 2> /dev/null || mv "$have" "$REPO/issues/done/"
+		log "$name: ruleset di main presente, issue chiusa"
+		continue
+	fi
+	[ -z "$have" ] || continue
+	miss=$(printf '%s' "$rj" | jq -r '[if .pull_request then empty else "PR obbligatoria" end, if .no_force then empty else "niente force push" end, if .no_delete then empty else "niente cancellazione" end, if .ci_ok then empty else "check ci-ok" end] | join(", ")')
+	repo=$(${HS_PROJECTS_CMD:-gateway-projects} 2> /dev/null | awk -v n="$name" '$1 == n { print $2 }'); repo=${repo#https://github.com/}; repo=${repo%.git}
+	f=$($NEWISSUE "Ruleset di main su $name: serve per far unire le PR al server" --status todo --blocked-on "user (ruleset su GitHub)" --labels gateway,security --related 232 2> /dev/null | head -n 1) || f=
+	[ -n "$f" ] && [ -f "$f" ] || { log "$name: ruleset mancante, issue non creata"; continue; }
+	cat >> "$f" <<EOT
+
+Ruleset: $name
+
+Il server unisce da solo le PR di \`$name\` a CI verde solo se \`main\` è protetto da GitHub (issue 232). Manca: $miss. Finché non c'è, le PR restano aperte e le unisci tu.
+
+## Per te ($(date +%F))
+Un solo passo, da fare sul sito di GitHub (dal browser del telefono, in modalità desktop se serve).
+
+## Esecuzione
+- [ ] (HITL) Crea il ruleset su \`main\`: https://github.com/$repo/settings/rules/new?target=branch → nome «main», Enforcement «Active»; Target branches → Add target → Include default branch; spunta «Restrict deletions», «Block force pushes», «Require a pull request before merging» (approvazioni a 0), «Require status checks to pass» → Add checks → \`ci-ok\`; poi Create (serve il permesso di scrittura sul repo e un'esecuzione già avvenuta del workflow perché \`ci-ok\` compaia nell'elenco) (solo tu hai l'account GitHub)
+EOT
+	log "$name: ruleset di main mancante ($miss), issue $f"
+	rid=$(basename "$f" | sed 's/^\([0-9]*\)-.*/\1/')
+	ntf "ruleset-$rid" "Ruleset mancante" "$name: main non ha il ruleset, le PR non si uniscono da sole." "$BASE/#$rid" "Impostazioni repo=https://github.com/$repo/rules" "Istruzioni=$BASE/#$rid"
+done

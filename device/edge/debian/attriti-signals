@@ -1,0 +1,151 @@
+#!/usr/bin/env node
+'use strict';
+// attriti-signals (issue 468): friction signals for the weekly `attriti` job, deterministic, no AI.
+// Friction = the system needs the owner without needing their judgement, or decides silently for them.
+// Prints one JSON object {generated, days, hitl, blockedUser, monitorRepeats, failedRuns, complaints}.
+// Data of the server only: issue files, claude-usage runs, the owner's own messages in the ops
+// sessions. Never the vault, the studio folder or the web. Texts are cut (200 chars) and are DATA.
+// Env (tests): HS_REPO, HS_SIGNALS_NOW (YYYY-MM-DD), HS_SIGNALS_USAGE (claude-usage command),
+// HS_ATTRITI_SESSIONS (dir with the ops sessions' *.jsonl).
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const HOME = process.env.HOME || require('os').homedir();
+const REPO = (process.env.HS_REPO || path.join(HOME, 'home-server')).replace(/\/$/, '');
+const USAGE = process.env.HS_SIGNALS_USAGE || path.join(HOME, 'bin/claude-usage');
+const SESSIONS = process.env.HS_ATTRITI_SESSIONS || path.join(HOME, '.claude/projects', REPO.replace(/[/.]/g, '-'));
+const DAYS = 30, MAX = { hitl: 40, blocked: 20, monitor: 10, runs: 20, complaints: 20 };
+const day = s => new Date(s + 'T00:00:00Z');
+const iso = d => d.toISOString().slice(0, 10);
+const now = process.env.HS_SIGNALS_NOW ? day(process.env.HS_SIGNALS_NOW) : day(iso(new Date()));
+const cut = iso(new Date(now - DAYS * 86400000));
+const cutText = s => String(s).replace(/\s+/g, ' ').trim().slice(0, 200);
+const ageDays = d => Math.round((now - day(d)) / 86400000);
+
+const issues = [];
+for (const dir of ['open', 'done']) {
+  let names = [];
+  try { names = fs.readdirSync(path.join(REPO, 'issues', dir)); } catch { continue; }
+  for (const n of names) {
+    const m = /^(\d+)-.*\.md$/.exec(n);
+    if (!m) continue;
+    let text = '';
+    try { text = fs.readFileSync(path.join(REPO, 'issues', dir, n), 'utf8'); } catch { continue; }
+    const head = text.split('\n## ')[0];
+    const f = k => (new RegExp(`^${k}: (.*)$`, 'm').exec(head) || [])[1];
+    const comments = text.includes('\n## Comments') ? text.split('\n## Comments')[1] : '';
+    issues.push({ num: m[1], open: dir === 'open', text, head, comments,
+      opened: (/(\d{4}-\d\d-\d\d)/.exec(f('Opened') || '') || [])[1], closed: (/(\d{4}-\d\d-\d\d)/.exec(f('Closed') || '') || [])[1],
+      blocked: f('Blocked on') || '', fp: (/^Fingerprint: ([a-z0-9.-]+)$/m.exec(head) || [])[1], title: (/^# (.*)$/m.exec(text) || [])[1] || '' });
+  }
+}
+// Owner comments: `### YYYY-MM-DD HH:MM (owner)` then the text up to the next heading.
+const ownerComments = c => [...c.matchAll(/^### (\d{4}-\d\d-\d\d) [\d:]+ \(owner\)\n([\s\S]*?)(?=^### |\s*$(?![\s\S]))/gm)].map(m => ({ date: m[1], text: m[2] }));
+const handoverDate = text => { const d = [...text.matchAll(/^## Per te \((\d{4}-\d\d-\d\d)\)/gm)].map(m => m[1]).sort(); return d[d.length - 1]; };
+
+// 1. (HITL) steps of the issues open, or closed in the last 30 days, with the wait for the answer.
+const hitl = [];
+for (const i of issues) {
+  if (!i.open && !(i.closed && i.closed >= cut)) continue;
+  const asked = handoverDate(i.text) || i.opened;
+  const answers = ownerComments(i.comments).map(c => c.date).sort();
+  for (const m of i.text.split('\n## Comments')[0].matchAll(/^- \[( |x)\] \(HITL[^)]*\) (.*)$/gm)) {
+    const done = m[1] === 'x';
+    const waited = done ? (answers.length && asked ? Math.max(0, Math.round((day(answers[0]) - day(asked)) / 86400000)) : null) : (asked ? ageDays(asked) : null);
+    hitl.push({ issue: i.num, step: cutText(m[2]), answered: done, waitedDays: waited, open: i.open });
+  }
+}
+hitl.sort((a, b) => (b.waitedDays || 0) - (a.waitedDays || 0));
+
+// 2. Open issues waiting for the owner.
+const blockedUser = issues.filter(i => i.open && /^user\b/.test(i.blocked))
+  .map(i => ({ issue: i.num, title: cutText(i.title), reason: cutText(i.blocked), days: i.opened ? ageDays(i.opened) : null }))
+  .sort((a, b) => (b.days || 0) - (a.days || 0));
+
+// 3. The same monitor fingerprint opened more than once (kind = fingerprint without trailing ids).
+const kindOf = fp => { const p = fp.split('-'); while (p.length > 1 && /\d/.test(p[p.length - 1])) p.pop(); return p.join('-'); };
+const kinds = {};
+for (const i of issues) if (i.fp && i.opened && i.opened >= cut && !/^attrito-/.test(i.fp)) (kinds[kindOf(i.fp)] = kinds[kindOf(i.fp)] || []).push(i.num);
+const monitorRepeats = Object.entries(kinds).filter(([, n]) => n.length >= 2)
+  .map(([kind, n]) => ({ kind, count: n.length, issues: n.sort().slice(-5) })).sort((a, b) => b.count - a.count);
+
+// 4. ops-auto runs that failed or ended with the owner after 3 attempts.
+let failedRuns = [];
+try {
+  const runs = JSON.parse(execFileSync(USAGE, ['--json', '--runs', '--job', 'ops-auto', '--since', cut], { encoding: 'utf8', maxBuffer: 64 << 20 })).runs || [];
+  failedRuns = runs.filter(r => r.outcome === 'errore' || (r.outcome === 'consegnata' && (r.attempt || 1) >= 3))
+    .map(r => ({ issue: String(r.issue), start: String(r.start).slice(0, 10), outcome: r.outcome, attempt: r.attempt || 1 }));
+} catch { /* no usage data */ }
+
+// 5. The owner's own words: complaints in `(owner)` comments and in the ops sessions' user messages.
+const RE = /non (è|e) arrivat|di nuovo|ancora una volta|perch[eé]|ingovernabil|\?\?\?|ancora (non|da)|già detto|gia detto|già (scelt|fatt|dett)|come mai/i;
+const complaints = [];
+for (const i of issues) for (const c of ownerComments(i.comments)) if (c.date >= cut && RE.test(c.text)) complaints.push({ where: `issue ${i.num}`, date: c.date, text: cutText(c.text) });
+try {
+  for (const f of fs.readdirSync(SESSIONS).filter(n => n.endsWith('.jsonl'))) {
+    if (iso(fs.statSync(path.join(SESSIONS, f)).mtime) < cut) continue;
+    for (const line of fs.readFileSync(path.join(SESSIONS, f), 'utf8').split('\n')) {
+      let o; try { o = JSON.parse(line); } catch { continue; }
+      if (o.type !== 'user' || !o.message || o.message.role !== 'user' || o.isMeta || o.toolUseResult) continue;
+      const c = o.message.content;
+      const t = typeof c === 'string' ? c : Array.isArray(c) ? c.filter(p => p.type === 'text').map(p => p.text).join(' ') : '';
+      const date = String(o.timestamp || '').slice(0, 10);
+      if (t && date >= cut && !t.startsWith('<') && RE.test(t)) complaints.push({ where: 'ops session', date, text: cutText(t) });
+    }
+  }
+} catch { /* no sessions */ }
+complaints.sort((a, b) => b.date.localeCompare(a.date));
+
+// 6. Credentials with a known expiry (device/edge/debian/credentials: name | date | action).
+const credentials = [];
+try {
+  const f = process.env.HS_ATTRITI_CREDENTIALS || path.join(REPO, "device/edge/debian/credentials");
+  for (const l of fs.readFileSync(f, "utf8").split("\n")) {
+    const m = /^([^#|][^|]*)\|\s*(\d{4}-\d\d-\d\d)\s*\|\s*(.*)$/.exec(l);
+    if (m) credentials.push({ name: m[1].trim(), expires: m[2], daysLeft: Math.round((day(m[2]) - now) / 86400000), action: cutText(m[3]) });
+  }
+} catch { /* no list */ }
+credentials.sort((a, b) => a.daysLeft - b.daysLeft);
+
+// 8. Jobs that skip or change something of the owner (debian/skips); told:false = nobody is told.
+const skips = [];
+try {
+  const f = process.env.HS_ATTRITI_SKIPS || path.join(REPO, "device/edge/debian/skips");
+  for (const l of fs.readFileSync(f, "utf8").split("\n")) {
+    const m = /^([^#|][^|]*)\|([^|]*)\|(.*)$/.exec(l);
+    if (m) skips.push({ job: m[1].trim(), what: cutText(m[2]), told: cutText(m[3]) || false });
+  }
+} catch { /* no list */ }
+
+// 9. Owner chores among the (HITL) steps (issue 468): kinds the system should do alone (login, merge by hand,
+// a secret left in a file the phone cannot read) and the same question asked in more than one issue.
+const KINDS = { login: /login|accedi|accesso|autentic/i, merge: /\b(unisci|merge|PR)\b/i, secret: /password|segreto|token|file .*(legg|apr)|credenzial/i };
+const norm = s => s.toLowerCase().replace(/\(.*?\)\s*$/, '').replace(/[^a-zàèéìòù0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+const chores = {}; const asked = {};
+for (const h of hitl) {
+  for (const [k, re] of Object.entries(KINDS)) if (re.test(h.step)) (chores[k] = chores[k] || []).push(h.issue);
+  const key = norm(h.step).slice(0, 80);
+  if (key.length > 15) (asked[key] = asked[key] || new Set()).add(h.issue);
+}
+const ownerChores = Object.entries(chores).map(([kind, n]) => ({ kind, count: n.length, issues: [...new Set(n)].sort().slice(-8) }));
+const askedTwice = Object.entries(asked).filter(([, s]) => s.size >= 2).map(([step, s]) => ({ step, issues: [...s].slice(-5) })).slice(0, 10);
+
+// 10. Work done but not published (issue 536): ops-auto's handover records ($ST/handover/ID: kind, branch, epoch) older than
+// HS_PR_WAIT_DAYS (default 7): the system holds finished work, the owner has to hear of it.
+const unpublishedWork = [];
+try {
+  const dir = path.join(process.env.HS_AUTO_STATE || path.join(HOME, '.local/state/ops-auto'), 'handover');
+  const limit = Number(process.env.HS_PR_WAIT_DAYS) || 7;
+  for (const n of fs.readdirSync(dir).filter(x => /^[a-z0-9-]+-\d+$/i.test(x))) {
+    const [kind, , at] = fs.readFileSync(path.join(dir, n), 'utf8').split('\n');
+    const ms = /^\d+$/.test(at || '') ? Number(at) * 1000 : fs.statSync(path.join(dir, n)).mtimeMs;
+    const days = Math.floor(((process.env.HS_SIGNALS_NOW ? now.getTime() : Date.now()) - ms) / 864e5);
+    if (days >= limit) unpublishedWork.push({ id: n, kind: cutText(kind || ''), days });
+  }
+} catch { /* no records */ }
+unpublishedWork.sort((a, b) => b.days - a.days);
+
+process.stdout.write(JSON.stringify({ generated: iso(now), days: DAYS, ownerChores, askedTwice, unpublishedWork: unpublishedWork.slice(0, 10), skips, hitl: hitl.slice(0, MAX.hitl), blockedUser: blockedUser.slice(0, MAX.blocked),
+  monitorRepeats: monitorRepeats.slice(0, MAX.monitor), failedRuns: failedRuns.slice(0, MAX.runs), complaints: complaints.slice(0, MAX.complaints), credentials,
+  counts: { hitlAsked: hitl.length, hitlUnanswered: hitl.filter(h => !h.answered).length, blockedUser: blockedUser.length } }) + '\n');

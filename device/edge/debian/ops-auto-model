@@ -1,0 +1,21 @@
+#!/bin/sh
+# ops-auto-model ISSUE_FILE ATTEMPT (issue 117): prints "MODEL EFFORT REASON" for one ops-auto run.
+# Maintenance issues (label monitor, lint or update) use HS_AUTO_MODEL_MAINT, and lint/update
+# also HS_AUTO_EFFORT_MAINT; everything else HS_AUTO_MODEL with the account's effort. From the
+# second attempt on, a maintenance issue gets the full HS_AUTO_MODEL and default effort
+# ("modello alzato"): the light one already failed to close or hand it over.
+# MODEL/EFFORT "default" = pass no option, the account decides.
+set -eu
+f=$1 n=${2:-1}
+labels=$(sed -n 's/^Labels:[[:space:]]*//p' "$f" 2>/dev/null | head -1 | tr -d ' ' | tr ',' '\n')
+has() { printf '%s\n' "$labels" | grep -qx "$1"; }
+full=$(hs-setting HS_AUTO_MODEL 2>/dev/null) || full=default
+if has monitor || has lint || has update; then
+	if [ "$n" -ge 2 ]; then echo "$full default modello alzato (tentativo $n)"; exit 0; fi
+	m=$(hs-setting HS_AUTO_MODEL_MAINT 2>/dev/null) || m=$full
+	e=default
+	if has lint || has update; then e=$(hs-setting HS_AUTO_EFFORT_MAINT 2>/dev/null) || e=default; fi
+	echo "$m $e manutenzione"
+else
+	echo "$full default"
+fi

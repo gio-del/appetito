@@ -1,0 +1,7 @@
+#!/bin/sh
+# New hand-written issue in the right shape (issue 114): creates issues/open/NNN-slug.md with the number
+# from issues-next-id and the full header (Opened today, Blocked on, Status, optional Parent/Labels/Related),
+# prints its path, and on stderr the look-alike issues of issues-similar. Then write the body into the file.
+# Usage: issues-new TITLE [--status backlog|todo|in-progress] [--parent N] [--labels a,b] [--blocked-on X]
+#                         [--related N,M] [--body TEXT]       (repo: $ISSUES_REPO, default ~/home-server)
+exec /usr/local/bin/node /opt/hs-tracker/issues.js --new "$@"

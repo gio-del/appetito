@@ -1,0 +1,165 @@
+#!/bin/sh
+# release-gate ($HS_USER's cron, hourly; issue 208): decides when a Project's release-please Release PR
+# is merged. Deterministic, no Claude, no token here (data and merge go through `projects-publish
+# release-data|release`, the one reader of the token). Only Projects with `auto` in column 7 of /etc/hs-projects.
+# Rules (limits from the tracker's settings, hs-setting HS_RELEASE_*): changelog has a feat/fix/perf entry;
+# version is not a major / 1.0 / breaking change (else `serve-owner`: the owner merges); CI of the PR green;
+# at least HS_RELEASE_MIN_DAYS since the last release (a fix-only release may go earlier); soak (issue 350): continuous
+# health for HS_RELEASE_SOAK_DAYS (since the oldest install in project-cd's log, not before the last rollback; the installed commit holds the PR's base commit; no app: age of the base commit); head: the running commit installed for HS_RELEASE_HEAD_HOURS; hs-monitor shows no failure of the app, and no open
+# `bug` issue created since then (mirror projects-issues.json).
+# Per Project state (status waiting|announced|postponed|serve-owner|released|none) in $STATE/NAME.json and,
+# for the tracker, /var/lib/edge-status/release-gate.json. All rules hold -> `announced` (version, changelog, exit
+# time = now + HS_RELEASE_NOTICE_HOURS). The merge happens only when, after that time, the PR has the same head
+# and every rule still holds; otherwise back to `waiting`. "Rimanda" is a request file $REQDIR/NAME.req.json
+# ({"project","at"} written by the tracker) seen while `announced`: postponed 7 days or until the PR's changelog changes.
+# env (tests): HS_PUBLISH_CMD, HS_PROJECTS_CMD, HS_SETTING_CMD, HS_RELEASE_OUT, HS_RELEASE_CARD, HS_RELEASE_STATE, HS_RELEASE_REQ_DIR,
+# HS_APP_DIR, HS_CD_STATE, HS_PROJECTS_DIR, HS_ISSUES_MIRROR, HS_MONITOR_STATE, HS_NOW
+set -eu
+export PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C
+PUB=${HS_PUBLISH_CMD:-projects-publish}
+LIST=${HS_PROJECTS_CMD:-gateway-projects}
+SET=${HS_SETTING_CMD:-hs-setting}
+OUT=${HS_RELEASE_OUT:-/var/lib/edge-status/release-gate.json}
+STATE=${HS_RELEASE_STATE:-$HOME/.local/state/release-gate}
+REQDIR=${HS_RELEASE_REQ_DIR:-/var/lib/release-req}
+APPDIR=${HS_APP_DIR:-/opt}
+PROJ=${HS_PROJECTS_DIR:-$HOME/projects}
+CDST=${HS_CD_STATE:-/var/lib/project-cd}
+CARD=${HS_RELEASE_CARD:-/var/lib/edge-status/releases.json}
+MIRROR=${HS_ISSUES_MIRROR:-/var/lib/edge-status/projects-issues.json}
+MON=${HS_MONITOR_STATE:-$HOME/.local/state/hs-monitor/state.json}
+now=${HS_NOW:-$(date +%s)}
+log() { echo "$(date '+%F %T') $*"; }
+iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+epoch() { date -u -d "$1" +%s 2> /dev/null || echo 0; }
+mkdir -p "$STATE"
+
+paused=$("$SET" HS_RELEASE_PAUSE); soak=$("$SET" HS_RELEASE_SOAK_DAYS); mind=$("$SET" HS_RELEASE_MIN_DAYS); notice=$("$SET" HS_RELEASE_NOTICE_HOURS); headh=$("$SET" HS_RELEASE_HEAD_HOURS)
+res='{}'
+
+while read -r name _ app _ _ _ rel; do
+	[ "${rel:--}" = auto ] || continue
+	sf=$STATE/$name.json
+	prev=$(cat "$sf" 2> /dev/null || echo '{}')
+	pst=$(printf %s "$prev" | jq -r '.status // "none"')
+	if ! data=$("$PUB" release-data "$name" 2> "$STATE/err") || ! printf %s "$data" | jq -e . > /dev/null 2>&1; then
+		log "$name: dati della Release PR non leggibili: $(head -c 200 "$STATE/err")"
+		res=$(printf %s "$res" | jq --arg n "$name" --argjson p "$prev" '.[$n] = ($p + {stale: true})')
+		continue
+	fi
+	new=
+	if [ "$(printf %s "$data" | jq '.pr == null')" = true ]; then
+		# no open Release PR: an announced one that vanished was merged (by us or by the owner)
+		if [ "$pst" = announced ]; then new=$(printf %s "$prev" | jq --argjson t "$now" '. + {status: "released", released_at: $t}')
+		elif [ "$pst" = released ]; then new=$prev
+		else new='{"status":"none"}'; fi
+	else
+		head=$(printf %s "$data" | jq -r .pr.head); parent=$(printf %s "$data" | jq -r .pr.parent)
+		body=$(printf %s "$data" | jq -r .pr.body)
+		bh=$(printf %s "$body" | cksum | cut -d' ' -f1)
+		ver=$(printf %s "$body" | sed -n 's/^## \[\{0,1\}v\{0,1\}\([0-9][0-9.]*[0-9]\).*/\1/p' | head -n 1)
+		[ -n "$ver" ] || ver=$(printf %s "$data" | jq -r .pr.title | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
+		lasttag=$(printf %s "$data" | jq -r '.last.tag // ""'); lastv=${lasttag#v}
+		lastat=$(epoch "$(printf %s "$data" | jq -r '.last.at // ""')")
+		[ -n "$(printf %s "$data" | jq -r '.last.at // ""')" ] || lastat=
+		feat=$(printf %s "$body" | grep -Ec '^### (Features|Performance Improvements)' || true)
+		fix=$(printf %s "$body" | grep -Ec '^### Bug Fixes' || true)
+		breaking=$(printf %s "$body" | grep -Eic 'BREAKING CHANGE' || true)
+		rules='[]'
+		add() { rules=$(printf %s "$rules" | jq --arg r "$1" --argjson ok "$2" --arg w "$3" '. + [{rule: $r, ok: $ok, why: $w}]'); }
+		# 1 changelog
+		if [ "$feat" -gt 0 ] || [ "$fix" -gt 0 ]; then add changelog true "voci feat/fix/perf presenti"; else add changelog false "nessuna voce feat, fix o perf"; fi
+		# 2 version: never a major / 1.0 / breaking change
+		major=false
+		[ "${ver%%.*}" != "${lastv%%.*}" ] && [ -n "$lastv" ] && major=true
+		[ -z "$lastv" ] && [ "${ver%%.*}" != 0 ] && major=true
+		[ "$breaking" -gt 0 ] && major=true
+		[ -n "$ver" ] || major=true
+		if [ $major = true ]; then add version false "versione ${ver:-?} (major, 1.0 o breaking change): la unisci tu"; else add version true "versione $ver"; fi
+		# 3 CI
+		ci=$(printf %s "$data" | jq -r .ci)
+		if [ "$ci" = green ]; then add ci true "CI verde"; else add ci false "CI $ci"; fi
+		# 4 interval since the last release (fix-only releases may go earlier)
+		if [ -z "$lastat" ] || [ $((now - lastat)) -ge $((mind * 86400)) ]; then add interval true "ultima release ${lasttag:-nessuna}"
+		elif [ "$feat" -eq 0 ] && [ "$fix" -gt 0 ]; then add interval true "release di soli fix: può uscire prima"
+		else add interval false "l'ultima release ($lasttag) è di meno di $mind giorni"; fi
+		# 5 soak (issue 350): continuous health, not the age of the PR's base commit (release-please moves it with every
+		# commit of main). Start = oldest install in project-cd's log (REF mtime without a log), not before the last
+		# release, not before the last rollback (NAME.rollbacks); the installed commit must hold the PR's base commit.
+		# 5b head: the commit running now must have been installed (so seen healthy) for HS_RELEASE_HEAD_HOURS.
+		since=; headsince=; appok=true; why=
+		if [ "$app" != - ] && [ -r "$APPDIR/$app/REF" ]; then
+			pin=$(cut -d' ' -f1 "$APPDIR/$app/REF"); since=$(stat -c %Y "$APPDIR/$app/REF"); headsince=$since
+			if ! git -C "$PROJ/$name" merge-base --is-ancestor "$parent" "$pin" 2> /dev/null; then appok=false; why="il commit installato non contiene ancora $(printf %.7s "$parent")"
+			else
+				inst=$CDST/$name.installs; last=$(tail -n 1 "$inst" 2> /dev/null | cut -d' ' -f3)
+				if [ "$last" = "$pin" ]; then
+					s2=$(epoch "$(head -n 1 "$inst" | cut -d' ' -f1,2)"); [ "$s2" != 0 ] && since=$s2
+					s2=$(epoch "$(tail -n 1 "$inst" | cut -d' ' -f1,2)"); [ "$s2" != 0 ] && headsince=$s2
+				fi
+				rb=$(epoch "$(tail -n 1 "$CDST/$name.rollbacks" 2> /dev/null | cut -d' ' -f1,2)")
+				[ "$rb" -gt "$since" ] && since=$rb
+			fi
+		elif [ "$app" != - ]; then appok=false; why="app $app non installata"
+		else
+			pa=$(printf %s "$data" | jq -r '.pr.parent_at // ""'); since=$(epoch "$pa")
+		fi
+		if [ "$appok" = true ] && { [ -z "$since" ] || [ "$since" = 0 ] || [ $((now - since)) -lt $((soak * 86400)) ]; }; then appok=false; why="in prova continua da meno di $soak giorni"; fi
+		if [ "$appok" = true ]; then add soak true "in prova da almeno $soak giorni"; else add soak false "$why"; fi
+		if [ -n "$headsince" ] && [ "$headsince" != 0 ] && [ $((now - headsince)) -lt $((headh * 3600)) ]; then add head false "l'ultimo commit gira da meno di $headh ore"; else add head true "ultimo commit in prova da almeno $headh ore"; fi
+		# 6 hs-monitor green for the app
+		if [ "$app" = - ] || ! jq -e --arg a "$app" 'any((.fail // {}) | keys[]; test($a))' "$MON" > /dev/null 2>&1; then add monitor true "monitor verde"; else add monitor false "hs-monitor segnala $app"; fi
+		# 7 no bug issue opened since the soak start
+		nb=0
+		if [ -n "$since" ] && [ "$since" != 0 ]; then
+			nb=$(jq -r --arg n "$name" --arg s "$(iso "$since")" '[(.projects[$n].issues // [])[] | select(.state == "open" and (.labels | index("bug")) and .created > $s)] | length' "$MIRROR" 2> /dev/null || echo 0)
+		fi
+		if [ "${nb:-0}" -eq 0 ]; then add bugs true "nessuna issue bug aperta nel periodo"; else add bugs false "$nb issue bug aperte dopo l'installazione"; fi
+		allok=$(printf %s "$rules" | jq 'all(.[]; .ok)')
+		verok=$(printf %s "$rules" | jq 'all(.[] | select(.rule == "version"); .ok)')
+		cl=$(printf %s "$body" | head -c 3000)
+		base=$(jq -n --arg h "$head" --arg bh "$bh" --arg v "$ver" --arg u "$(printf %s "$data" | jq -r .pr.url)" --argjson n "$(printf %s "$data" | jq .pr.number)" --argjson r "$rules" --arg c "$cl" --arg lt "$lasttag" --arg la "$(printf %s "$data" | jq -r '.last.at // ""')" \
+			'{head: $h, body_hash: $bh, version: $v, pr: $n, url: $u, rules: $r, changelog: $c, last_tag: $lt, last_at: $la}')
+		pu=$(printf %s "$prev" | jq -r '.postponed_until // 0'); pbh=$(printf %s "$prev" | jq -r '.body_hash // ""')
+		# a postponement request seen while announced
+		req=$REQDIR/$name.req.json
+		if [ "$pst" = announced ] && [ -r "$req" ]; then
+			rat=$(jq -r 'select(.project == "'"$name"'") | .at // 0 | floor' "$req" 2> /dev/null || echo 0)
+			ann=$(printf %s "$prev" | jq -r '.announced_at // 0')
+			if [ "${rat:-0}" -ge "$ann" ] && [ "$((now - rat))" -lt 259200 ]; then pst=postpone-now; pu=$((now + 7 * 86400)); pbh=$bh; fi
+			rm -f "$req"
+		fi
+		if [ "$paused" = 1 ]; then
+			new=$(printf %s "$prev" | jq --argjson b "$base" '. + $b + {paused: true}')
+		elif [ "$verok" = false ]; then new=$(printf %s "$base" | jq '. + {status: "serve-owner"}')
+		elif [ "$pst" = postpone-now ] || { [ "$pst" = postponed ] && [ "$now" -lt "$pu" ] && [ "$pbh" = "$bh" ]; }; then
+			new=$(printf %s "$base" | jq --argjson u "$pu" '. + {status: "postponed", postponed_until: $u}')
+		elif [ "$allok" != true ]; then new=$(printf %s "$base" | jq '. + {status: "waiting"}')
+		elif [ "$pst" = announced ] && [ "$(printf %s "$prev" | jq -r .head)" = "$head" ]; then
+			rel_at=$(printf %s "$prev" | jq -r '.release_at')
+			if [ "$now" -ge "$rel_at" ]; then
+				if m=$("$PUB" release "$name" "$(printf %s "$data" | jq -r .pr.number)" "$head" 2>&1); then
+					log "$name: Release PR #$(printf %s "$data" | jq -r .pr.number) v$ver unita ($m)"
+					new=$(printf %s "$base" | jq --argjson t "$now" '. + {status: "released", released_at: $t}')
+				else
+					log "$name: unione rifiutata: $(printf %s "$m" | head -c 200)"
+					new=$(printf %s "$prev" | jq --argjson b "$base" --arg e "$(printf %s "$m" | head -c 200)" '. + $b + {error: $e}')
+				fi
+			else new=$(printf %s "$prev" | jq --argjson b "$base" '. + $b'); fi
+		elif [ "$pst" = announced ]; then
+			new=$(printf %s "$base" | jq '. + {status: "waiting", note: "la PR è cambiata durante l attesa"}')
+		else
+			log "$name: annunciata la v$ver, esce tra $notice ore"
+			new=$(printf %s "$base" | jq --argjson t "$now" --argjson h "$notice" '. + {status: "announced", announced_at: $t, release_at: ($t + $h * 3600)}')
+		fi
+	fi
+	printf %s "$new" > "$sf.tmp" && mv "$sf.tmp" "$sf"
+	res=$(printf %s "$res" | jq --arg n "$name" --argjson s "$new" '.[$n] = $s')
+done <<EOF
+$($LIST)
+EOF
+
+mkdir -p "$(dirname "$OUT")" 2> /dev/null || true
+printf %s "$res" | jq --argjson t "$now" --argjson p "$([ "$paused" = 1 ] && echo true || echo false)" '{updated: $t, paused: $p, projects: .}' > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"
+# One line for the dashboard card (customapi, world-readable: only project, version and hours, no changelog)
+printf %s "$res" | jq --argjson t "$now" '{annuncio: ([to_entries[] | select(.value.status == "announced") | "\(.key) v\(.value.version) tra \((((.value.release_at - $t) / 3600) | ceil | if . < 0 then 0 else . end)) h"] | if length == 0 then "nessuno" else join(", ") end)}' > "$CARD.tmp" && mv "$CARD.tmp" "$CARD"

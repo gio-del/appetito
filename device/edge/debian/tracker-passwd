@@ -1,0 +1,51 @@
+#!/bin/sh
+# Set the issue tracker password (run as root). Default: a new random one, scrypt hash in
+# /var/lib/tracker/password (read by the service at each login), plaintext in
+# ~$HS_USER/.secrets/tracker for you to save in Vaultwarden. Existing sessions stay valid;
+# to log every device out too: rm /var/lib/tracker/sessions.json and restart the service.
+set -eu
+. /etc/home-server.env
+H=$(getent passwd "$HS_USER" | cut -d: -f6)
+umask 077
+# --link: no password here; print a one-time link (15 min) where the owner sets it in the browser,
+# e.g. from the phone with a password manager generating and saving it. Using it logs out other sessions.
+if [ "${1:-}" = --link ]; then
+	TOKEN=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')
+	EXP=$(( ($(date +%s) + 900) * 1000 ))
+	printf '%s %s\n' "$(printf %s "$TOKEN" | sha256sum | cut -d' ' -f1)" "$EXP" > /var/lib/tracker/setup-token
+	chown tracker:tracker /var/lib/tracker/setup-token
+	echo "https://$HS_TS_HOST:8444/#setup=$TOKEN"
+	echo "(one use, valid until $(date -d "@$((EXP / 1000))" '+%H:%M'))"
+	exit 0
+fi
+# --watch-token: new bearer token of GET /api/watch (smartwatch, issue 290): sha256 for the tracker, plaintext in
+# ~$HS_USER/.secrets/tracker-watch (rotate-secrets watch stores it in Vaultwarden too).
+if [ "${1:-}" = --watch-token ]; then
+	T=$(openssl rand -hex 32)
+	printf %s "$T" | sha256sum | cut -d' ' -f1 > /var/lib/tracker/watch-token.new
+	chown tracker:tracker /var/lib/tracker/watch-token.new
+	mv /var/lib/tracker/watch-token.new /var/lib/tracker/watch-token
+	install -d -m 700 -o "$HS_USER" -g "$HS_USER" "$H/.secrets"
+	printf %s "$T" > "$H/.secrets/tracker-watch"
+	chown "$HS_USER:$HS_USER" "$H/.secrets/tracker-watch"
+	echo "watch token set: saved in $H/.secrets/tracker-watch"
+	exit 0
+fi
+# --stdin: take the password from stdin (used by rotate-secrets, which also stores it in Vaultwarden).
+if [ "${1:-}" = --stdin ]; then
+	PW=$(cat)
+	[ ${#PW} -ge 16 ] || { echo "tracker-passwd: password too short" >&2; exit 1; }
+else
+	PW=$(openssl rand -base64 36 | tr -d '/+=\n' | cut -c1-24)
+fi
+HASH=$(PW=$PW /usr/local/bin/node -e '
+const c = require("node:crypto"), s = c.randomBytes(16), N = 32768, r = 8, p = 1;
+const k = c.scryptSync(process.env.PW.normalize("NFC"), s, 32, { N, r, p, maxmem: 256 * N * r + (1 << 20) });
+console.log(["scrypt", N, r, p, s.toString("base64"), k.toString("base64")].join("$"));')
+printf '%s\n' "$HASH" > /var/lib/tracker/password.new
+chown tracker:tracker /var/lib/tracker/password.new
+mv /var/lib/tracker/password.new /var/lib/tracker/password
+install -d -m 700 -o "$HS_USER" -g "$HS_USER" "$H/.secrets"
+printf %s "$PW" > "$H/.secrets/tracker"
+chown "$HS_USER:$HS_USER" "$H/.secrets/tracker"
+echo "tracker password set: saved in $H/.secrets/tracker (save it in Vaultwarden as homelab/tracker)"

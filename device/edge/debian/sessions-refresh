@@ -1,0 +1,11 @@
+#!/bin/sh
+# sessions-refresh (issue 479): reopens the brain and studio sessions on the installed Claude Code (brain-refresh,
+# issue 445, same chat via --resume), one cron line. The ops session has its own user's job (ops-refresh, issue 421).
+# A failing one is named on stderr ("sessione fallita: NAME") and does not stop the other. Test overrides:
+# HS_SESSIONS_REFRESH (the brain-refresh command), HS_SESSIONS_STUDIO_HOME, HS_SESSIONS_LOGDIR.
+L=${HS_SESSIONS_LOGDIR:-/var/log}
+R=${HS_SESSIONS_REFRESH:-/usr/local/sbin/brain-refresh}
+rc=0
+"$R" >> $L/brain-refresh.log 2>&1 || { echo "sessione fallita: brain" >&2; rc=1; }
+"$R" studio "${HS_SESSIONS_STUDIO_HOME:-/home/studio/studio}" >> $L/studio-refresh.log 2>&1 || { echo "sessione fallita: studio" >&2; rc=1; }
+exit $rc

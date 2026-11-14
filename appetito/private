@@ -18,3 +18,49 @@ scripts/rebuild-vbmeta.py
 device/edge/debian/projects
 device/edge/debian/studio/CLAUDE.md
 device/edge/debian/sumisura/*-prompt.md
+appetito/rule-files
+device/edge/tests/direzione.sh
+device/edge/tests/gateway-core.sh
+device/edge/tests/ops-auto-project.sh
+device/edge/tests/studio-app.sh
+device/edge/tests/studio-vault.sh
+device/edge/tests/watch-view.sh
+
+# Issue 584: Appetito e' il seme del piano piu' il sistema dei Project, non una copia del server dell'owner.
+# Script di un Project specifico (studio, sumisura, library): ogni Project ha la sua repo.
+device/edge/debian/studio*
+device/edge/debian/sumisura*
+device/edge/debian/library-*
+device/edge/debian/sv/studio*
+device/edge/debian/sv/sumisura/
+device/edge/debian/sv/library/
+device/edge/studio-fw.sh
+device/edge/install-studio-fw.sh
+device/edge/tests/studio*
+device/edge/tests/sumisura*
+device/edge/tests/library*
+# Mail: ponte con la casella dell'owner
+device/edge/debian/mail*
+device/edge/tests/mail*
+# Solo Android/chroot e hardware dell'owner
+device/edge/debian/android-sh
+device/edge/debian/debian.sh
+device/edge/debian/debian-boot.sh
+device/edge/debian/phone-apps*
+device/edge/install.sh
+device/edge/install-debloat-watchdog.sh
+device/edge/debloat-watchdog.sh
+device/edge/allow-3p.txt
+# Dichiarati fuori dal piano: edge-watch, Uptime Kuma, dashboard/Homepage, rotate-secrets cosi' com'e'
+device/edge/debian/edge-watch
+device/edge/debian/uptime-kuma-install
+device/edge/debian/sv/uptime-kuma/
+device/edge/debian/dashboard-*
+device/edge/tests/dashboard*
+device/edge/debian/rotate-secrets
+# Servizi come Vaultwarden e AdGuard: per il piano sono issue di partenza da far costruire all'agente
+device/edge/debian/vaultwarden-*
+device/edge/debian/sv/vaultwarden/
+device/edge/debian/sv/adguardhome/
+# Test che dipendono da quello che esce (motivo in appetito/files)
+device/edge/tests/restore-backup.sh

@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+// ops-auto-log ($HS_USER; no Claude; issue 104): the "Log ›" of /auto.html. Turns a run's stream-json
+// into a list of lines: Claude's own text messages, one line per tool call (Bash → its description
+// or the command's first line, file tools → path or pattern, others → name) and the final result.
+// Never tool outputs (tool_result blocks are skipped) nor thinking; every line is cut at 300 chars
+// and passed through redact() (tokens, Authorization/password=, long hex/base64, UUIDs, commands
+// touching .secrets). Used by ops-auto-card, which writes it to /var/lib/ops-auto-log/run.json
+// (group tracker, 640: never under /var/lib/edge-status, which Caddy serves to the LAN); the
+// tracker serves it on the authenticated GET /api/auto/log. Only ops-auto's own runs: never brain.
+// CLI (tests): ops-auto-log STREAM.jsonl → JSON on stdout.
+'use strict';
+const fs = require('fs');
+
+const MAX_LINE = 300;
+const MAX_ENTRIES = 400;
+const HIDDEN = '‹nascosto›';
+
+// Secret-looking text → ‹nascosto›: key=value forms keep the key so the line still makes sense,
+// then bare blobs (known token prefixes, UUIDs, long hex/base64).
+const KEYED = [
+  /\b((?:proxy-)?authorization\s*:\s*)(?:(?:bearer|basic)\s+)?[^\s"']+/gi,
+  /\b(bearer\s+)[A-Za-z0-9._~+\/=-]{8,}/gi,
+  /\b((?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|cookie)["']?\s*[=:]\s*["']?)[^\s"'&,;]+/gi,
+];
+const BLOBS = [
+  /\b(?:sk-ant-|sk-|ghp_|gho_|github_pat_|xox[abp]-|glpat-|AKIA)[A-Za-z0-9_-]{8,}/g,
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+  /\b[0-9a-f]{32,}\b/gi,
+];
+// base64-ish: 40+ chars with digits and both cases, so file paths and slugs stay readable
+const B64 = /[A-Za-z0-9+\/_-]{40,}={0,2}/g;
+const looksB64 = m => /\d/.test(m) && /[A-Z]/.test(m) && /[a-z]/.test(m) && !/^\//.test(m) && !/\/[a-z][a-z-]+\//.test(m);
+function redact(s) {
+  s = String(s == null ? '' : s);
+  for (const re of KEYED) s = s.replace(re, (m, k) => k + HIDDEN);
+  for (const re of BLOBS) s = s.replace(re, HIDDEN);
+  s = s.replace(B64, m => looksB64(m) ? HIDDEN : m);
+  return s;
+}
+const touchesSecrets = s => /\.secrets\b|\/etc\/sumisura\.env|\/var\/lib\/tracker\/(password|sessions|setup-token)|\.agekey\b/.test(String(s || ''));
+function clip(s) {
+  s = redact(s).replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  return s.length > MAX_LINE ? s.slice(0, MAX_LINE - 1) + '…' : s;
+}
+const firstLine = s => String(s || '').split('\n').find(l => l.trim()) || '';
+
+// One line for a tool call (input only, never its output).
+function toolLine(name, input) {
+  const i = input || {};
+  const p = i.file_path || i.notebook_path || i.path || '';
+  switch (name) {
+    case 'Bash': {
+      const cmd = String(i.command || '');
+      if (i.description) return clip(touchesSecrets(i.description) ? HIDDEN : i.description);
+      return touchesSecrets(cmd) ? HIDDEN : clip('$ ' + firstLine(cmd));
+    }
+    case 'Read': case 'NotebookRead': return clip(p);
+    case 'Edit': case 'MultiEdit': case 'Write': case 'NotebookEdit': return clip(p);
+    case 'Grep': return clip(`"${i.pattern || ''}"${p ? ' in ' + p : ''}${i.glob ? ' (' + i.glob + ')' : ''}`);
+    case 'Glob': return clip(`${i.pattern || ''}${p ? ' in ' + p : ''}`);
+    case 'TodoWrite': return 'aggiorna la lista dei passi';
+    case 'Task': case 'Agent': return clip(i.description || name);
+    case 'WebFetch': return clip(i.url || '');
+    case 'WebSearch': return clip(i.query || '');
+    default: return clip(name);
+  }
+}
+
+// cat(name, input) → icon category for the page (ops-auto-card passes its own category()).
+function build(text, cat = () => 'other') {
+  const entries = [];
+  let result = null, started = null;
+  for (const line of String(text || '').split('\n')) {
+    if (!line) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    if (o.type === 'system' && o.subtype === 'init') started = true;
+    if (o.type === 'assistant') {
+      for (const c of (o.message && o.message.content) || []) {
+        if (c.type === 'text' && String(c.text || '').trim()) entries.push({ k: 'text', t: clip(c.text) });
+        else if (c.type === 'tool_use') entries.push({ k: 'tool', n: String(c.name || '').slice(0, 40), c: cat(c.name, c.input), t: toolLine(c.name, c.input) });
+      }
+    } else if (o.type === 'result') {
+      result = { t: clip(o.result || (o.is_error ? 'errore' : '')), error: !!o.is_error, subtype: String(o.subtype || '').slice(0, 40) };
+    }
+  }
+  const dropped = Math.max(0, entries.length - MAX_ENTRIES);
+  return { started: !!started, total: entries.length, dropped, entries: entries.slice(-MAX_ENTRIES), result };
+}
+
+function fromFile(file, cat) {
+  let txt; try { txt = fs.readFileSync(file, 'utf8'); } catch { return null; }
+  return build(txt, cat);
+}
+
+module.exports = { build, fromFile, redact, toolLine };
+
+if (require.main === module) {
+  const r = fromFile(process.argv[2]);
+  if (!r) { console.error('ops-auto-log: cannot read ' + process.argv[2]); process.exit(1); }
+  process.stdout.write(JSON.stringify(r) + '\n');
+}

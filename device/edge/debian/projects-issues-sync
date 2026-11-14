@@ -1,0 +1,57 @@
+#!/bin/sh
+# Cron every 10 min (issue 091): mirror, read-only, the GitHub Issues of the Projects in the
+# Gateway list (/usr/local/bin/gateway-projects) into /var/lib/edge-status/projects-issues.json,
+# which the tracker serves to the owner session (page /projects.html; Caddy does not publish it).
+# This is the only reader of the token ~/.secrets/git-github (issue 160): it goes to curl on stdin,
+# never on a command line or into the log. Only metadata is kept (number, title, state, labels,
+# author, link, dates), never issue bodies or comments. Everything in it is untrusted text.
+# Trust (owner decision, issue 160): an issue is "trusted" (may become work for ops-auto, issue 162)
+# only if its author is the owner, or the owner assigned it to themself (timeline event "assigned"
+# whose actor and assignee are both the owner). The owner's login is the repo's owner in the URL
+# (the Projects are the owner's repos). The ids shown are always "<project>#<number>".
+# A failed fetch keeps the previous issues of that Project, marked stale.
+set -eu
+export LC_ALL=C
+TOKEN=$HOME/.secrets/git-github
+OUT=/var/lib/edge-status/projects-issues.json
+tmp=$(mktemp)
+trap 'rm -f "$tmp" "$tmp.p"' EXIT
+echo '{}' > "$tmp"
+
+api() { # path -> JSON on stdout; token on stdin only
+	printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN")" |
+		curl -fsS --max-time 30 -K - -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com$1"
+}
+
+gateway-projects | while read -r name url _; do
+	case $url in https://github.com/*/*) ;; *) continue ;; esac
+	repo=${url#https://github.com/}; repo=${repo%.git}; repo=${repo%/}
+	owner=${repo%%/*}
+	err=
+	if [ ! -r "$TOKEN" ]; then err="token mancante"
+	elif ! raw=$(api "/repos/$repo/issues?state=all&per_page=100&sort=updated&direction=desc"); then err="GitHub non raggiungibile o accesso negato"
+	fi
+	if [ -n "$err" ]; then
+		jq --arg n "$name" --arg r "$repo" --arg e "$err" --slurpfile old "$OUT" \
+			'.[$n] = ({repo:$r, error:$e, stale:true, issues:[]} * (($old[0].projects // {})[$n] // {}) | .error=$e | .stale=true)' "$tmp" > "$tmp.p" 2>/dev/null ||
+			jq --arg n "$name" --arg r "$repo" --arg e "$err" '.[$n]={repo:$r,error:$e,stale:true,issues:[]}' "$tmp" > "$tmp.p"
+		mv "$tmp.p" "$tmp"; continue
+	fi
+	list=$(printf %s "$raw" | jq -c --arg o "$owner" '[.[] | select(.pull_request | not) | {
+		number, title: (.title // "" | .[0:200]), state, url: .html_url, author: (.user.login // ""),
+		labels: [.labels[]? | (if type == "object" then .name else . end) | .[0:50]],
+		assignees: [.assignees[]?.login], created: .created_at, updated: .updated_at,
+		trust: (if (.user.login // "") == $o then "author" else null end)}]')
+	# Not by the owner but assigned to them: trusted only if the owner did the assigning.
+	for n in $(printf %s "$list" | jq -r --arg o "$owner" '.[] | select(.trust == null and (.assignees | index($o))) | .number'); do
+		if api "/repos/$repo/issues/$n/timeline?per_page=100" | jq -e --arg o "$owner" \
+			'any(.[]; .event == "assigned" and .assignee.login == $o and .actor.login == $o)' > /dev/null 2>&1; then
+			list=$(printf %s "$list" | jq -c --argjson n "$n" 'map(if .number == $n then .trust = "self-assigned" else . end)')
+		fi
+	done
+	jq --arg n "$name" --arg r "$repo" --argjson l "$list" '.[$n]={repo:$r, error:"", stale:false, issues:$l}' "$tmp" > "$tmp.p"
+	mv "$tmp.p" "$tmp"
+done
+jq --arg u "$(date '+%d/%m %H:%M')" '{updated:$u, projects:.}' "$tmp" > "$OUT.tmp"
+chmod 644 "$OUT.tmp"
+mv "$OUT.tmp" "$OUT"

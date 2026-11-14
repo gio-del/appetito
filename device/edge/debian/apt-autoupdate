@@ -1,0 +1,8 @@
+#!/bin/sh
+# Daily unattended security/stable updates for the chroot (root cron: /etc/cron.d/home-server),
+# then restart what was upgraded. Log: /var/log/home-server-updates.log
+exec >> /var/log/home-server-updates.log 2>&1
+echo "== $(date '+%F %T')"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq && unattended-upgrade -v | grep -E "^(Packages that will be upgraded|All upgrades installed|No packages found)" || true
+/usr/local/sbin/restart-stale

@@ -1,0 +1,212 @@
+#!/bin/sh
+# Check (default) or apply (--apply) updates for the apps NOT managed by apt.
+# Run as root: sudo update-apps [--apply [APP [VERSION]] | --rollback adguardhome|node].
+#   auto with --apply: Vaultwarden (digest pinned in vaultwarden-fetch), AdGuard Home (release
+#                      tarball, SHA-256 checked), Node.js 22 LTS (tarball, SHASUMS256.txt checked, old one kept in
+#                      /opt/node.prev, issue 152)
+#   report only (pin bumps: by app-upgrade, started by hs-monitor, issue 115; else by ops-auto through hs-monitor
+#                issues, issue 098):
+#                      bw CLI (version pinned in rotate-secrets, installed only while it runs), Uptime Kuma (if enabled and installed), Sumisura (commit pinned in sumisura-setup), library (commit pinned in library-setup; newer commits only reported); both skipped while project-cd is active for them (issue 235)
+# Disabled optional services are skipped. Also reports daemons left on an upgraded binary.
+# --status (daily root cron): the check only, summarised in /var/lib/edge-status/updates.json
+# for the dashboard card "Aggiornamenti app" (issue 047); the available upgrades of the auto-upgradable
+# apps (with their upstream release date) go to /var/lib/hs-updates/pending.json, which hs-monitor turns
+# into app-upgrade runs (or issues for ops-auto) once a release is 7 days old (issues 098, 115).
+set -u
+if [ "${1:-}" = --status ]; then
+	[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+	OUT=/var/lib/edge-status/updates.json
+	UPD=/var/lib/hs-updates; mkdir -p "$UPD" && chmod 755 "$UPD"
+	HS_UPDATES_OUT=$(mktemp) || exit 1; export HS_UPDATES_OUT
+	out=$("$0")
+	jq -s --arg c "$(date -Iseconds)" '{checked: $c, apps: .}' "$HS_UPDATES_OUT" > "$UPD/pending.json.tmp" &&
+		chmod 644 "$UPD/pending.json.tmp" && mv -f "$UPD/pending.json.tmp" "$UPD/pending.json"
+	rm -f "$HS_UPDATES_OUT"
+	printf "%s\n" "$out"
+	pend=$(printf "%s\n" "$out" | awk '$1 ~ /^(UPDATE|NEW|STALE)$/ { sub(":", "", $2); print $2 }' | sort -u | paste -sd, - | sed "s/,/, /g")
+	ok=$(printf "%s\n" "$out" | grep -c "^ok ")
+	if [ -n "$pend" ]; then txt="Da aggiornare: $pend"; elif [ "$ok" -gt 0 ]; then txt="Tutto aggiornato"; else txt="Controllo non riuscito"; fi
+	jq -n --arg p "$txt" --arg u "$(date "+%d/%m %H:%M")" '{pending: $p, updated: $u}' > "$OUT.tmp" && chmod 644 "$OUT.tmp" && mv -f "$OUT.tmp" "$OUT"
+	[ -n "$pend" ] || [ "$ok" -gt 0 ]
+	exit
+fi
+# --rollback adguardhome: back to the binary the last --apply replaced (app-upgrade, issue 115).
+if [ "${1:-}" = --rollback ] && [ "${2:-}" = adguardhome ]; then
+	[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+	[ -x /opt/AdGuardHome/AdGuardHome.prev ] || { echo "no previous adguardhome binary" >&2; exit 1; }
+	mv /opt/AdGuardHome/AdGuardHome.prev /opt/AdGuardHome/AdGuardHome && sv restart /etc/hs-service/adguardhome
+	exit
+fi
+# --rollback node: back to the runtime the last --apply replaced (issue 152).
+if [ "${1:-}" = --rollback ] && [ "${2:-}" = node ]; then
+	[ "${HS_TEST_UID:-$(id -u)}" = 0 ] || { echo "run as root" >&2; exit 1; }
+	ND=${HS_NODE_DIR:-/opt/node}
+	[ -x "$ND.prev/bin/node" ] || { echo "no previous node runtime" >&2; exit 1; }
+	rm -rf "$ND.failed"; mv "$ND" "$ND.failed" && mv "$ND.prev" "$ND" || exit 1
+	rm -rf "$ND.failed"
+	for s in tracker uptime-kuma; do [ -e "${HS_SERVICE_DIR:-/etc/hs-service}/$s" ] && sv restart "${HS_SERVICE_DIR:-/etc/hs-service}/$s"; done
+	exit 0
+fi
+APPLY=; [ "${1:-}" = --apply ] && APPLY=1
+ONLY=${2:-} ONLYVER=${3:-}  # --apply APP [VERSION]: only that app, only if VERSION is the one upstream (app-upgrade, issue 115)
+# applies APP: --apply was given, for all apps or for this one.
+applies() { [ -n "$APPLY" ] && { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }; }
+[ "${HS_TEST_UID:-$(id -u)}" = 0 ] || { echo "run as root (sudo update-apps)" >&2; exit 1; }
+# cd_on NAME: project-cd (issue 235) keeps that Project's app on the newest green commit: nothing to report.
+cd_on() { [ "$(${HS_SETTING_CMD:-hs-setting} "HS_CD_PAUSE_$(printf %s "$1" | tr a-z- A-Z_)" 2>/dev/null)" = 0 ]; }
+enabled() { [ -e "${HS_SERVICE_DIR:-/etc/hs-service}/$1" ]; }
+# gh_latest REPO: sets new (release tag) and pub (its publication date) from the latest GitHub release.
+gh_latest() { rel=$(curl -fsS "https://api.github.com/repos/$1/releases/latest"); new=$(printf "%s" "$rel" | jq -r '.tag_name // empty'); pub=$(printf "%s" "$rel" | jq -r '.published_at // empty'); }
+# proj_url NAME: the git URL of a Project from the Projects list (issue 509; empty if not listed), proj_repo NAME: its owner/name.
+proj_url() { awk -F"|" -v n="$1" '{ sub(/#.*/, ""); for (i = 1; i <= 2; i++) gsub(/^[ \t]+|[ \t]+$/, "", $i) } $1 == n { print $2 }' "${HS_PROJECTS_FILE:-/etc/hs-projects}" 2>/dev/null; }
+proj_repo() { proj_url "$1" | sed -e 's#^https://github.com/##' -e 's#\.git$##'; }
+# is_newer CUR NEW: NEW is a later version than CUR (issue 416: never a downgrade, e.g. beta 0.108.0-b.16 vs stable 0.107.79).
+# Leading v ignored; a -suffix is a pre-release (before the plain version). Empty CUR or unparsable versions: any difference counts.
+is_newer() { [ "$1" != "$2" ] || return 1; [ -n "$1" ] && printf "%s%s" "$1" "$2" | grep -Eq "^v?[0-9]" || return 0
+	local a b; a=$(printf %s "${1#v}" | tr - "~"); b=$(printf %s "${2#v}" | tr - "~")
+	[ "$(printf "%s\n%s\n" "$a" "$b" | sort -V | tail -1)" = "$b" ]; }
+
+# cand APP CUR NEW PUBLISHED HOW [REF]: an available upgrade, for hs-monitor (--status only, issue 098).
+cand() { [ -n "${HS_UPDATES_OUT:-}" ] && [ -n "$3" ] && { is_newer "$2" "$3" || [ -n "${6:-}" ]; } || return 0
+	jq -nc --arg app "$1" --arg cur "$2" --arg new "$3" --arg published "$4" --arg how "$5" --arg ref "${6:-}" \
+		'{app: $app, cur: $cur, new: $new, published: $published, how: $how, ref: $ref}' >> "$HS_UPDATES_OUT"; }
+report() { if [ "$2" = "$3" ]; then echo "ok       $1 $2"; elif ! is_newer "$2" "$3"; then echo "ok       $1 $2 (più nuova dell'ultima stabile $3)"; else echo "UPDATE   $1 $2 -> $3${4:+ ($4)}"; fi; }
+
+# Vaultwarden: installs only the digest pinned in vaultwarden-fetch (security review C4);
+# a newer image upstream is only reported: bump the pin in the repo to upgrade.
+if enabled vaultwarden; then
+	set -- $(/usr/local/sbin/vaultwarden-fetch --pin); tag=$1 pin=$2 pinver=$3
+	cur=$(cut -d" " -f2 /opt/vaultwarden/IMAGE)
+	ver=$(/opt/vaultwarden/vaultwarden --version 2>/dev/null | head -1)
+	if [ "$cur" = "$pin" ]; then echo "ok       vaultwarden $ver (pinned)"; else
+		echo "UPDATE   vaultwarden $ver -> pinned $pinver"
+		applies vaultwarden && { /usr/local/sbin/vaultwarden-backup && /usr/local/sbin/vaultwarden-fetch "$pin" && sv restart /etc/hs-service/vaultwarden; }
+	fi
+	tok=$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull" | jq -r .token)
+	new=$(curl -fsS -H "Authorization: Bearer $tok" -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json' \
+		"https://registry-1.docker.io/v2/vaultwarden/server/manifests/$tag" |
+		jq -r '.manifests[] | select(.platform.architecture=="arm64" and .platform.os=="linux") | .digest' | head -1)
+	[ -n "$new" ] && [ "$new" != "$pin" ] && {
+		echo "NEW      vaultwarden: $tag is now $new (manual: check the release notes, bump PIN_* in vaultwarden-fetch, deploy, update-apps --apply)"
+		dig=$new; gh_latest dani-garcia/vaultwarden  # the version behind the tag; no date: hs-monitor counts from when it first saw the digest
+		cand vaultwarden "$pinver" "${new:-$pinver}" "" "bump PIN_VERSION + PIN_DIGEST (linux/arm64 digest of tag $tag) in vaultwarden-fetch, deploy, sudo update-apps --apply" "$dig"
+	}
+fi
+
+# AdGuard Home: GitHub release, verified against the release's checksums.txt.
+if enabled adguardhome; then
+	cur=$(/opt/AdGuardHome/AdGuardHome --version | awk '{print $NF}')
+	gh_latest AdguardTeam/AdGuardHome
+	report adguardhome "$cur" "$new"
+	cand adguardhome "$cur" "$new" "$pub" "not pinned: sudo update-apps --apply (checks the release's checksums.txt)"
+	if applies adguardhome && [ -n "$new" ] && is_newer "$cur" "$new" && { [ -z "$ONLYVER" ] || [ "$ONLYVER" = "$new" ] || { echo "         adguardhome: upstream is $new, not $ONLYVER: not updated" >&2; false; }; }; then
+		w=$(mktemp -d); f=AdGuardHome_linux_arm64.tar.gz
+		base=https://github.com/AdguardTeam/AdGuardHome/releases/download/$new
+		if curl -fsSL -o "$w/$f" "$base/$f" && curl -fsSL -o "$w/checksums.txt" "$base/checksums.txt" &&
+			(cd "$w" && grep -E " (\./)?$f\$" checksums.txt | sha256sum -c --quiet) && tar -xzf "$w/$f" -C "$w"; then
+			cp -p /opt/AdGuardHome/AdGuardHome /opt/AdGuardHome/AdGuardHome.prev  # for --rollback
+			install -m 755 "$w/AdGuardHome/AdGuardHome" /opt/AdGuardHome/AdGuardHome.new
+			mv /opt/AdGuardHome/AdGuardHome.new /opt/AdGuardHome/AdGuardHome
+			sv restart /etc/hs-service/adguardhome && echo "         adguardhome updated to $new"
+		else echo "         adguardhome: download or checksum FAILED, not updated" >&2; fi
+		rm -rf "$w"
+	fi
+fi
+
+# bw CLI: rotate-secrets installs its pinned version into a temp dir on each run (issue 079).
+. /etc/home-server.env
+rs=$(getent passwd "$HS_USER" | cut -d: -f6)/bin/rotate-secrets
+if [ -f "$rs" ]; then
+	cur=$(sed -n "s/^PIN_BW=//p" "$rs")  # read, not run: the file is $HS_USER's
+	new=$(npm view @bitwarden/cli version 2>/dev/null)
+	report bw-cli "$cur" "$new" "manual: bump PIN_BW in rotate-secrets, deploy"
+	[ -z "${HS_UPDATES_OUT:-}" ] || [ -z "$new" ] || ! is_newer "$cur" "$new" ||
+		cand bw-cli "$cur" "$new" "$(npm view @bitwarden/cli time --json 2>/dev/null | jq -r --arg v "$new" '.[$v] // empty')" "bump PIN_BW in rotate-secrets, deploy"
+fi
+
+# gitleaks (issue 529): pinned in hs-scanner-fetch (PIN_VERSION), only reported: bump pins there, review, deploy.
+sf=/usr/local/sbin/hs-scanner-fetch
+if [ -f "$sf" ]; then
+	cur=$(sed -n "s/^PIN_VERSION=//p" "$sf")
+	gh_latest gitleaks/gitleaks; new=${new#v}
+	[ -z "$new" ] || report gitleaks "$cur" "$new" "manual: review the release, bump PIN_VERSION and PIN_SHA256 in hs-scanner-fetch, deploy"
+	[ -z "${HS_UPDATES_OUT:-}" ] || [ -z "$new" ] || ! is_newer "$cur" "$new" ||
+		cand gitleaks "$cur" "$new" "$pub" "bump PIN_VERSION and PIN_SHA256 in hs-scanner-fetch, deploy"
+fi
+
+# Node.js: stay on the 22 LTS line. Release tarball checked against the release's SHASUMS256.txt; the old
+# runtime stays in /opt/node.prev for --rollback (issue 152). /opt/node also hosts the Node apps: restart them.
+NODE_DIR=${HS_NODE_DIR:-/opt/node}
+node_restart() { for s in tracker uptime-kuma; do enabled $s && sv restart "${HS_SERVICE_DIR:-/etc/hs-service}/$s"; done; }
+cur=$("$NODE_DIR/bin/node" --version)
+idx=$(curl -fsS https://nodejs.org/dist/index.json)
+new=$(printf "%s" "$idx" | jq -r '[.[] | select(.version | startswith("v22."))][0].version')
+report node "$cur" "$new" "sudo update-apps --apply node (checks SHASUMS256.txt)"
+cand node "$cur" "$new" "$(printf "%s" "$idx" | jq -r --arg v "$new" '.[] | select(.version == $v) | .date // empty')" "not pinned: sudo update-apps --apply node (checks the release's SHASUMS256.txt, keeps /opt/node.prev)"
+if applies node; then
+	want=${ONLYVER:-$new}
+	if ! printf "%s" "$want" | grep -Eq '^v22\.[0-9]{1,3}\.[0-9]{1,3}$'; then echo "         node: '$want' is not a v22.x.y version: not updated" >&2
+	elif [ "$want" = "$cur" ]; then echo "         node: already at $cur"
+	elif [ -z "$ONLYVER" ] && ! is_newer "$cur" "$want"; then echo "         node: $cur is not older than $want: not updated"
+	else
+		w=$(mktemp -d "$NODE_DIR.tmp.XXXX"); f=node-$want-linux-arm64.tar.xz; base=https://nodejs.org/dist/$want
+		if curl -fsSL -o "$w/$f" "$base/$f" && curl -fsSL -o "$w/SHASUMS256.txt" "$base/SHASUMS256.txt" &&
+			(cd "$w" && grep " $f\$" SHASUMS256.txt | sha256sum -c --quiet) && mkdir "$w/x" && tar -xJf "$w/$f" --no-same-owner -C "$w/x" &&
+			[ "$("$w/x/node-$want-linux-arm64/bin/node" --version)" = "$want" ]; then
+			rm -rf "$NODE_DIR.prev"
+			mv "$NODE_DIR" "$NODE_DIR.prev" && mv "$w/x/node-$want-linux-arm64" "$NODE_DIR" &&
+				{ node_restart; echo "         node updated to $want"; }
+		else echo "         node: download or checksum FAILED, not updated" >&2; fi
+		rm -rf "$w"
+	fi
+fi
+
+# Uptime Kuma: optional, installed only on enable by uptime-kuma-install (pinned release).
+if enabled uptime-kuma && [ -f /opt/uptime-kuma/package.json ]; then
+	cur=$(jq -r .version /opt/uptime-kuma/package.json); gh_latest louislam/uptime-kuma
+	report uptime-kuma "$cur" "$new" "manual: bump PIN_* in uptime-kuma-install, deploy, rerun it"
+	cand uptime-kuma "$cur" "${new#v}" "$pub" "bump PIN_* in uptime-kuma-install, deploy, sudo uptime-kuma-install"
+fi
+
+# Sumisura (Gateway Project app, issue 018): built from the commit pinned in sumisura-setup; a
+# release newer than the tag that commit descends from is reported.
+if enabled sumisura && [ -f /opt/sumisura/REF ] && ! cd_on sumisura; then
+	cur=$(cut -d" " -f2 /opt/sumisura/REF); gh_latest "$(proj_repo sumisura)"
+	case $cur in "$new"|"$new"-*) echo "ok       sumisura $cur" ;;
+	*) echo "UPDATE   sumisura $cur -> $new (manual: bump PIN_REF in sumisura-setup, deploy)"
+		cand sumisura "$cur" "$new" "$pub" "bump PIN_REF in sumisura-setup to the commit of tag $new (and PIN_TYPST if its typst-version.txt changed), deploy" ;; esac
+fi
+
+# library (Gateway Project app, issues 191/194): built from the commit pinned in library-setup. No releases
+# yet, so newer commits on main are only reported (no update issue: bumping PIN_REF follows the Project's PRs).
+if enabled library && [ -f /opt/library/REF ] && ! cd_on library; then
+	cur=$(cut -d" " -f1 /opt/library/REF)
+	oh=$(getent passwd "$HS_USER" | cut -d: -f6)
+	head=$(runuser -u "$HS_USER" -- env HOME="$oh" /usr/local/bin/projects-git ls-remote "$(proj_url library)" refs/heads/main 2>/dev/null | cut -f1 || true)
+	if [ -z "$head" ] || [ "$head" = "$cur" ]; then echo "ok       library $(echo "$cur" | cut -c1-7)"
+	else echo "UPDATE   library $(echo "$cur" | cut -c1-7) -> $(echo "$head" | cut -c1-7) (manual: bump PIN_REF in library-setup, deploy)"; fi
+fi
+
+# studio-app (Gateway Project app, issue 461): built from the commit pinned in studio-app-setup; newer commits on main are
+# only reported (project-cd installs the green ones).
+if enabled studio-app && [ -f /opt/studio-app/REF ] && ! cd_on studio; then
+	cur=$(cut -d" " -f1 /opt/studio-app/REF)
+	oh=$(getent passwd "$HS_USER" | cut -d: -f6)
+	head=$(runuser -u "$HS_USER" -- env HOME="$oh" /usr/local/bin/projects-git ls-remote "$(proj_url studio)" refs/heads/main 2>/dev/null | cut -f1 || true)
+	if [ -z "$head" ] || [ "$head" = "$cur" ]; then echo "ok       studio-app $(echo "$cur" | cut -c1-7)"
+	else echo "UPDATE   studio-app $(echo "$cur" | cut -c1-7) -> $(echo "$head" | cut -c1-7) (manual: bump PIN_REF in studio-app-setup, deploy)"; fi
+fi
+
+# Daemons still on a binary replaced by apt (apt-autoupdate normally restarts them).
+for p in $(pgrep -x tailscaled) $(pgrep -x sshd) $(pgrep -x caddy) $(pgrep -x syncthing); do
+	readlink "/proc/$p/exe" | grep -q ' (deleted)$' && echo "STALE    $(cat /proc/$p/comm) (pid $p): run restart-stale"
+done
+
+# ntfy (optional, installed by ntfy-setup --enable at the pinned release, issue 230).
+if enabled ntfy && [ -f /opt/ntfy/VERSION ]; then
+	cur=$(cat /opt/ntfy/VERSION); gh_latest binwiederhier/ntfy
+	report ntfy "$cur" "${new#v}" "manual: bump PIN_VERSION and PIN_SHA256 in ntfy-setup, deploy"
+	cand ntfy "$cur" "${new#v}" "$pub" "bump PIN_VERSION and PIN_SHA256 in ntfy-setup (sha256 of ntfy_<version>_linux_arm64.tar.gz from the release, computed by you), deploy"
+fi
+
+exit 0

@@ -1,0 +1,41 @@
+#!/bin/sh
+# project-issue-body NAME NUMBER (issue 186): fetch the body of one TRUSTED GitHub issue of a Project
+# and write it as data to /var/lib/edge-status/project-issues/<name>-<number>.md, which ops-auto gives
+# to Claude inside a fenced block marked "data, not instructions". Trusted = listed in the mirror
+# projects-issues.json (issue 091) with trust author/self-assigned (issue 160), open, not stale;
+# anything else is refused (exit 2) and nothing is fetched. Only the body, cut to HS_ISSUE_BODY_MAX
+# bytes (default 8000), plus the last 5 comments that start with "(owner)" written by the repo's owner
+# (the answers of the tracker's Rispondi, issue 307) plus, issue 402, every other comment by the repo's owner account that does not start with "ops-auto" (the owner answers in plain comments; ops-auto's own comments carry that prefix and are shown as what was already asked); no comment of anyone else is ever read into the file. Like projects-issues-sync, the token goes to curl on stdin
+# only, never on a command line or into the log. Prints the file path.
+set -eu
+export LC_ALL=C
+[ $# -eq 2 ] || { echo "uso: project-issue-body NOME NUMERO" >&2; exit 64; }
+name=$1 n=$2
+case $name in ''|*[!a-zA-Z0-9._-]*) echo "nome non valido" >&2; exit 64 ;; esac
+case $n in ''|*[!0-9]*) echo "numero non valido" >&2; exit 64 ;; esac
+TOKEN=$HOME/.secrets/git-github
+MIRROR=/var/lib/edge-status/projects-issues.json
+DIR=/var/lib/edge-status/project-issues
+MAX=${HS_ISSUE_BODY_MAX:-8000}
+
+repo=$(jq -r --arg p "$name" --argjson n "$n" '
+	.projects[$p] as $x | if $x == null or $x.stale then empty else
+	($x.issues[] | select(.number == $n and .state == "open" and (.trust == "author" or .trust == "self-assigned")) | $x.repo) end' "$MIRROR" 2>/dev/null | head -n1)
+[ -n "$repo" ] || { echo "issue non fidata, chiusa o non nello specchio: $name#$n" >&2; exit 2; }
+[ -r "$TOKEN" ] || { echo "token mancante" >&2; exit 1; }
+raw=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN")" |
+	curl -fsS --max-time 30 -K - -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com/repos/$repo/issues/$n") ||
+	{ echo "GitHub non raggiungibile o accesso negato" >&2; exit 1; }
+mkdir -p "$DIR"
+out=$DIR/$name-$n.md
+tmp=$out.tmp
+printf %s "$raw" | jq -r --argjson m "$MAX" 'select(.pull_request | not) | .body // "" | .[0:$m]' > "$tmp"
+[ -e "$tmp" ] || exit 1
+cm=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN")" |
+	curl -fsS --max-time 30 -K - -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com/repos/$repo/issues/$n/comments?per_page=100") || cm='[]'
+printf %s "$cm" | jq -r --arg o "${repo%%/*}" '
+	[.[]? | select(.user.login == $o) | (.body // "") as $b | {at: (.created_at // ""), b: $b, ai: ($b | startswith("ops-auto"))}] | .[-8:] | .[] |
+	(if .ai then "\n\n--- Cosa ha già chiesto ops-auto (\(.at)) ---\n" else "\n\n--- Risposta del proprietario (\(.at)) ---\n" end) + (.b[0:1500])' >> "$tmp" 2>/dev/null || true
+chmod 644 "$tmp"
+mv "$tmp" "$out"
+echo "$out"

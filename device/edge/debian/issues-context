@@ -1,0 +1,6 @@
+#!/bin/sh
+# Prepared context for an ops-auto run (issue 118): an index (linked issues with state and last progress,
+# cited repo files with lines/last commits/tests/main functions, docs/ lines naming them), never file
+# contents, at most 8 KB. Deterministic, no Claude; proposals are never read. ops-auto appends it to the
+# run's first message.   Usage: issues-context NNN [REPO]   (repo default: $ISSUES_REPO or ~/home-server)
+exec /usr/local/bin/node /opt/hs-tracker/context.js "$@"

@@ -1,0 +1,62 @@
+#!/bin/sh
+# deploy-worker (issue 512, epic 476): with "Security enabled" the agent (no-new-privs, no sudo)
+# cannot deploy. Its `device/edge/deploy` leaves a request in $HS_DEPLOY_DIR and this process, started
+# by runit outside the agent's restrictions (sv/deploy-worker), runs the real deploy. After it, it checks
+# that every service that was up before still is; if the deploy failed while installing or that check
+# fails, it redeploys the commit of the last good deploy and tells the owner.
+# Env overrides exist for the test: HS_DEPLOY_DIR HS_DEPLOY_REPO HS_DEPLOY_STATE HS_DEPLOY_VERIFY
+# HS_DEPLOY_SETTLE HS_DEPLOY_ONCE (handle one request, then exit).
+D=${HS_DEPLOY_DIR:-/var/lib/hs-deploy}
+REPO=${HS_DEPLOY_REPO:-$HOME/home-server}
+STATE=${HS_DEPLOY_STATE:-$HOME/.local/state}
+GOOD=$STATE/deploy-good
+mkdir -p "$STATE"
+
+up_list() { sudo sv status /etc/hs-service/* 2>/dev/null | sed -n 's#^run: /etc/hs-service/\([^:]*\):.*#\1#p' | sort; }
+
+# Verification: nothing that was running before is down now (HS_DEPLOY_VERIFY replaces it, exit 0 = good).
+verify() {
+	if [ -n "${HS_DEPLOY_VERIFY:-}" ]; then sh -c "$HS_DEPLOY_VERIFY"; return; fi
+	up_list > "$STATE/deploy-up-after"
+	missing=$(comm -23 "$STATE/deploy-up-before" "$STATE/deploy-up-after")
+	[ -z "$missing" ] || { echo "deploy-worker: no longer running: $(echo $missing)"; return 1; }
+}
+
+rollback() {
+	[ -s "$GOOD" ] || { echo "deploy-worker: no previous good version recorded, cannot roll back"; return 1; }
+	prev=$(cat "$GOOD"); t=$(mktemp -d)
+	echo "deploy-worker: rolling back to $prev"
+	git -C "$REPO" archive "$prev" device | tar -x -C "$t" &&
+		cp "$REPO/device/edge/home-server.env" "$t/device/edge/home-server.env" &&
+		HS_DEPLOY_WORKER=1 HS_DEPLOY_ROLLBACK=1 "$t/device/edge/deploy"
+	r=$?; rm -rf "$t"; return $r
+}
+
+handle() {
+	id=$1; shift
+	up_list > "$STATE/deploy-up-before" 2>/dev/null
+	: > "$D/$id.out"
+	HS_DEPLOY_WORKER=1 "$REPO/device/edge/deploy" "$@" > "$D/$id.out" 2>&1; rc=$?
+	phase=$(tail -n 1 "$STATE/deploy.log" 2>/dev/null)
+	if [ "$rc" = 0 ]; then
+		sleep "${HS_DEPLOY_SETTLE:-15}"
+		verify >> "$D/$id.out" 2>&1 && { git -C "$REPO" rev-parse HEAD > "$GOOD"; echo "deploy-worker: verified, this version is now the one to return to" >> "$D/$id.out"; echo 0 > "$D/$id.rc"; return; }
+		echo "deploy-worker: verification failed" >> "$D/$id.out"
+	else
+		case $phase in *"failed install"*) ;; *) echo "$rc" > "$D/$id.rc"; return ;; esac # failed in the checks: nothing installed
+	fi
+	if rollback >> "$D/$id.out" 2>&1; then msg="tornato alla versione precedente"; else msg="ritorno alla versione precedente NON riuscito"; fi
+	echo "$(date '+%F %T') rollback: $msg" >> "$STATE/deploy.log"
+	hs-notify --urgent "deploy" "Il deploy è fallito o la verifica non è passata: $msg." >/dev/null 2>&1 || true
+	echo 1 > "$D/$id.rc"
+}
+
+while :; do
+	touch "$D/alive"
+	if [ -s "$D/request" ]; then
+		read -r id args < "$D/request"; rm -f "$D/request"
+		case $args in ""|--skip-tests) handle "$id" $args ;; *) echo "deploy-worker: argument refused" > "$D/$id.out"; echo 2 > "$D/$id.rc" ;; esac
+		[ -z "${HS_DEPLOY_ONCE:-}" ] || exit 0
+	fi
+	sleep 1
+done

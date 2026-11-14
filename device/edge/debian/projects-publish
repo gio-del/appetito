@@ -1,0 +1,374 @@
+#!/bin/sh
+# Publish work on a Project to its GitHub remote (issue 163). Deterministic, no Claude: with
+# projects-issues-sync it is the only reader of the token ~/.secrets/git-github (never on a
+# command line or in a log: git gets it through a temporary GIT_ASKPASS script, curl on stdin).
+#   projects-publish pr NAME BRANCH TITLE [BODYFILE]   push BRANCH (issue/<id>) and open a PR on main
+#   projects-publish issue NAME TITLE [BODYFILE [LABELS]]       create an issue; prints "number url"
+#   projects-publish ci NAME BRANCH                    state of the CI of the PR of BRANCH: first line merged|closed|none|pending|green|red;
+#                                                      for red, the failed checks and their annotations (data, truncated)
+#   projects-publish rules NAME                        JSON of the rules active on main: pull_request, no_force, no_delete, ci_ok (required check ci-ok), ok; also written to /var/lib/edge-status/ruleset-NAME.json (issue 232)
+#   projects-publish merge NAME PR HEADSHA             merge an issue/* PR still at HEADSHA when every check is completed and green with ci-ok, main has its ruleset and no sensitive file is touched (issue 232)
+#   projects-publish commit-ci NAME SHA                green|red|pending of a commit's checks, ci-ok required (project-cd, issue 235)
+#   projects-publish release-data NAME                 JSON of the open release-please Release PR (head, parent commit, body, CI state) and the latest release (issue 208)
+#   projects-publish release NAME PR HEADSHA           merge that Release PR (bot PR on release-please--*, open, still at HEADSHA; the repo's own merge method)
+#   projects-publish close-pr NAME N [BY]              close the open PR N if its branch is ours (claude/<id>-*, issue/<id>-*), comment "Sostituita da #BY", delete the branch (issue 219; `pr` does it for older PRs of the same issue)
+#   projects-publish prune NAME                        delete the remote issue/<id>-* branches whose PR is merged and that have no open PR (leftovers; `merge` already deletes its own branch)
+#   projects-publish issue-state NAME N                open|closed, the state of GitHub issue N
+#   projects-publish open-pr NAME BRANCH               "N url" of the open PR of BRANCH, nothing if none (ops-auto, issue 345)
+#   projects-publish check NAME                        exit 0 if the token can push to the repo (no write)
+#   projects-publish scan NAME                         read-only: issues/PRs (open and closed), comments and release notes of the repo that carry attribution, "URL: line" (issue 474)
+#   projects-publish strip-body NAME N                 remove the attribution lines from the body of issue/PR N (issue 474)
+# Refuses (issue 202) anything carrying Claude/AI attribution (ATTR_RE below); a NAME not in /etc/hs-projects or whose URL is not github.com; a branch that is not
+# issue/<id> (so never main/master/protected ones); a missing local branch. The server merges
+# (`merge`, called by projects-ci-watch, issue 232; GitHub auto-merge is no longer requested) only when the PR touches none of:
+# .github/, dependency manifests/locks, Dockerfiles, deploy files, .hs-tools; otherwise the owner merges. Everything best-effort
+# after the PR exists: the PR url is printed first.
+set -eu
+export LC_ALL=C
+TOKEN=$HOME/.secrets/git-github
+die() { echo "projects-publish: $*" >&2; exit 1; }
+
+# No trace of Claude/AI on a remote (owner, 2026-10-25, issue 202): everything that leaves the server
+# (commit messages, authors, committers, PR/issue title and body, added lines of the diff) goes through
+# this check. The one pattern list is hs-attribution (issue 474), shared with the git hooks and the Claude Code
+# hook; without it nothing is published (fail closed).
+ATTR=$(command -v hs-attribution) || ATTR=$(dirname "$0")/hs-attribution
+ATTR_RE=$("$ATTR" re 2> /dev/null) && IDENT_RE=$("$ATTR" ident-re 2> /dev/null) && [ -n "$ATTR_RE" ] ||
+	die "hs-attribution mancante: non pubblico nulla (issue 474)"
+# Secrets and personal values (issue 529): the same texts go through hs-secrets (gitleaks + the values of
+# home-server.env); without it nothing is published. HS_SECRETS_CMD overrides it (tests).
+SECR=${HS_SECRETS_CMD:-$(command -v hs-secrets || echo "$(dirname "$0")/hs-secrets")}
+sec_text() { # LABEL FILE: refuse if the text holds a secret or a personal value (says where, never the value)
+	_o=$($SECR text "$2" 2>&1) || die "segreto o valore personale in $1: $(printf '%s' "$_o" | head -n 1 | cut -c1-120)"
+}
+attr_text() { # LABEL FILE: refuse if the text carries attribution (phrases or the robot emoji)
+	if grep -Eiq "$ATTR_RE" "$2" || grep -Fq '🤖' "$2"; then
+		die "attribuzione a Claude/AI in $1: $(grep -Ei "$ATTR_RE|🤖" "$2" | head -n1 | cut -c1-120)"
+	fi
+}
+# The PR title is the squash commit on main, and a repo may enforce its format with a workflow
+# (amannn/action-semantic-pull-request in .github/workflows/pr-title.yml). Check it before pushing,
+# with the same types and subjectPattern read from BRANCH, so a title the workflow would fail never
+# leaves the server (issue 244). No such workflow on BRANCH: nothing to check.
+# latest_runs JSON: keep only the newest run of each check. A commit keeps the runs of every PR it
+# was ever pushed with (a PR closed and reopened on a new branch, a re-run), and a stale failure
+# must not make a fixed PR red (issue 244).
+latest_runs() { printf %s "$1" | jq -c '.check_runs |= (group_by(.name) | map(max_by(.id)))'; }
+title_check() { # TITLE BRANCH
+	_w=$(git -C "$dir" show "refs/heads/$2:.github/workflows/pr-title.yml" 2> /dev/null) || return 0
+	printf %s "$_w" | grep -q "action-semantic-pull-request" || return 0
+	_types=$(printf '%s\n' "$_w" | awk '/^[[:space:]]*types:[[:space:]]*\|[[:space:]]*$/ { on = 1; next } on && /^[[:space:]]+[a-z]+[[:space:]]*$/ { print $1; next } on { exit }' | tr '\n' ' ')
+	_pat=$(printf '%s\n' "$_w" | sed -n 's/^[[:space:]]*subjectPattern:[[:space:]]*//p' | head -n1)
+	perl -e 'my ($t, $types, $pat) = @ARGV; my $re = join("|", map { quotemeta } split " ", $types);
+		$t =~ /^($re)(\([^()]+\))?!?: (.+)$/ or exit 2; my $s = $3; exit($pat eq "" || $s =~ /$pat/ ? 0 : 3)' "$1" "$_types" "$_pat" || case $? in
+		2) die "titolo '$1' rifiutato: serve 'tipo(scope): soggetto' con tipo tra: $_types(.github/workflows/pr-title.yml)" ;;
+		*) die "titolo '$1' rifiutato: il soggetto non rispetta $_pat (.github/workflows/pr-title.yml; di solito: minuscola iniziale, niente punto finale)" ;;
+	esac
+}
+attr_check() { # TITLE BODYFILE [BRANCH]: title, body and (with BRANCH) commits and added lines of origin/<default>..BRANCH
+	_t=$(mktemp); printf '%s\n' "$1" > "$_t"
+	[ -z "${2:-}" ] || cat "$2" >> "$_t"
+	attr_text "titolo o corpo" "$_t"
+	sec_text "titolo o corpo" "$_t"
+	if [ -n "${3:-}" ]; then
+		_base=$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2> /dev/null || echo origin/main)
+		git -C "$dir" log --format='%an <%ae>%n%cn <%ce>' "$_base..$3" > "$_t"
+		if grep -Eiq "$IDENT_RE" "$_t"; then die "autore o committer Claude/Anthropic in un commit di $3: $(grep -Ei "$IDENT_RE" "$_t" | head -n1)"; fi
+		git -C "$dir" log --format='%B' "$_base..$3" > "$_t"
+		attr_text "messaggio di commit di $3" "$_t"
+		git -C "$dir" diff "$_base...$3" | grep '^+[^+]' > "$_t" || true
+		attr_text "righe aggiunte da $3 (commenti o testi che attribuiscono il lavoro a un'AI)" "$_t"
+	fi
+	rm -f "$_t"
+}
+
+close_pr() { # NUM [BY]: close an open PR of ours (head branch claude/<id>-* or issue/<id>-* of this same repo), comment, delete the branch
+	_n=$1; _by=${2:-}
+	printf %s "$_n" | grep -Eq '^[0-9]{1,7}$' || die "numero PR non valido"
+	_p=$(api GET "/repos/$repo/pulls/$_n") || die "PR non leggibile"
+	printf %s "$_p" | jq -e --arg r "$repo" '.state == "open" and .merged == false and .head.repo.full_name == $r and (.head.ref | test("^(claude|issue)/[0-9]+(-[A-Za-z0-9._-]+)?$"))' > /dev/null \
+		|| die "la PR $_n non è una PR aperta di un nostro branch (claude/<id> o issue/<id>)"
+	_ref=$(printf %s "$_p" | jq -r .head.ref)
+	_msg="Sostituita"; [ -z "$_by" ] || _msg="Sostituita da #$_by"
+	api POST "/repos/$repo/issues/$_n/comments" "$(jq -n --arg b "$_msg" '{body:$b}')" > /dev/null || die "commento non scritto sulla PR $_n"
+	api PATCH "/repos/$repo/pulls/$_n" '{"state":"closed"}' > /dev/null || die "PR $_n non chiusa"
+	api DELETE "/repos/$repo/git/refs/heads/$_ref" > /dev/null 2>&1 || true
+	echo "closed $_n ($_ref)"
+}
+
+
+api() { # METHOD path [json-body-on-fd3]; token on stdin only
+	m=$1; p=$2
+	if [ -n "${3:-}" ]; then
+		printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN")" |
+			curl -fsS --max-time 30 -K - -X "$m" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' -d "$3" "https://api.github.com$p"
+	else
+		printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN")" |
+			curl -fsS --max-time 30 -K - -X "$m" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com$p"
+	fi
+}
+
+# The one place that reads the CI state of a commit (issue 266): {"check_runs":[{id,name,status,conclusion}]}, newest of each name.
+# From check-runs where the token reads them; else (403: token with Actions read only) from GitHub Actions: the newest run of each
+# workflow, its jobs as checks (so `ci-ok` is a job name), the run itself while it is not completed or has no jobs.
+ci_checks() { # SHA
+	if _c=$(api GET "/repos/$repo/commits/$1/check-runs?per_page=100" 2> /dev/null); then latest_runs "$_c"; return 0; fi
+	_w=$(api GET "/repos/$repo/actions/runs?head_sha=$1&per_page=100") || return 1
+	printf %s "$_w" | jq -c '.workflow_runs | group_by(.workflow_id) | map(max_by(.id)) | .[] | {id, name, status, conclusion}' |
+		while read -r _r; do
+			_j=$(api GET "/repos/$repo/actions/runs/$(printf %s "$_r" | jq -r .id)/jobs?per_page=100" 2> /dev/null) || _j=
+			_j=$(printf %s "$_j" | jq -c '[.jobs[]? | {id, name, status, conclusion}]' 2> /dev/null) || _j='[]'
+			jq -nc --argjson r "$_r" --argjson j "${_j:-[]}" '$j + (if $r.status != "completed" or ($j | length) == 0 then [$r] else [] end)'
+		done | jq -sc '{check_runs: (add // [])}' | { read -r _o; latest_runs "$_o"; }
+}
+
+SENS_RE='(^|/)(\.github/|package(-lock)?\.json$|pnpm-lock|yarn\.lock|go\.(mod|sum)$|Cargo\.(toml|lock)$|requirements.*\.txt$|Dockerfile|deploy|\.hs-tools$)'
+rules_json() { # rules active on main (rulesets and classic protection alike) as one JSON object; also saved for tracker and card
+	_r=$(api GET "/repos/$repo/rules/branches/main") || return 1
+	_j=$(printf %s "$_r" | jq -c '{pull_request: any(.[]; .type == "pull_request"), no_force: any(.[]; .type == "non_fast_forward"), no_delete: any(.[]; .type == "deletion"),
+		ci_ok: any(.[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]?; .context == "ci-ok")), strict: any(.[]; .type == "required_status_checks" and .parameters.strict_required_status_checks_policy == true)} | .ok = (.pull_request and .no_force and .no_delete and .ci_ok)') || return 1
+	printf '%s\n' "$_j"
+	printf '%s\n' "$_j" | jq --arg n "$name" --arg at "$(date '+%F %T')" '. + {project: $n, checked: $at}' > "${HS_RULES_DIR:-/var/lib/edge-status}/ruleset-$name.json" 2> /dev/null || true
+}
+
+{ [ "${1:-}" = check ] || [ "${1:-}" = release-data ] || [ "${1:-}" = rules ] || [ "${1:-}" = prune ] || [ "${1:-}" = scan ]; } && [ $# -eq 2 ] || [ $# -ge 3 ] || die "uso: check NAME | pr NAME BRANCH TITLE [BODYFILE] | issue NAME TITLE [BODYFILE]"
+cmd=$1; name=$2
+[ -r "$TOKEN" ] || die "token mancante"
+url=$(gateway-projects | awk -v n="$name" '$1 == n { print $2 }')
+case $url in https://github.com/*/*) ;; *) die "Project '$name' non elencato o non su github.com" ;; esac
+repo=${url#https://github.com/}; repo=${repo%.git}; repo=${repo%/}
+dir=$HOME/projects/$name
+
+case $cmd in
+check)
+	api GET "/repos/$repo" | jq -e '.permissions.push == true' > /dev/null || die "il token non può scrivere su $repo"
+	echo "ok: scrittura su $repo"
+	;;
+ci)
+	branch=$3
+	printf %s "$branch" | grep -Eq '^(issue|claude)/[A-Za-z0-9._-]+$' || die "nome branch non valido"
+	pr=$(api GET "/repos/$repo/pulls?head=${repo%%/*}:$branch&state=all&per_page=1") || die "PR non leggibile"
+	st=$(printf %s "$pr" | jq -r '.[0] | if . == null then "none" elif .merged_at then "merged" elif .state == "closed" then "closed" else "open" end')
+	case $st in none | merged | closed) echo "$st"; exit 0 ;; esac
+	sha=$(printf %s "$pr" | jq -r '.[0].head.sha')
+	printf %s "$sha" | grep -Eq '^[0-9a-f]{40}$' || die "sha non valido"
+	# a PR that conflicts with main (GitHub: mergeable false) goes back to the worker like a red CI (issue 232)
+	num=$(printf %s "$pr" | jq -r '.[0].number // empty')
+	case $num in "" | *[!0-9]*) ;; *)
+		pd=$(api GET "/repos/$repo/pulls/$num" 2> /dev/null || true)
+		if [ "$(printf %s "$pd" | jq -r '.mergeable' 2> /dev/null || true)" = false ]; then
+			echo conflict
+			echo "check: conflitto con main"
+			echo "  la PR non si unisce a main: unisci origin/main nel branch (git merge origin/main), risolvi i conflitti, riesegui ./ci e fai il push"
+			exit 0
+		fi ;;
+	esac
+	behind=$(printf %s "${pd:-}" | jq -r '.mergeable_state' 2> /dev/null || true)
+	runs=$(ci_checks "$sha") || die "check non leggibili"
+	st=$(printf %s "$runs" | jq -r '.check_runs | if length == 0 or any(.[]; .status != "completed") then "pending"
+		elif any(.[]; .conclusion | IN("failure", "timed_out", "cancelled", "action_required", "startup_failure")) then "red" else "green" end')
+	# green but the branch lacks the new main (ruleset "strict"): GitHub refuses the merge with 405 (issue 323); update-branch fixes it
+	[ "$st" = green ] && [ "${behind:-}" = behind ] && st=behind
+	echo "$st"
+	# second line: the head the state belongs to (for `merge`) (issue 232)
+	if [ "$st" = green ] || [ "$st" = behind ]; then echo "head $sha"; fi
+	[ "$st" = red ] || exit 0
+	# failed checks and their annotations: text from GitHub, passed on as data (truncated)
+	printf %s "$runs" | jq -r '.check_runs[] | select(.conclusion | IN("failure", "timed_out", "cancelled", "action_required", "startup_failure")) | "\(.id) \(.name)"' | head -n 8 |
+		while read -r cid cname; do
+			echo "check: $cname"
+			api GET "/repos/$repo/check-runs/$cid/annotations?per_page=10" |
+				jq -r '.[] | select(.annotation_level == "failure") | "  \(.path):\(.start_line) \(.message | gsub("[\\r\\n]+"; " ") | .[0:300])"' 2> /dev/null | head -n 10 || true
+		done | cut -c1-400 | head -c 3500
+	;;
+issue)
+	title=$3; bodyf=${4:-}; labels=${5:-}
+	body=; [ -z "$bodyf" ] || body=$(cat "$bodyf")
+	attr_check "$title" "$bodyf"
+	# an epic without its label would enter ops-auto's queue as plain work (issue 282)
+	case $title in *[Ee]pic*) case ",$labels," in *,epic,*) ;; *) echo "attenzione: il titolo parla di un epic ma manca la label epic (LABELS = epic)" >&2 ;; esac ;; esac
+	out=$(api POST "/repos/$repo/issues" "$(jq -n --arg t "$title" --arg b "$body" --arg l "$labels" '{title:$t, body:$b} + (if $l == "" then {} else {labels: ($l | split(","))} end)')") || die "creazione issue fallita"
+	printf %s "$out" | jq -r '"\(.number) \(.html_url)"'
+	;;
+pr)
+	[ $# -ge 4 ] || die "uso: pr NAME BRANCH TITLE [BODYFILE]"
+	branch=$3; title=$4; bodyf=${5:-}
+	case $branch in issue/*) ;; *) die "branch '$branch' rifiutato: solo issue/<id>" ;; esac
+	printf %s "$branch" | grep -Eq '^issue/[A-Za-z0-9._-]+$' || die "nome branch non valido"
+	git -C "$dir" rev-parse --verify -q "refs/heads/$branch" > /dev/null || die "branch '$branch' non esiste in $dir"
+	attr_check "$title" "$bodyf" "$branch"
+	title_check "$title" "$branch"
+	ask=$(mktemp); trap 'rm -f "$ask"' EXIT
+	cat > "$ask" <<'A'
+#!/bin/sh
+case $1 in Username*) echo x-access-token ;; *) cat "$HOME/.secrets/git-github" ;; esac
+A
+	chmod 700 "$ask"
+	GIT_ASKPASS=$ask GIT_TERMINAL_PROMPT=0 git -C "$dir" push -q "$url" "refs/heads/$branch:refs/heads/$branch" || die "push fallito"
+	# a PR for this branch already open (new commits after a red CI, issue 206): the push updated it
+	old=$(api GET "/repos/$repo/pulls?head=${repo%%/*}:$branch&state=open&per_page=1" | jq -r '.[0] | select(. != null) | "\(.number) \(.html_url)"') || old=
+	body=; [ -z "$bodyf" ] || body=$(cat "$bodyf")
+	# GitHub closes the issue of a merged PR only with a keyword in the body: add "Fixes #N" when the branch carries the id (issue 282)
+	bid=${branch#issue/}; bid=${bid%%-*}
+	if printf %s "$bid" | grep -Eq '^[0-9]+$' && ! printf %s "$body" | grep -Eqi "(fix(es|ed)?|close[sd]?|resolve[sd]?)[: ]+#$bid([^0-9]|\$)"; then
+		body=$(printf '%s\n\nFixes #%s' "$body" "$bid" | sed '1{/^$/d}')
+	fi
+	if [ -n "$old" ]; then
+		# keep its title and body in step with this call: a fixed title must reach the open PR (issue 244)
+		api PATCH "/repos/$repo/pulls/${old%% *}" "$(jq -cn --arg t "$title" --arg b "$body" '{title:$t} + (if $b == "" then {} else {body:$b} end)')" > /dev/null || die "titolo della PR ${old%% *} non aggiornato"
+		echo "PR $old"; echo "auto-merge: com'era (PR esistente aggiornata con il push, titolo e corpo compresi)"; exit 0
+	fi
+	out=$(api POST "/repos/$repo/pulls" "$(jq -n --arg t "$title" --arg b "$body" --arg h "$branch" '{title:$t, body:$b, head:$h, base:"main"}')") || die "PR non creata (il branch è stato pubblicato)"
+	num=$(printf %s "$out" | jq -r .number); node=$(printf %s "$out" | jq -r .node_id)
+	echo "PR $num $(printf %s "$out" | jq -r .html_url)"
+	files=$(api GET "/repos/$repo/pulls/$num/files?per_page=100" | jq -r '.[].filename') || files=
+	if [ -z "$files" ] || printf '%s\n' "$files" | grep -Eqi "$SENS_RE"; then
+		echo "auto-merge: no (la PR tocca .github/, dipendenze o deploy, oppure i file non sono leggibili): la unisce l'owner"
+	else
+		echo "auto-merge: attivo (la unisce il server a CI verde)"
+	fi
+	# an open PR of another branch of ours for the same issue (e.g. claude/215-* from before the issue/ prefix) is replaced by this one (issue 219)
+	id=${branch#issue/}; id=${id%%-*}
+	if printf %s "$id" | grep -Eq '^[0-9]+$'; then
+		api GET "/repos/$repo/pulls?state=open&per_page=100" | jq -r --arg id "$id" --argjson n "$num" '.[] | select(.number != $n and (.head.ref | test("^(claude|issue)/" + $id + "(-|$)"))) | .number' |
+			while read -r o; do (close_pr "$o" "$num") || echo "PR $o non chiusa"; done
+	fi
+	;;
+close-pr)
+		[ $# -ge 3 ] && [ $# -le 4 ] || die "uso: close-pr NAME N [SOSTITUITA_DA]"
+		close_pr "$3" "${4:-}"
+		;;
+	open-pr)
+		# "N url" of the open PR of BRANCH, nothing if none (ops-auto, issue 345)
+		printf %s "$3" | grep -Eq '^(issue|claude)/[A-Za-z0-9._-]+$' || die "nome branch non valido"
+		api GET "/repos/$repo/pulls?head=${repo%%/*}:$3&state=open&per_page=1" | jq -r '.[0] | select(. != null) | "\(.number) \(.html_url)"' || die "PR non leggibile"
+		;;
+	strip-body)
+		# issue 474: remove the attribution lines from the body of issue or PR N (the rest of the text stays as is)
+		[ $# -eq 3 ] || die "uso: strip-body NAME N"
+		printf %s "$3" | grep -Eq '^[0-9]{1,7}$' || die "numero non valido"
+		_t=${TMPDIR:-/tmp}/strip.$$
+		api GET "/repos/$repo/issues/$3" | jq -r '.body // ""' | grep -Eiv "$ATTR_RE" | grep -Fv '🤖' > "$_t" || true
+		"$ATTR" text "$_t" || die "restano righe con attribuzione"
+		api PATCH "/repos/$repo/issues/$3" "$(jq -n --rawfile b "$_t" '{body: $b}')" > /dev/null || die "modifica fallita"
+		rm -f "$_t"
+		echo "ok: corpo di #$3 corretto"
+		;;
+	scan)
+		# read-only (issue 474): issues and PRs (open and closed), comments and release notes that carry attribution: "URL: line"
+		# paged (issue 529): one request of 100 items can time out on a big repo; stops at a short page
+		paged() { # path-with-query
+			_pg=1
+			while :; do
+				_r=$(api GET "$1&per_page=50&page=$_pg") || die "lettura GitHub fallita ($1, pagina $_pg)"
+				printf '%s\n' "$_r"
+				[ "$(printf %s "$_r" | jq length)" -ge 50 ] || break
+				_pg=$((_pg + 1))
+			done
+		}
+		{
+			paged "/repos/$repo/issues?state=all"
+			paged "/repos/$repo/issues/comments?x=1"
+			paged "/repos/$repo/releases?x=1"
+		} | jq -c '.[] | {u: .html_url, t: ((.title // .name // "") + "\n" + (.body // ""))}' | while read -r _i; do
+			printf %s "$_i" | jq -r .t | "$ATTR" text > "${TMPDIR:-/tmp}/scan.$$" || echo "$(printf %s "$_i" | jq -r .u): $(cat "${TMPDIR:-/tmp}/scan.$$")"
+			# secrets and personal values in the same texts (issue 529; where, never the value)
+			printf %s "$_i" | jq -r .t | $SECR text > "${TMPDIR:-/tmp}/scan.$$" 2>&1 || echo "$(printf %s "$_i" | jq -r .u): $(head -n 1 "${TMPDIR:-/tmp}/scan.$$")"
+		done
+		rm -f "${TMPDIR:-/tmp}/scan.$$"
+		;;
+	issue-state)
+		printf %s "$3" | grep -Eq '^[0-9]{1,7}$' || die "numero non valido"
+		api GET "/repos/$repo/issues/$3" | jq -r '.state' || die "issue non leggibile"
+		;;
+release-data)
+	# read-only (release-gate, issue 208): the open Release PR of release-please (bot author, branch release-please--*) as JSON
+	prs=$(api GET "/repos/$repo/pulls?state=open&per_page=50") || die "PR non leggibili"
+	pr=$(printf %s "$prs" | jq -c '[.[] | select((.head.ref | startswith("release-please--")) and .user.type == "Bot")][0] // empty')
+	last=$(api GET "/repos/$repo/releases/latest" 2> /dev/null | jq -c '{tag: .tag_name, at: .published_at}' 2> /dev/null) || last=
+	[ -n "$last" ] || last=null
+	if [ -z "$pr" ]; then jq -n --argjson l "$last" '{pr: null, last: $l}'; exit 0; fi
+	sha=$(printf %s "$pr" | jq -r .head.sha)
+	printf %s "$sha" | grep -Eq '^[0-9a-f]{40}$' || die "sha non valido"
+	runs=$(ci_checks "$sha") || die "check non leggibili"
+	ci=$(printf %s "$runs" | jq -r '.check_runs | if length == 0 or any(.[]; .status != "completed") then "pending"
+		elif any(.[]; .conclusion | IN("failure", "timed_out", "cancelled", "action_required", "startup_failure")) then "red" else "green" end')
+	com=$(api GET "/repos/$repo/commits/$sha") || die "commit non leggibile"
+	parent=$(printf %s "$com" | jq -r '.parents[0].sha // empty')
+	pat=$(api GET "/repos/$repo/commits/$parent" 2> /dev/null | jq -r '.commit.committer.date // empty') || pat=
+	printf %s "$pr" | jq --argjson l "$last" --arg ci "$ci" --arg p "$parent" --arg pa "$pat" '{pr: {number, title, body: (.body // ""), url: .html_url, branch: .head.ref, head: .head.sha, parent: $p, parent_at: $pa}, ci: $ci, last: $l}'
+	;;
+rules)
+	rules_json || die "regole di main non leggibili"
+	;;
+commit-ci)
+	# read-only (project-cd, issue 235): state of a commit of the default branch: green only when every check is
+	# completed and green and `ci-ok` succeeded; red on any failure; else pending
+	[ $# -eq 3 ] || die "uso: commit-ci NAME SHA"
+	printf %s "$3" | grep -Eq '^[0-9a-f]{40}$' || die "sha non valido"
+	runs=$(ci_checks "$3") || die "check non leggibili"
+	printf %s "$runs" | jq -r '.check_runs | if length == 0 or any(.[]; .status != "completed") then "pending"
+		elif any(.[]; .conclusion | IN("failure", "timed_out", "cancelled", "action_required", "startup_failure")) then "red"
+		elif all(.[]; .conclusion | IN("success", "neutral", "skipped")) and any(.[]; .name == "ci-ok" and .conclusion == "success") then "green"
+		else "pending" end'
+	;;
+merge)
+	# the server's own merge of an issue/* PR (issue 232): every condition re-checked here, none trusted from the caller
+	[ $# -eq 4 ] || die "uso: merge NAME PR HEADSHA"
+	num=$3; head=$4
+	printf %s "$num" | grep -Eq '^[0-9]{1,7}$' || die "numero PR non valido"
+	printf %s "$head" | grep -Eq '^[0-9a-f]{40}$' || die "sha non valido"
+	pr=$(api GET "/repos/$repo/pulls/$num") || die "PR non leggibile"
+	printf %s "$pr" | jq -e --arg h "$head" --arg r "$repo" '.state == "open" and .merged == false and .head.repo.full_name == $r and (.head.ref | test("^issue/[A-Za-z0-9._-]+$")) and .head.sha == $h and .base.ref == "main"' > /dev/null \
+		|| die "la PR $num non è una PR aperta di issue/* su main a quel commit"
+	runs=$(ci_checks "$head") || die "check non leggibili"
+	printf %s "$runs" | jq -e '.check_runs | length > 0 and all(.[]; .status == "completed" and (.conclusion | IN("success", "neutral", "skipped"))) and any(.[]; .name == "ci-ok" and .conclusion == "success")' > /dev/null \
+		|| die "i check non sono tutti completati e verdi, oppure manca ci-ok"
+	rj=$(rules_json) || die "regole di main non leggibili"
+	printf %s "$rj" | jq -e '.ok' > /dev/null || die "main non ha il ruleset (niente push diretti, PR obbligatoria, ci-ok): non unisco"
+	files=$(api GET "/repos/$repo/pulls/$num/files?per_page=100" | jq -r '.[].filename') || files=
+	if [ -z "$files" ] || printf '%s\n' "$files" | grep -Eqi "$SENS_RE"; then die "la PR tocca file sensibili (.github/, dipendenze, deploy, .hs-tools) o i file non sono leggibili: la unisce l'owner"; fi
+	meth=$(api GET "/repos/$repo" | jq -r 'if .allow_squash_merge then "squash" elif .allow_merge_commit then "merge" elif .allow_rebase_merge then "rebase" else empty end') || meth=
+	[ -n "$meth" ] || die "il repo non ammette nessun metodo di merge"
+	api PUT "/repos/$repo/pulls/$num/merge" "$(jq -n --arg h "$head" --arg m "$meth" '{sha:$h, merge_method:$m}')" | jq -e '.merged == true' > /dev/null || die "unione della PR $num rifiutata"
+	echo "merged $num ($meth)"
+	# the branch has done its job: delete it (best-effort; the PR keeps its history)
+	api DELETE "/repos/$repo/git/refs/heads/$(printf %s "$pr" | jq -r .head.ref)" > /dev/null 2>&1 || echo "branch non cancellato (token senza permesso?)" >&2
+	;;
+update-branch)
+	# bring an issue/* PR up to date with main (ruleset "strict", issue 323): GitHub makes the merge commit with the token's user
+	[ $# -eq 4 ] || die "uso: update-branch NAME PR HEADSHA"
+	num=$3; head=$4
+	printf %s "$num" | grep -Eq '^[0-9]{1,7}$' || die "numero PR non valido"
+	printf %s "$head" | grep -Eq '^[0-9a-f]{40}$' || die "sha non valido"
+	pr=$(api GET "/repos/$repo/pulls/$num") || die "PR non leggibile"
+	printf %s "$pr" | jq -e --arg h "$head" --arg r "$repo" '.state == "open" and .merged == false and .head.repo.full_name == $r and (.head.ref | test("^issue/[A-Za-z0-9._-]+$")) and .head.sha == $h and .base.ref == "main"' > /dev/null \
+		|| die "la PR $num non è una PR aperta di issue/* su main a quel commit"
+	api PUT "/repos/$repo/pulls/$num/update-branch" "$(jq -n --arg h "$head" '{expected_head_sha:$h}')" > /dev/null || die "aggiornamento del branch della PR $num rifiutato (conflitto?)"
+	echo "updated $num"
+	;;
+prune)
+	[ $# -eq 2 ] || die "uso: prune NAME"
+	refs=$(api GET "/repos/$repo/git/matching-refs/heads/issue/" | jq -r '.[].ref | ltrimstr("refs/heads/")') || die "branch non leggibili"
+	for b in $refs; do
+		printf %s "$b" | grep -Eq '^issue/[A-Za-z0-9._-]+$' || continue
+		[ "$("$0" ci "$2" "$b" 2> /dev/null | head -n1)" = merged ] || continue
+		api DELETE "/repos/$repo/git/refs/heads/$b" > /dev/null 2>&1 && echo "deleted $b" || echo "non cancellato: $b" >&2
+	done
+	;;
+release)
+	# merge the Release PR (only a release-please bot PR, at the head release-gate evaluated; never another PR)
+	[ $# -eq 4 ] || die "uso: release NAME PR HEADSHA"
+	num=$3; head=$4
+	printf %s "$num" | grep -Eq '^[0-9]{1,7}$' || die "numero PR non valido"
+	printf %s "$head" | grep -Eq '^[0-9a-f]{40}$' || die "sha non valido"
+	pr=$(api GET "/repos/$repo/pulls/$num") || die "PR non leggibile"
+	printf %s "$pr" | jq -e --arg h "$head" '.state == "open" and .merged == false and .user.type == "Bot" and (.head.ref | startswith("release-please--")) and .head.sha == $h' > /dev/null \
+		|| die "la PR $num non è una Release PR aperta di release-please a quel commit"
+	meth=$(api GET "/repos/$repo" | jq -r 'if .allow_squash_merge then "squash" elif .allow_merge_commit then "merge" elif .allow_rebase_merge then "rebase" else empty end') || meth=
+	[ -n "$meth" ] || die "il repo non ammette nessun metodo di merge"
+	api PUT "/repos/$repo/pulls/$num/merge" "$(jq -n --arg h "$head" --arg m "$meth" '{sha:$h, merge_method:$m}')" | jq -e '.merged == true' > /dev/null || die "unione della PR $num rifiutata"
+	echo "merged $num ($meth)"
+	;;
+*) die "comando sconosciuto: $cmd" ;;
+esac

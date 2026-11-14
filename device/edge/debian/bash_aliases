@@ -1,0 +1,8 @@
+# ~/.bash_aliases on the server (installed by device/edge/deploy; sourced by ~/.bashrc)
+# ops: Claude Code session that runs and evolves the home server itself (repo ~/home-server,
+# sudo). Keep untrusted content (web pages, vault notes) out of this session.
+# The session itself is kept alive by runit service "ops" (Remote Control on); this attaches.
+alias ops="tmux new-session -A -s ops -c ~/home-server claude --remote-control ops"
+# brain: the second brain's Claude Code session (user brain, no sudo, cwd the vault), kept
+# alive by runit service "brain" (Remote Control session "brain"); this attaches.
+alias brain="sudo -iu brain tmux attach -t brain"

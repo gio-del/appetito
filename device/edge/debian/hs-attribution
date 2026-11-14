@@ -1,0 +1,67 @@
+#!/bin/sh
+# The one list of Claude/AI attribution patterns (owner, issue 202; issue 474): nothing that presents an AI as
+# author or tool of the work, and no Claude/Anthropic identity, in commits, branches, PRs, issues or comments of
+# any repo of this server, home-server included. "Claude" as a subject ("the user's Claude", Claude Code as a
+# tool the server runs) passes: only attribution phrases and Claude/Anthropic identities are refused.
+# Used at every level: the Claude Code PreToolUse hook (claude-hook, user and project settings), the git hooks
+# (device/edge/git-hooks and the system-wide copy: commit-msg, pre-push, pre-receive) and projects-publish.
+# Usage:
+#   hs-attribution text [FILE]       exit 1 if the text (stdin without FILE) carries attribution; prints the line
+#   hs-attribution ident [FILE]      exit 1 if the text names a Claude/Anthropic identity (author, branch name)
+#   hs-attribution commits ARGS...   exit 1 if a commit of `git rev-list ARGS` has attribution in its message or a
+#                                    Claude/Anthropic author or committer
+#   hs-attribution claude-hook       Claude Code PreToolUse hook (JSON on stdin): exit 2 (blocked, reason on stderr)
+#                                    when a Bash command that commits, pushes or publishes carries attribution
+#   hs-attribution re | ident-re     print the pattern (extended regex, case-insensitive)
+set -u
+ATTR_RE='co-authored-by:.*(claude|anthropic|(^|[^a-z])ai([^a-z]|$))|noreply@anthropic\.com|claude-session|claude\.ai/code|generated (with|by) +\[?(claude|an? ai|ai([^a-z]|$)|chatgpt|gpt)|ai[- ]generated|(written|authored|created|generated|made|produced|assisted|co-authored|drafted) (with the help of|with|by) +(claude|an? ai|ai([^a-z]|$))|(preparat|scritt|generat|creat|prodott|realizzat|redatt|assistit)[aoie] +(in automatico +)?(da|con|dall.|con l.aiuto di) +(un.? +|l.)?(claude|ai([^a-z]|$)|chatgpt|gpt)|in automatico da [^.]*(claude|[^a-z]ai[^a-z])'
+IDENT_RE='claude|anthropic'
+ROBOT='🤖'
+
+# hit FILE: print the first offending line and return 0 when FILE carries attribution
+hit() {
+	l=$(grep -Ei -m1 "$ATTR_RE" "$1") || l=$(grep -F -m1 "$ROBOT" "$1") || return 1
+	printf '%s\n' "$l" | cut -c1-160
+}
+
+tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+case ${1:-} in
+re) printf '%s\n' "$ATTR_RE" ;;
+ident-re) printf '%s\n' "$IDENT_RE" ;;
+text)
+	if [ -n "${2:-}" ]; then cat -- "$2" > "$tmp"; else cat > "$tmp"; fi
+	if l=$(hit "$tmp"); then echo "attribuzione a un'AI: $l"; exit 1; fi ;;
+ident)
+	if [ -n "${2:-}" ]; then cat -- "$2" > "$tmp"; else cat > "$tmp"; fi
+	if l=$(grep -Ei -m1 "$IDENT_RE" "$tmp"); then echo "identità Claude/Anthropic: $l" | cut -c1-160; exit 1; fi ;;
+commits)
+	shift
+	rc=0
+	for c in $(git rev-list "$@"); do
+		git log -1 --format=%B "$c" > "$tmp"
+		if l=$(hit "$tmp"); then echo "commit $(git rev-parse --short "$c"): attribuzione a un'AI nel messaggio: $l"; rc=1; fi
+		git log -1 --format='%an <%ae>%n%cn <%ce>' "$c" > "$tmp"
+		if l=$(grep -Ei -m1 "$IDENT_RE" "$tmp"); then echo "commit $(git rev-parse --short "$c"): autore o committer Claude/Anthropic: $l"; rc=1; fi
+	done
+	exit $rc ;;
+claude-hook)
+	cat > "$tmp"
+	[ "$(jq -r '.tool_name // ""' "$tmp" 2> /dev/null)" = Bash ] || exit 0
+	jq -r '.tool_input.command // ""' "$tmp" > "$tmp.cmd" 2> /dev/null || { rm -f "$tmp.cmd"; exit 0; }
+	# Only commands that write history or publish: commit/tag/notes/merge/rebase/am/push, gh, the Gateway's publishers.
+	if grep -Eq '(^|[^a-z-])git( +-[^ ]+( +[^ -][^ ]*)?)* +(commit|tag|notes|merge|rebase|am|push|cherry-pick|revert)([^a-z-]|$)|(^|[^a-z-])gh +(pr|issue|release|api|repo)([^a-z]|$)|projects-(publish|issue-apply|git)' "$tmp.cmd"; then
+		if l=$(hit "$tmp.cmd"); then
+			rm -f "$tmp.cmd"
+			echo "Bloccato (issue 202, 474): niente attribuzione a Claude/AI in commit, PR, issue o commenti. Togli la riga e riprova: $l" >&2
+			exit 2
+		fi
+		if l=$(grep -Eio -m1 -- "--author[= ]+[\"']?[^\"']*($IDENT_RE)[^\"']*" "$tmp.cmd"); then
+			rm -f "$tmp.cmd"
+			echo "Bloccato (issue 202, 474): autore Claude/Anthropic: $l" >&2
+			exit 2
+		fi
+	fi
+	rm -f "$tmp.cmd" ;;
+*) echo "uso: hs-attribution text [FILE] | ident [FILE] | commits ARGS... | claude-hook | re | ident-re" >&2; exit 64 ;;
+esac
+exit 0

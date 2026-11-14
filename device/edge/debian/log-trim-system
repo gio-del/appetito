@@ -1,0 +1,11 @@
+#!/bin/sh
+# log-trim-system (issue 479): the nightly trim of the root-owned logs, one cron line (1 MB each, log-trim keeps the
+# tail in place). The logs of user gio and brain stay with their own jobs (file permissions): "Pulizia log" and
+# "Pulizia log del vault". Test override: HS_LOG_TRIM.
+T=${HS_LOG_TRIM:-/usr/local/bin/log-trim}
+rc=0
+"$T" 1048576 /var/log/tailscaled.log /var/log/claude-update-all.log /var/log/brain-refresh.log /var/log/studio-refresh.log \
+	/var/log/caddy/app-sumisura.log /var/log/caddy/app-library.log /var/log/caddy/app-studio-app.log || rc=1
+# leftovers of project-run (issue 552): temp dirs older than a day
+find "${HS_RUN_TMP:-/var/tmp}" -maxdepth 1 -name 'project-run.*' -mtime +0 -exec rm -rf {} + 2> /dev/null || true
+exit $rc

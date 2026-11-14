@@ -1,0 +1,28 @@
+#!/bin/sh
+# Nightly backup of the home-server repo (git bundle of every ref: committed
+# work only, so no home-server.env and no secrets), encrypted with age to the
+# same public key as vaultwarden-backup (private half only on the PC). Output
+# goes to the same Syncthing folder (vw-backup); keeps the last 14 repo-* files.
+# Root cron: /etc/cron.d/home-server.
+set -eu
+. /etc/home-server.env
+REPO=${HS_REPO:-/home/$HS_USER/home-server}
+OUT=/var/backups/vaultwarden
+RECIPIENT=/etc/vaultwarden-backup.age-recipient
+KEEP=14
+umask 077
+[ -s "$RECIPIENT" ] || { echo "missing $RECIPIENT" >&2; exit 1; }
+[ -d "$REPO/.git" ] || { echo "missing $REPO/.git" >&2; exit 1; }
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+chown "$HS_USER:$HS_USER" "$WORK"
+# Git runs as the repo's owner: root would trip safe.directory and could leave
+# root-owned files in .git.
+as_user() { runuser -u "$HS_USER" -- env HOME="/home/$HS_USER" "$@"; }
+as_user git -C "$REPO" bundle create "$WORK/repo.bundle" --all
+as_user git -C "$REPO" bundle verify -q "$WORK/repo.bundle"
+name=repo-$(date +%Y%m%d-%H%M).bundle.age
+age -R "$RECIPIENT" -o "$OUT/.$name.tmp" "$WORK/repo.bundle"
+mv "$OUT/.$name.tmp" "$OUT/$name"
+chown "$HS_USER:$HS_USER" "$OUT/$name"
+ls -1t "$OUT"/repo-*.bundle.age | tail -n +$((KEEP + 1)) | xargs -r rm -f

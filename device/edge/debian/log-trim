@@ -1,0 +1,35 @@
+#!/bin/sh
+# log-trim [--keep-days N] MAX_BYTES FILE... (issue 129): keeps only the recent tail of each log
+# above MAX_BYTES. Cuts on a line boundary and rewrites the file in place (same inode, like
+# ssh-login-watch): writers append (>>, O_APPEND), so they go on at the new end. With --keep-days N
+# no line dated YYYY-MM-DD (at line start) newer than N days is dropped, even above the limit.
+# Run daily by each user's crontab on its own files. Prints only the file name and bytes removed.
+set -eu
+keep=
+[ "${1:-}" = --keep-days ] && { keep=$2; shift 2; }
+max=$1; shift
+tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+for f; do
+	[ -f "$f" ] || continue
+	size=$(stat -c %s "$f")
+	[ "$size" -gt "$max" ] || continue
+	drop=$((size - max))  # bytes to drop before the line boundary
+	if [ -n "$keep" ]; then
+		cut=$(date -d "$keep days ago" +%F)
+		# byte offset of the first line dated on/after the cutoff (end of file if none)
+		off=$(LC_ALL=C awk -v c="$cut" '
+			substr($0, 1, 10) ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ && substr($0, 1, 10) >= c { print n; f = 1; exit }
+			{ n += length($0) + 1 }
+			END { if (!f) print n }' "$f")
+		[ "$off" -ge "$drop" ] || drop=$off
+	fi
+	[ "$drop" -gt 0 ] || continue
+	# Byte just before the cut: a newline (empty after $(...)) means the cut is already on a line start.
+	if [ -z "$(tail -c +"$drop" "$f" | head -c 1)" ]; then
+		tail -c +$((drop + 1)) "$f" > "$tmp"
+	else
+		tail -c +$((drop + 1)) "$f" | sed 1d > "$tmp"
+	fi
+	cat "$tmp" > "$f"
+	echo "log-trim: $f: -$((size - $(stat -c %s "$f"))) byte"
+done

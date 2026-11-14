@@ -1,0 +1,68 @@
+#!/bin/sh
+# Idempotent setup for the issue tracker (run as root by device/edge/deploy): user tracker,
+# its state dir, write access to the repo's issues/open, done and proposed only, a password, the system proposer token.
+set -eu
+. /etc/home-server.env
+H=$(getent passwd "$HS_USER" | cut -d: -f6)
+REPO=$H/home-server
+command -v setfacl >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y -q acl >/dev/null; echo "installed acl"; }
+id tracker >/dev/null 2>&1 || { useradd --system --home-dir /var/lib/tracker --shell /usr/sbin/nologin tracker; echo "created user tracker"; }
+install -d -m 700 -o tracker -g tracker /var/lib/tracker
+# Traverse only on the home dir (stays 700 for everyone else); the repo itself is world-readable.
+setfacl -m u:tracker:x "$H"
+# Write on the issue dirs (proposed: second brain proposals, see brain-propose); files it creates stay editable in place by $HS_USER (default ACL).
+# It writes via temp file + rename, so files owned by $HS_USER don't need to be writable for it.
+for d in "$REPO/issues/open" "$REPO/issues/done" "$REPO/issues/proposed"; do
+	install -d -m 755 -o "$HS_USER" -g "$HS_USER" "$d"
+	setfacl -m "u:tracker:rwx" -m "d:u:tracker:rwx" -m "d:u:$HS_USER:rwx" "$d"
+done
+# Screenshots of issues (issue 550): read-only for the tracker, served in the drawer; whoever saves them writes them 644.
+if [ -d "$REPO/issues/assets" ]; then
+	find "$REPO/issues/assets" -type d -exec chmod a+rx {} +
+	find "$REPO/issues/assets" -type f -exec chmod a+r {} +
+fi
+[ -s /var/lib/tracker/password ] || /usr/local/sbin/tracker-passwd
+# "Ho aggiornato" marks for the phone apps card (tracker page /phone-apps.html): versions only,
+# readable by $HS_USER's phone-apps-check.
+install -d -m 755 -o tracker -g tracker /var/lib/phone-apps
+# Web-editable settings (/settings.html, issue 025): written by the tracker, world-readable for the
+# jobs (hs-setting). Its own dir: /var/lib/tracker stays 700.
+install -d -m 755 -o tracker -g tracker /var/lib/hs-settings
+# Manual start of ops-auto (issue 067): the tracker writes request.json, $HS_USER's ops-auto-request reads it.
+install -d -m 755 -o tracker -g tracker /var/lib/ops-auto-req
+# Riaccendi / Sempre accesa asked from the tracker (issue 477): it writes <app> (one word), root's apps-idle requests applies it.
+install -d -m 755 -o tracker -g tracker /var/lib/apps-idle-req
+# Changes to GitHub issues asked from /projects.html (issue 184): the tracker writes <id>.req.json, $HS_USER's
+# projects-issue-apply (the only one with the token) answers <id>.res.json. Owned by $HS_USER, group tracker.
+install -d -m 2770 -o "$HS_USER" -g tracker /var/lib/projects-writes
+# Reactive service for those requests (issue 332; the cron stays as safety net).
+[ -e /etc/hs-service/projects-issue-apply ] || { ln -s /etc/hs-sv/projects-issue-apply /etc/hs-service/projects-issue-apply; echo "enabled service projects-issue-apply"; }
+# "Rimanda" of a Release PR (issue 208/209): the tracker writes <project>.req.json, release-gate (as $HS_USER) reads and deletes it.
+install -d -m 2770 -o "$HS_USER" -g tracker /var/lib/release-req
+# Log of the current/last ops-auto run (issue 104): written by $HS_USER's ops-auto-card, read only by the
+# tracker (setgid: the file gets group tracker). Not under /var/lib/edge-status, which Caddy serves to the LAN.
+install -d -m 2750 -o "$HS_USER" -g tracker /var/lib/ops-auto-log
+find /var/lib/ops-auto-log -maxdepth 1 -type f ! -group tracker -exec chgrp tracker {} + -exec chmod 640 {} +
+# Token for system proposals (ops-suggest, issues 027/028; $HS_USER's job): the tracker keeps only its
+# sha256 and writes `Source: system` for it, `Source: brain` for brain's propose-token (brain-setup).
+T=$H/.secrets/tracker-suggest
+if [ ! -s "$T" ] || [ ! -s /var/lib/tracker/suggest-token ]; then
+	install -d -m 700 -o "$HS_USER" -g "$HS_USER" "$H/.secrets"
+	(umask 077; openssl rand -hex 32 > "$T"); chown "$HS_USER:$HS_USER" "$T"; chmod 600 "$T"
+	(umask 077; printf %s "$(tr -d '\n' < "$T")" | sha256sum | cut -d' ' -f1 > /var/lib/tracker/suggest-token)
+	chown tracker:tracker /var/lib/tracker/suggest-token
+	echo "created tracker suggestion token for $HS_USER"
+fi
+# Token of the smartwatch summary (GET /api/watch, issue 290): read-only, valid only there; the tracker keeps
+# the sha256 (watch-token), the owner's copy is ~/.secrets/tracker-watch (rotate-secrets watch).
+T=$H/.secrets/tracker-watch
+if [ ! -s "$T" ] || [ ! -s /var/lib/tracker/watch-token ]; then
+	install -d -m 700 -o "$HS_USER" -g "$HS_USER" "$H/.secrets"
+	(umask 077; openssl rand -hex 32 > "$T"); chown "$HS_USER:$HS_USER" "$T"; chmod 600 "$T"
+	(umask 077; printf %s "$(tr -d '\n' < "$T")" | sha256sum | cut -d' ' -f1 > /var/lib/tracker/watch-token)
+	chown tracker:tracker /var/lib/tracker/watch-token
+	echo "created tracker watch token for $HS_USER"
+fi
+# Suggested answers to the «Domande» (issue 353): the tracker writes wanted.json (the questions to answer), $HS_USER's
+# questions-suggest writes <hash>.json (the suggestion, read back by the tracker). Setgid, group $HS_USER.
+install -d -m 2775 -o tracker -g "$HS_USER" /var/lib/question-suggestions

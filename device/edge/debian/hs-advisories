@@ -1,0 +1,126 @@
+#!/bin/sh
+# Security advisories and end-of-support dates as structured data only (issue 124, no Claude).
+# Run as root: hs-advisories (daily cron) -> /var/lib/hs-updates/advisories.json
+#   {checked, advisories: [{id, pkg, version, severity, fixed, via?}], eol: [{product, cycle, eol}], dropped, unimportant}
+# Sources: OSV.dev (querybatch + vulns/ID) and endoflife.date, JSON only. Only fixed fields are kept,
+# each checked against a regex/enum; free text (summary, details) is never read into the output.
+# Debian packages: OSV gives no severity, so it comes from the Debian security tracker (urgency for trixie, issue 138).
+# Node.js runtime (/opt/node): not in OSV; a newer release of the same line flagged security in nodejs.org/dist/index.json is an advisory.
+# hs-advisories --parse INV OSV VULNS EOL [DEB] [NODE]: the filter alone on recorded answers (tests/hs-advisories.sh).
+set -u
+# parse INV OSV VULNS EOL [DEB] [NODE] -> JSON on stdout; exit 1 if an answer has the wrong shape.
+#   INV   [{eco, name, version, src?, via?}] what is installed (src: Debian source package; via: app a dependency ships in)
+#   OSV   {results: [{vulns: [{id}]}]}      querybatch answer, same order as INV
+#   VULNS {ID: osv vulnerability object}    vulns/ID answers
+#   EOL   [{product, cycle, eol}]           endoflife.date cycles that are installed (eol: date or false)
+#   DEB   {SRC: {CVE-ID: {urgency, nodsa}}}  Debian security tracker, trixie, inventory packages only
+#   NODE  {version, dist}                    installed Node.js version and the nodejs.org/dist/index.json answer
+parse() {
+	jq -n --slurpfile inv "$1" --slurpfile osv "$2" --slurpfile vul "$3" --slurpfile eol "$4" --slurpfile deb "${5:-/dev/null}" --slurpfile node "${6:-/dev/null}" --arg c "$(date -Iseconds)" '
+	def ok(re): type == "string" and test(re);
+	def ver: ok("^[A-Za-z0-9.+~:_-]{1,60}$");
+	def pkg: ok("^[A-Za-z0-9@/._+-]{1,100}$");
+	def vid: ok("^(GHSA(-[2-9cfghjmpqrvwx]{4}){3}|(DEBIAN-)?CVE-[0-9]{4}-[0-9]{4,7}|GO-[0-9]{4}-[0-9]{1,6}|DSA-[0-9]{1,5}-[0-9]{1,2}|DLA-[0-9]{1,5}-[0-9]{1,2}|NODE-[0-9]{1,3}-[0-9]{1,4}-[0-9]{1,4})$");
+	def sev: if type == "string" and (. | ascii_upcase | IN("LOW","MODERATE","HIGH","CRITICAL")) then ascii_upcase else "UNKNOWN" end;
+	# Debian urgency (a trailing * marks a guess) -> the same scale; "not yet assigned" with no DSA because Debian calls it
+	# a "Minor issue" is LOW; "unimportant" (Debian: no security impact on Debian) is left out and only counted.
+	def urg: if type == "string" then (rtrimstr("*") | rtrimstr("*") | {unimportant: "LOW", low: "LOW", medium: "MODERATE", high: "HIGH"}[.] // "UNKNOWN") else "UNKNOWN" end;
+	($deb[0] // {}) as $dt |
+	def deb($h): if $h.p.eco | ok("^Debian") then [$dt[$h.p.src // $h.p.name][$h.id | ltrimstr("DEBIAN-")]?] | first | if type == "object" then . else {} end else {} end;
+	if ($inv[0] | type) != "array" or ($osv[0].results | type) != "array" or ($osv[0].results | length) != ($inv[0] | length)
+		or ($vul[0] | type) != "object" or ($eol[0] | type) != "array" or ($dt | type) != "object" then error("answer out of schema") else . end |
+	([range(0; $inv[0] | length)] | map(. as $i | $inv[0][$i] as $p | ($osv[0].results[$i].vulns // [])[]? | {p: $p, id: .id})) as $hits |
+	{checked: $c,
+	 advisories: [$hits[] | select((.id | vid) and (.p.name | pkg) and (.p.version | ver)) | . as $h | select(deb($h).urgency != "unimportant") |
+		($vul[0][$h.id] // {}) as $v |
+		{id: $h.id, pkg: $h.p.name, version: $h.p.version,
+		 severity: ($v.database_specific.severity | sev |
+			if . != "UNKNOWN" then . else (deb($h) | .urgency | urg) end | if . == "UNKNOWN" and deb($h).nodsa == "Minor issue" then "LOW" else . end),
+		 fixed: ([$v.affected[]?.ranges[]?.events[]?.fixed | select(. != null and ver)] | first // "")} +
+		(if $h.p.via | ok("^[a-z0-9-]{1,30}$") then {via: $h.p.via} else {} end)],
+	 eol: [$eol[0][] | select((.product | pkg) and (.cycle | ver) and (.eol == false or (.eol | ok("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))) |
+		{product, cycle, eol}]} |
+	.unimportant = ([$hits[] | . as $h | select(deb($h).urgency == "unimportant")] | length) |
+	.dropped = (($hits | length) - (.advisories | length) - .unimportant) + (($eol[0] | length) - (.eol | length)) |
+	# Node.js: the newest security release of the installed line, if newer (no severity upstream).
+	def vn: split(".") | map(tonumber);
+	($node[0] // {}) as $n | ($n.version | ok("^[0-9]{1,3}\\.[0-9]{1,4}\\.[0-9]{1,4}$")) as $nok |
+	if $nok and ($n.dist | type) != "array" then error("answer out of schema") else . end |
+	.advisories += [if $nok then [$n.dist[] | select(type == "object" and .security == true) | .version |
+		select(ok("^v[0-9]{1,3}\\.[0-9]{1,4}\\.[0-9]{1,4}$")) | ltrimstr("v") | select(vn[0] == ($n.version | vn[0]) and vn > ($n.version | vn))] |
+		max_by(vn) // empty | {id: ("NODE-" + gsub("\\."; "-")), pkg: "node", version: $n.version, severity: "UNKNOWN", fixed: .} else empty end]'
+}
+if [ "${1:-}" = --parse ]; then parse "$2" "$3" "$4" "$5" "${6:-}" "${7:-}"; exit; fi
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
+# Inventory: pinned apps (bw CLI npm, Vaultwarden, AdGuard Home, Go toolchain), Tailscale, Claude Code,
+# and the apt packages that face the network (Debian 13). Optional services only when enabled.
+. /etc/home-server.env
+home=$(getent passwd "$HS_USER" | cut -d: -f6); rs=$home/bin/rotate-secrets
+inv() { [ -n "$3" ] && jq -nc --arg e "$1" --arg n "$2" --arg v "$3" '{eco: $e, name: $n, version: $v}'; }
+# The stdlib that matters is the one linked into Sumisura's binary, built with the Go of the pinned .hs-tools (issue 234);
+# /opt/go is an old leftover that no pin updates, so it is only the fallback.
+gv=$(/opt/go/bin/go version /opt/sumisura/sumisura 2>/dev/null | sed -n 's/.*: go\([0-9][0-9.]*\).*/\1/p')
+[ -n "$gv" ] || gv=$(/opt/go/bin/go env GOVERSION 2>/dev/null | sed 's/^go//')
+{
+	[ -f "$rs" ] && inv npm @bitwarden/cli "$(sed -n 's/^PIN_BW=//p' "$rs")"
+	[ -e /etc/hs-service/vaultwarden ] && inv crates.io vaultwarden "$(/usr/local/sbin/vaultwarden-fetch --pin | cut -d' ' -f3)"
+	[ -e /etc/hs-service/adguardhome ] && inv Go github.com/AdguardTeam/AdGuardHome "$(/opt/AdGuardHome/AdGuardHome --version 2>/dev/null | sed -n 's/.*version v//p')"
+	inv Go stdlib "$gv"
+	inv Go tailscale.com "$(dpkg-query -W -f '${Version}' tailscale 2>/dev/null)"
+	# Claude Code: the version is the name of the binary ~/.local/bin/claude links to (never run it as root). Installed for
+	# gio, brain, sumisura, library (issue 442) and studio (448): the oldest one decides, since an advisory applies to any of them.
+	cv=$(for d in "$home" /home/brain /var/lib/sumisura /var/lib/library /home/studio; do
+		basename "$(readlink -f "$d/.local/bin/claude" 2>/dev/null)" 2>/dev/null
+	done | grep -E '^[0-9.]+$' | sort -V | head -n 1)
+	inv npm @anthropic-ai/claude-code "$cv"
+	# Runtime dependencies of the apps built here (issue 138), tagged with the app they ship in (via):
+	# the Go modules linked into Sumisura's binary.
+	[ -e /etc/hs-service/sumisura ] && [ -x /opt/sumisura/sumisura ] && /opt/go/bin/go version -m /opt/sumisura/sumisura 2>/dev/null |
+		# a "=>" line replaces the dep line above it: the binary holds the replacement
+		awk '$1 == "dep" { if (n) print n, v; n = $2; v = $3 } $1 == "=>" && n { n = $2; v = $3 } END { if (n) print n, v }' |
+		sed 's/ v\([0-9]\)/ \1/' | while read -r n v; do
+			[ -n "$v" ] && jq -nc --arg n "$n" --arg v "$v" '{eco: "Go", name: $n, version: $v, via: "sumisura"}'
+		done
+	for p in caddy openssh-server radicale syncthing; do
+		# OSV and the security tracker name the source package (openssh-server -> openssh).
+		dpkg-query -W -f "\${source:Package} \${source:Version}\n" "$p" 2>/dev/null | while read -r s v; do
+			[ -n "$v" ] && jq -nc --arg n "$p" --arg s "$s" --arg v "$v" '{eco: "Debian:13", name: $n, src: $s, version: $v}'
+		done
+	done
+} | jq -s . > "$w/inv.json"
+jq '{queries: map({package: {name: (.src // .name), ecosystem: .eco}, version})}' "$w/inv.json" > "$w/q.json"
+curl -fsS -m 60 -X POST -H 'Content-Type: application/json' -d @"$w/q.json" https://api.osv.dev/v1/querybatch > "$w/osv.json" || { echo "OSV unreachable" >&2; exit 1; }
+echo '{}' > "$w/vulns.json"
+for id in $(jq -r '[.results[].vulns[]?.id | select(test("^[A-Za-z0-9-]{1,40}$"))] | unique[]' "$w/osv.json"); do
+	curl -fsS -m 30 "https://api.osv.dev/v1/vulns/$id" | jq --arg id "$id" --slurpfile a "$w/vulns.json" -n '$a[0] + {($id): input}' > "$w/v.tmp" 2>/dev/null &&
+		mv "$w/v.tmp" "$w/vulns.json"
+done
+# End of support: Node.js line in use, Go release, Debian release.
+nodev=$(/opt/node/bin/node --version 2>/dev/null | sed 's/^v//; s/\..*//')
+gov=$(echo "$gv" | sed 's/^go//; s/^\([0-9]*\.[0-9]*\).*/\1/')
+: > "$w/eol.ndjson"
+for pc in "nodejs:$nodev" "go:$gov" "debian:13"; do
+	prod=${pc%%:*} cyc=${pc#*:}
+	[ -n "$cyc" ] || continue
+	curl -fsS -m 30 "https://endoflife.date/api/$prod.json" | jq -c --arg p "$prod" --arg c "$cyc" '.[]? | select((.cycle | tostring) == $c) | {product: $p, cycle: $c, eol: .eol}' >> "$w/eol.ndjson" || true
+done
+jq -s . "$w/eol.ndjson" > "$w/eol.json"
+# Node.js security releases of the installed line (nodejs.org/dist/index.json: version and security flag only are read).
+echo '{}' > "$w/node.json"
+nodefull=$(/opt/node/bin/node --version 2>/dev/null | sed 's/^v//')
+[ -n "$nodefull" ] && curl -fsS -m 60 https://nodejs.org/dist/index.json |
+	jq -c --arg v "$nodefull" '{version: $v, dist: [.[]? | {version, security}]}' > "$w/node.tmp" 2>/dev/null && mv "$w/node.tmp" "$w/node.json"
+# Debian urgencies: the tracker JSON is tens of MB, so it is streamed and only the urgency and no-DSA note for trixie of
+# the inventory's source packages is kept ({SRC: {CVE: {urgency, nodsa}}}). Unreachable: severities stay UNKNOWN.
+echo '{}' > "$w/deb.json"
+srcs=$(jq -c '[.[] | select(.eco | startswith("Debian")) | .src // .name]' "$w/inv.json")
+if [ "$srcs" != "[]" ] && curl -fsS -m 300 --compressed https://security-tracker.debian.org/tracker/data/json -o "$w/tracker.json"; then
+	jq -cn --stream --argjson s "$srcs" 'reduce (inputs | select(length == 2 and (.[0] | length) == 5 and .[0][2:4] == ["releases", "trixie"] and (.[0][4] | IN("urgency", "nodsa"))
+		and (.[0][0] | IN($s[])) and (.[0][1] | test("^CVE-[0-9]{4}-[0-9]{4,7}$")))) as $e ({}; .[$e[0][0]][$e[0][1]][$e[0][4]] = $e[1])' \
+		"$w/tracker.json" > "$w/deb.tmp" && mv "$w/deb.tmp" "$w/deb.json"
+	rm -f "$w/tracker.json"
+fi
+UPD=/var/lib/hs-updates; mkdir -p "$UPD" && chmod 755 "$UPD"
+parse "$w/inv.json" "$w/osv.json" "$w/vulns.json" "$w/eol.json" "$w/deb.json" "$w/node.json" > "$UPD/advisories.json.tmp" &&
+	chmod 644 "$UPD/advisories.json.tmp" && mv -f "$UPD/advisories.json.tmp" "$UPD/advisories.json"

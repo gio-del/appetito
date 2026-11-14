@@ -1,0 +1,23 @@
+# Docs/changelogs of the installed versions, fetched by hs-docs-fetch at every deploy (issue 125).
+# app | version | source | sha256 | paths
+# version: "auto" (the installed one) or the pinned one (bumped with the PIN_* of the app, by app-upgrade for
+# Vaultwarden, issue 141; the deploy warns when it
+# differs). source: "local" (installed files, absolute paths) or a .tar.gz URL pinned by sha256
+# (paths relative to the archive root; only text files are kept). app = service name in /etc/hs-sv.
+caddy       | auto   | local | - | /usr/share/doc/caddy/changelog.Debian.gz /usr/share/doc/caddy/README.Debian
+# caddyserver/website has no tags: last commit before 2022-12-01 (Caddy 2.6.x docs).
+caddy       | auto   | https://github.com/caddyserver/website/archive/8c7e188f5e0a124abf453fea6e3e4cba2f106f11.tar.gz | 01406e0fd343cd907dd09e3e6b9e3640811e19fde54c4f8a12fb5ea7e065ca41 | src/docs/markdown
+syncthing   | auto   | local | - | /usr/share/doc/syncthing/changelog.gz /usr/share/doc/syncthing/README.txt
+# syncthing/docs is tagged per minor (v2.1.0 covers 2.1.x).
+syncthing   | auto   | https://github.com/syncthing/docs/archive/refs/tags/v2.1.0.tar.gz | f6a606ea93494eaae849bc0f11ff96a3804362ac75b3348007eb1e9acad93f6c | intro users advanced rest events
+# Same version as PIN_VERSION in vaultwarden-fetch; .env.template documents every setting.
+vaultwarden | 1.37.5 | https://github.com/dani-garcia/vaultwarden/archive/refs/tags/1.37.5.tar.gz | 6be37dcc95b91a058ecbe614f1a7acff68ca8d23dc2c016cec18517c7173e4cc | README.md SECURITY.md .env.template
+# The release tarball installed by update-apps ships them.
+adguardhome | auto   | local | - | /opt/AdGuardHome/CHANGELOG.md /opt/AdGuardHome/README.md
+radicale    | auto   | local | - | /usr/share/doc/radicale/DOCUMENTATION.txt.gz /usr/share/doc/radicale/changelog.gz /usr/share/doc/radicale/README.txt
+# Zepp OS (Amazfit watch app, epic 287, issue 337): the official docs (Apache-2.0, current version = API 3.x/4.x
+# pages incl. app-widget, app.json, side service), the ZML library and the app samples, at pinned commits.
+# The docs archive is 180 MB (images), only docs/ is kept (3 MB, English). zml HEAD is 0.0.41 (the app pins 0.0.43).
+zeppos-docs    | 2b7b79e | https://github.com/zepp-health/zeppos-docs/archive/2b7b79e527361077b4f71b2cdf5e521e175d1df1.tar.gz | e632664dd6d111bbcf07957461ad3083ddd4d98fe003323d2ec0bac76bbcb125 | docs
+zeppos-zml     | 97fd186 | https://github.com/zepp-health/zml/archive/97fd18606e9c72dc010f42856f4176ef4e9ad040.tar.gz | e243ffb475f4b471e77fbfd7034a4aed79550b3a9da96220069ac3ddfd84e981 | README.md docs src zml.d.ts examples
+zeppos-samples | 7cee748 | https://github.com/zepp-health/zeppos-samples/archive/7cee748bb774512b0682cec8bb1209a89e02a351.tar.gz | ca399247fccb26ecf3a41c7f953d8ca748ffc8c69c7a1a9193df0f8152be77f8 | README.md application

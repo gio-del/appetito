@@ -1,0 +1,165 @@
+#!/usr/bin/env node
+'use strict';
+// ops-suggest-signals (issue 128): cost and quality signals for ops-suggest, deterministic, no Claude.
+// From `claude-usage --json --runs --job ops-auto` (last 14 days) and the quota windows history of
+// claude-usage. Prints one compact JSON array (≤ 3 KB): [{id, over, ...numbers}], last 7 days vs the
+// 7 before. Only numbers, issue ids and repo-relative paths: never log, issue or vault text.
+// A signal is `over` when it passes its threshold; ops-suggest's validator accepts an optimization or
+// quality proposal only if it cites the id of a signal that is over.
+// Env (tests): HS_SIGNALS_USAGE (claude-usage command), HS_SIGNALS_NOW (YYYY-MM-DD), HS_REPO,
+// CLAUDE_USAGE_WINDOWS (windows history), HS_SIGNALS_PENDING (pending app updates), HS_SIGNALS_DEPLOYLOG (deploy outcomes).
+// `--card` (issue 298) writes {v, generated, signals} to HS_SIGNALS_CARD (default /var/lib/edge-status/signals.json) instead of printing.
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const HOME = process.env.HOME || require('os').homedir();
+const REPO = (process.env.HS_REPO || path.join(HOME, 'home-server')).replace(/\/$/, '');
+const USAGE = process.env.HS_SIGNALS_USAGE || path.join(HOME, 'bin/claude-usage');
+const WINDOWS_FILE = process.env.CLAUDE_USAGE_WINDOWS || path.join(HOME, '.local/state/claude-usage/windows.jsonl');
+const PENDING = process.env.HS_SIGNALS_PENDING || '/var/lib/hs-updates/pending.json';
+const DEPLOYLOG = process.env.HS_SIGNALS_DEPLOYLOG || path.join(HOME, '.local/state/deploy.log');
+// Thresholds (the prompt shows them to Claude, a proposal's acceptance criteria refer to them).
+const T = { costRise: 0.25, costMin: 5, prefix: 24000, retries: 2, denied: 3, errors: 2, outputKBPerRun: 30, explorePerRun: 15, unused: 50,
+  monitorRepeat: 2, lintRepeat: 3, advisoryDays: 7, appDays: 10, reverts: 1, deployFailed: 3 };
+
+const day = s => new Date(s + 'T00:00:00Z');
+const iso = d => d.toISOString().slice(0, 10);
+const now = process.env.HS_SIGNALS_NOW ? day(process.env.HS_SIGNALS_NOW) : day(iso(new Date()));
+const cut7 = iso(new Date(now - 6 * 86400000)), cut14 = iso(new Date(now - 13 * 86400000));
+const r2 = x => Math.round(x * 100) / 100;
+
+let runs = [], topRead = [];
+const usage = a => JSON.parse(execFileSync(USAGE, a, { encoding: 'utf8', maxBuffer: 64 << 20 }));
+try {
+  runs = usage(['--json', '--runs', '--job', 'ops-auto', '--since', cut14]).runs || [];
+  // --runs drops the per-run Read paths: the last 7 days aggregate has them.
+  topRead = ((usage(['--json', '--job', 'ops-auto', '--since', cut7]).jobs || {})['ops-auto'] || {}).topReadFiles || [];
+} catch { /* no runs: no signals */ }
+const cur = runs.filter(r => r.start.slice(0, 10) >= cut7), prev = runs.filter(r => r.start.slice(0, 10) < cut7);
+const sum = (a, f) => a.reduce((n, r) => n + (f(r) || 0), 0);
+const out = [];
+const sig = (id, over, o) => out.push(Object.assign({ id, over: !!over }, o));
+
+if (cur.length) {
+  const c = sum(cur, r => r.cost), p = sum(prev, r => r.cost);
+  sig('sig-cost-7d', c >= T.costMin && p > 0 && c > p * (1 + T.costRise),
+    { usd: r2(c), prevUsd: r2(p), runs: cur.length, prevRuns: prev.length, threshold: `+${T.costRise * 100}% e >= ${T.costMin} $` });
+  const pre = Math.round(sum(cur, r => r.prefixTokens) / cur.length);
+  sig('sig-prefix', pre > T.prefix, { avgPrefixTokens: pre, prevAvgPrefixTokens: prev.length ? Math.round(sum(prev, r => r.prefixTokens) / prev.length) : null, threshold: T.prefix });
+
+  // Quality, per issue in the last 7 days: attempts >= 2 or handed over.
+  const byIssue = {};
+  for (const r of cur) { const i = byIssue[r.issue] = byIssue[r.issue] || { att: 0, out: null }; i.att = Math.max(i.att, r.attempt || 1); i.out = r.outcome; }
+  const retried = Object.entries(byIssue).filter(([, i]) => i.att >= 2).map(([k]) => k).sort();
+  const handed = Object.entries(byIssue).filter(([, i]) => i.out === 'consegnata').map(([k]) => k).sort();
+  sig('sig-retries', retried.length >= T.retries, { issues: retried.slice(0, 10), count: retried.length, threshold: T.retries });
+  sig('sig-handed-over', false, { issues: handed.slice(0, 10), count: handed.length });
+  const denied = sum(cur, r => r.denied);
+  const byTool = {};
+  for (const r of cur) for (const [k, v] of Object.entries(r.deniedTools || {})) byTool[k] = (byTool[k] || 0) + (Number(v) || 0);
+  const byCommand = {};
+  for (const r of cur) for (const [k, v] of Object.entries(r.deniedBash || {})) byCommand[k] = (byCommand[k] || 0) + (Number(v) || 0);
+  sig('sig-denied', denied >= T.denied, { count: denied, byTool, byCommand, threshold: T.denied });
+  const errs = cur.filter(r => r.outcome === 'errore').length;
+  sig('sig-errors', errs >= T.errors, { count: errs, quotaLimited: cur.filter(r => r.outcome === 'limite').length, threshold: T.errors });
+
+  // Context diet: the repo files read the most (issue files are the task itself).
+  const reads = {};
+  for (const { file: f, bytes: b } of topRead) {
+    if (!f.startsWith(REPO + '/')) continue;
+    const rel = f.slice(REPO.length + 1);
+    if (/^issues\//.test(rel) || !/^[\w./-]+$/.test(rel)) continue;
+    reads[rel] = (reads[rel] || 0) + b;
+  }
+  const top = Object.entries(reads).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([file, b]) => ({ file, kb: Math.round(b / 1024) }));
+  // Tool output re-enters the context: Bash (sed, grep, cat) as well as Read.
+  const kb = Math.round(sum(cur, r => Object.values(r.toolOutputBytes || {}).reduce((n, b) => n + b, 0)) / 1024 / cur.length);
+  sig('sig-context-size', kb > T.outputKBPerRun, { toolOutputKBPerRun: kb, topReadFiles: top, threshold: T.outputKBPerRun });
+  const explore = r2(sum(cur, r => r.bash && r.bash.lettura) / cur.length);
+  sig('sig-explore', explore > T.explorePerRun, { readCommandsPerRun: explore, threshold: T.explorePerRun });
+}
+
+// Maintenance, from the issue headers hs-monitor writes (Opened, Fingerprint), the pending app updates
+// and git: only fingerprint kinds ([a-z-]), issue numbers, counts and days.
+// Risk-accepted: YYYY-MM-DD (issue 297): an advisory with no fixed version, accepted by the owner until a date
+// that is not past and at most 90 days away. Anything else (malformed, too far, expired, a fix exists) counts.
+const riskAccepted = (d, blocked) => {
+  if (!d || !/avviso senza versione corretta/.test(blocked)) return false;
+  const t = Date.parse(d + 'T00:00:00Z');
+  return t >= now && t <= now.getTime() + 90 * 86400000 && new Date(t).toISOString().slice(0, 10) === d;
+};
+const issues = [];
+let haveIssues = false;
+for (const dir of ['open', 'done']) {
+  let names = [];
+  try { names = fs.readdirSync(path.join(REPO, 'issues', dir)); } catch { continue; }
+  haveIssues = true;
+  for (const n of names) {
+    const m = /^(\d+)-.*\.md$/.exec(n);
+    if (!m) continue;
+    let head = '';
+    try { head = fs.readFileSync(path.join(REPO, 'issues', dir, n), 'utf8').split('\n## ')[0]; } catch { continue; }
+    const fp = (/^Fingerprint: ([a-z0-9.-]+)$/m.exec(head) || [])[1];
+    const opened = (/^Opened: (\d{4}-\d\d-\d\d)/m.exec(head) || [])[1];
+    const blocked = (/^Blocked on: (.*)$/m.exec(head) || [])[1] || '', ra = (/^Risk-accepted: (\d{4}-\d\d-\d\d)\s*$/m.exec(head) || [])[1];
+    if (fp && opened) issues.push({ num: m[1], open: dir === 'open', fp, opened, accepted: riskAccepted(ra, blocked) });
+  }
+}
+// Kind = fingerprint without its trailing ids (lint-no-status-119 → lint-no-status, vault-sync-d23aeub → vault-sync).
+const kindOf = fp => { const p = fp.split('-'); while (p.length > 1 && /\d/.test(p[p.length - 1])) p.pop(); return p.join('-'); };
+const recent = issues.filter(i => i.opened >= cut14);
+const kinds = pre => {
+  const k = {};
+  for (const i of recent.filter(i => pre(i.fp))) (k[kindOf(i.fp)] = k[kindOf(i.fp)] || []).push(i.num);
+  return Object.entries(k).map(([kind, n]) => ({ kind, count: n.length, issues: n.sort().slice(-5) })).sort((a, b) => b.count - a.count).slice(0, 5);
+};
+const mon = kinds(fp => !/^(lint|advisory|update)-/.test(fp)), lint = kinds(fp => fp.startsWith('lint-'));
+if (haveIssues) {
+  sig('sig-monitor-repeat', mon.some(k => k.count >= T.monitorRepeat), { kinds14d: mon, threshold: T.monitorRepeat });
+  sig('sig-lint-repeat', lint.some(k => k.count >= T.lintRepeat), { kinds14d: lint, threshold: T.lintRepeat });
+  const adv = issues.filter(i => i.open && i.fp.startsWith('advisory-') && !i.accepted);
+  const age = d => Math.round((now - day(d)) / 86400000);
+  const oldest = adv.length ? Math.max(...adv.map(i => age(i.opened))) : 0;
+  sig('sig-advisories-open', oldest >= T.advisoryDays, { count: adv.length, oldestDays: oldest, issues: adv.map(i => i.num).sort().slice(0, 10), threshold: T.advisoryDays });
+}
+try {
+  const apps = (JSON.parse(fs.readFileSync(PENDING, 'utf8')).apps || [])
+    .filter(a => /^[a-z0-9-]{1,30}$/.test(a.app || '') && Date.parse(a.published) > 0)
+    .map(a => ({ app: a.app, days: Math.floor((now - Date.parse(a.published)) / 86400000) })).sort((a, b) => b.days - a.days).slice(0, 5);
+  sig('sig-apps-behind', apps.some(a => a.days > T.appDays), { apps, threshold: T.appDays });
+} catch { /* no update status */ }
+try {
+  const reverts = execFileSync('git', ['-C', REPO, 'log', `--since=${cut7}`, '--format=%s'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    .split('\n').filter(s => /^Revert\b/.test(s)).length;
+  sig('sig-reverts', reverts >= T.reverts, { count: reverts, threshold: T.reverts });
+} catch { /* not a git repo */ }
+// Deploys that failed in the last 7 days (the deploy writes one line per outcome): stopped by
+// device/edge/check before installing, or while installing.
+try {
+  const d = fs.readFileSync(DEPLOYLOG, 'utf8').split('\n').map(l => /^(\d{4}-\d\d-\d\d) \S+ (ok|failed check|failed install)(?:: ([A-Za-z0-9:._-]{1,40}))?$/.exec(l))
+    .filter(m => m && m[1] >= cut7);
+  const n = w => d.filter(m => m[2] === w).length;
+  const byReason = {};
+  for (const m of d.filter(m => m[2] !== 'ok')) { const k = `${m[2].replace('failed ', '')}: ${m[3] || '?'}`; byReason[k] = (byReason[k] || 0) + 1; }
+  sig('sig-deploy-failed', n('failed check') + n('failed install') >= T.deployFailed,
+    { failedCheck: n('failed check'), failedInstall: n('failed install'), byReason, deploys: d.length, threshold: T.deployFailed });
+} catch { /* no deploy log yet */ }
+
+// Quota left unused at the last closed weekly reset.
+try {
+  const ws = fs.readFileSync(WINDOWS_FILE, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(w => w && w.window === 'seven_day' && w.closed && typeof w.unusedPct === 'number');
+  const w = ws[ws.length - 1];
+  if (w) sig('sig-quota-unused', w.unusedPct > T.unused, { unusedPct: w.unusedPct, resetsAt: String(w.resetsAt).slice(0, 10), threshold: T.unused });
+} catch { /* no history yet */ }
+
+let s = JSON.stringify(out);
+while (s.length > 3072 && out.some(x => x.topReadFiles && x.topReadFiles.length)) { out.find(x => x.topReadFiles && x.topReadFiles.length).topReadFiles.pop(); s = JSON.stringify(out); }
+if (process.argv.includes('--card')) {
+  // signals.json (issue 298): same numbers and ids as above, for the tracker's auto.html; written atomically, world-readable.
+  const file = process.env.HS_SIGNALS_CARD || '/var/lib/edge-status/signals.json', tmp = file + '.tmp';
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify({ v: 1, generated: new Date().toISOString(), signals: out }) + '\n', { mode: 0o644 });
+  fs.renameSync(tmp, file);
+} else process.stdout.write(s + '\n');

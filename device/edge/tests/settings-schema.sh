@@ -15,7 +15,8 @@ for (const [k, v] of Object.entries(s)) {
   if (!v.desc) fail(k + ": desc mancante");
 }
 // Every Project with proposals has its HS_SUGGEST_PAUSE_<NAME> (issue 271).
-for (const l of require("fs").readFileSync(process.argv[2], "utf8").split("\n")) {
+// The Projects list is private to the owner: the public copy has none (issue 578).
+for (const l of (require("fs").existsSync(process.argv[2]) ? require("fs").readFileSync(process.argv[2], "utf8") : "").split("\n")) {
   const c = l.split("|").map(x => x.trim());
   if (l.startsWith("#") || c.length < 5 || !c[0] || c[4] === "-") continue;
   const k = "HS_SUGGEST_PAUSE_" + c[0].toUpperCase().replace(/-/g, "_");

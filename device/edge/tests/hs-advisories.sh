@@ -113,7 +113,10 @@ cat > "$t/adv" <<'J'
 {"advisories":[
  {"id":"GHSA-c2fg-2345-wxrv","pkg":"@bitwarden/cli","version":"2026.9.1","severity":"HIGH","fixed":"2026.10.0"},
  {"id":"DEBIAN-CVE-2026-1","pkg":"caddy","version":"2.6.2-12","severity":"UNKNOWN","fixed":"2.11.4-1"},
- {"id":"CVE-2026-2","pkg":"caddy","version":"2.6.2-12","severity":"UNKNOWN","fixed":""},
+ {"id":"CVE-2026-2","pkg":"radicale","version":"3.5","severity":"UNKNOWN","fixed":""},
+ {"id":"CVE-2026-20","pkg":"caddy","version":"2.6.2-12","severity":"UNKNOWN","fixed":""},
+ {"id":"CVE-2026-21","pkg":"openssh-server","version":"1:10.0p1-7","severity":"MODERATE","fixed":""},
+ {"id":"CVE-2026-22","pkg":"caddy","version":"2.6.2-12","severity":"HIGH","fixed":""},
  {"id":"DEBIAN-CVE-2026-9","pkg":"openssh-server","version":"1:10.0p1-7","severity":"LOW","fixed":"1:10.4p1-1"},
  {"id":"GO-2026-4","pkg":"stdlib","version":"1.27.2","severity":"HIGH","fixed":"1.27.3"},
  {"id":"GHSA-2345-6789-cfgh","pkg":"github.com/AdguardTeam/AdGuardHome","version":"0.107.79","severity":"CRITICAL","fixed":"0.107.80"},
@@ -123,12 +126,13 @@ cat > "$t/adv" <<'J'
 J
 device/edge/debian/hs-monitor --advisories-test "$t/adv" 2000000000000 > "$t/mon"
 cat > "$t/mwant" <<'W'
-[{"fp":"advisory-ghsa-c2fg-2345-wxrv-bitwarden-cli","blocked":""},{"fp":"advisory-debian-cve-2026-1-caddy","blocked":""},{"fp":"advisory-cve-2026-2-caddy","blocked":"user (avviso senza versione corretta)"},{"fp":"advisory-go-2026-4-stdlib","blocked":""},{"fp":"advisory-ghsa-2345-6789-cfgh-github.com-adguardteam-adguardhome","blocked":""},{"fp":"eol-nodejs-22","blocked":""},{"fp":"eol-go-1.22","blocked":""}]
+[{"fp":"advisory-ghsa-c2fg-2345-wxrv-bitwarden-cli","blocked":""},{"fp":"advisory-debian-cve-2026-1-caddy","blocked":""},{"fp":"advisory-cve-2026-2-radicale","blocked":"user (avviso senza versione corretta)"},{"fp":"advisory-cve-2026-22-caddy","blocked":"user (avviso senza versione corretta)"},{"fp":"advisory-go-2026-4-stdlib","blocked":""},{"fp":"advisory-ghsa-2345-6789-cfgh-github.com-adguardteam-adguardhome","blocked":""},{"fp":"eol-nodejs-22","blocked":""},{"fp":"eol-go-1.22","blocked":""}]
 ["bw-cli","adguardhome"]
 W
 head -2 "$t/mon" | diff -u "$t/mwant" - || { echo "FAIL: hs-monitor advisories"; exit 1; }
 grep -q 'rm -rf' "$t/mon" && { echo "FAIL: injected id reached an issue"; exit 1; }
 grep -q '.hs-tools' "$t/mon" || { echo "FAIL: Go stdlib advisory without its upgrade path"; exit 1; }
+grep -q 'CVE-2026-20\|CVE-2026-21' "$t/mon" && { echo "FAIL: accepted-package advisory opened an issue"; exit 1; }
 echo "ok: hs-monitor advisories"
 
 # Dependencies of the apps built here (via, issue 138): one issue per dependency version with all its advisories,

@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+// Cron every 2 minutes ($HS_USER; issue 189): creates on GitHub the issues of the proposals the owner
+// approved in the tracker for another Project. The tracker (user tracker) has no token: on Approva it
+// only leaves the issue in issues/open/ with `Publish: pending` and `Blocked on: publish` (invisible to
+// ops-auto). Here, for each such issue: `projects-publish issue NAME TITLE BODYFILE` (the one holding the
+// token), then `GitHub: NAME#N url` goes into the local issue, which is closed into issues/done/ with a
+// comment. On failure it stays pending (retried next run) and the exit code is 1 (hs-run reports it).
+// Usage: projects-publish-pending [REPO]   (env: HS_PUBLISH_CMD, HS_ISSUES_LIB for tests)
+'use strict';
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const { parse, serialize, getField, setField, now } = require(process.env.HS_ISSUES_LIB || '/opt/hs-tracker/issues.js');
+
+const repo = process.argv[2] || path.join(os.homedir(), 'home-server');
+const publish = process.env.HS_PUBLISH_CMD || 'projects-publish';
+const openDir = path.join(repo, 'issues', 'open'), doneDir = path.join(repo, 'issues', 'done');
+let failed = 0;
+
+for (const f of fs.readdirSync(openDir).filter(x => /^\d{3,}-.*\.md$/.test(x)).sort()) {
+  const full = path.join(openDir, f);
+  const p = parse(fs.readFileSync(full, 'utf8'));
+  if ((getField(p, 'Publish') || '').trim() !== 'pending') continue;
+  const name = (getField(p, 'Project') || '').trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) { console.error(`${f}: Project non valido`); failed++; continue; }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pub-'));
+  try {
+    const bodyf = path.join(dir, 'body.md');
+    fs.writeFileSync(bodyf, p.desc + '\n');
+    const out = execFileSync(publish, ['issue', name, p.title, bodyf], { encoding: 'utf8', timeout: 90000 }).trim();
+    const m = /^(\d+) (https:\/\/\S+)$/.exec(out.split('\n').pop());
+    if (!m) throw new Error(`risposta inattesa: ${out.slice(0, 200)}`);
+    const t = now();
+    setField(p, 'GitHub', `${name}#${m[1]} ${m[2]}`);
+    setField(p, 'Publish', 'done');
+    setField(p, 'Blocked on', '-');
+    setField(p, 'Closed', t.date);
+    p.comments.push({ date: `${t.date} ${t.time}`, author: 'sistema', text: `Pubblicata su GitHub: ${name}#${m[1]} ${m[2]}. Da qui la segue il Project; questa copia locale è chiusa.` });
+    const target = path.join(doneDir, f);
+    fs.writeFileSync(target + '.tmp', serialize(p), { mode: 0o664 });
+    fs.renameSync(target + '.tmp', target);
+    fs.unlinkSync(full);
+    console.log(`${f}: ${name}#${m[1]}`);
+  } catch (e) {
+    failed++;
+    console.error(`${f}: pubblicazione fallita (${String(e.message).split('\n')[0]}), riprovo`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+process.exit(failed ? 1 : 0);

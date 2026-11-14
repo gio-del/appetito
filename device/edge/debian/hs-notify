@@ -1,0 +1,44 @@
+#!/bin/sh
+# Push notification to the owner's phone through the local ntfy (issue 230).
+#   hs-notify [--urgent] [--tag TAG]... [--click URL] [--action "Label=URL"]... TITLE TEXT
+# At most 3 actions, and only `view` ones (they open a page; never an `http` action, which would
+# carry a key). ntfy off (service not enabled, or no publisher token) = does nothing, exit 0.
+# Exit 1 when the send fails (callers can retry), 2 on bad arguments.
+set -eu
+[ -r /etc/home-server.env ] && . /etc/home-server.env
+SV=${HS_SERVICE_DIR:-/etc/hs-service}/ntfy
+TOKEN_FILE=${HS_NTFY_TOKEN_FILE:-/home/${HS_USER:-$(id -un)}/.secrets/ntfy-token}
+URL=${HS_NTFY_URL:-http://127.0.0.1:3007}
+TOPIC=hs-edge
+urgent= tags= click= actions=
+na=0
+bad() { echo "hs-notify: $*" >&2; exit 2; }
+http() { case $1 in http://?*|https://?*) ;; *) bad "not an http(s) URL: $1" ;; esac; }
+while [ $# -gt 0 ]; do
+	case $1 in
+	--urgent) urgent=1; shift ;;
+	--tag) [ $# -ge 2 ] || bad "--tag needs a value"; tags="$tags
+$2"; shift 2 ;;
+	--click) [ $# -ge 2 ] || bad "--click needs a URL"; http "$2"; click=$2; shift 2 ;;
+	--action) [ $# -ge 2 ] || bad "--action needs Label=URL"; a=$2
+		case $a in ?*=*) ;; *) bad "--action wants Label=URL" ;; esac
+		http "${a#*=}"; na=$((na + 1)); [ "$na" -le 3 ] || bad "at most 3 actions"
+		actions="$actions
+$a"; shift 2 ;;
+	--) shift; break ;;
+	-*) bad "unknown option $1" ;;
+	*) break ;;
+	esac
+done
+[ $# -eq 2 ] || bad "usage: hs-notify [--urgent] [--tag TAG] [--click URL] [--action Label=URL] TITLE TEXT"
+{ [ -e "$SV" ] || [ -L "$SV" ]; } && [ -s "$TOKEN_FILE" ] || exit 0
+body=$(jq -n --arg topic "$TOPIC" --arg title "$1" --arg msg "$2" --arg urgent "$urgent" --arg click "$click" \
+	--arg tags "$tags" --arg actions "$actions" '
+	{topic: $topic, title: $title, message: $msg, priority: (if $urgent == "1" then 5 else 3 end)}
+	+ (if $click != "" then {click: $click} else {} end)
+	+ (if $tags != "" then {tags: ($tags | split("\n") | map(select(. != "")))} else {} end)
+	+ (if $actions != "" then {actions: ($actions | split("\n") | map(select(. != "")
+		| {action: "view", label: sub("=.*$"; ""), url: sub("^[^=]*="; "")}))} else {} end)')
+# The token goes to curl on stdin (-K -), not on its command line.
+printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN_FILE")" |
+	curl -fsS -m 15 --retry 2 -o /dev/null -K - -H 'Content-Type: application/json' --data-binary "$body" "$URL" || exit 1

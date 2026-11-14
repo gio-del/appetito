@@ -1,0 +1,11 @@
+#!/bin/sh
+# Chroot uids are kernel uids shared with Android: 1000-9999 are Android system ids (1001 = radio,
+# i.e. the phone/RIL processes), 10000+ are apps. Tarballs extracted as root keep their builder's
+# uid (Node.js ships as uid 1001), so a chroot user or an Android process with that uid could
+# replace binaries that root and the services run. Run as root by device/edge/deploy: give
+# anything under /opt and /usr/local owned by a uid/gid >= 1000 back to root, and report it.
+set -eu
+for d in /opt /usr/local; do
+	find "$d" -xdev \( -uid +999 -o -gid +999 \) -print -exec chown -h root:root {} + 2>/dev/null |
+		sed -n '1s|^|owners-check: chowned to root: |p'
+done

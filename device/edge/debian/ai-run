@@ -1,0 +1,34 @@
+#!/bin/sh
+# ai-run ARGS...: the one entry point of the headless AI jobs (ops-auto, ops-suggest, brain-sort; issue 249).
+# ARGS are the headless CLI's arguments (-p PROMPT ...). The backend comes from the setting HS_AI_BACKEND
+# (settings page): `headless` = the Claude Code CLI on the account's login; `api-anthropic|openai|gemini` = text-only API call (ai-api, issue 263).
+# `local` (model on the Edge, issue 251) is added by that issue; until then a
+# value outside the schema falls back to `headless`. Fixed rules whatever the backend: no MCP servers
+# (--strict-mcp-config, issues 113, 121) and no web tools (WebFetch/WebSearch denied or not in --tools):
+# a call without them is refused, so a new job can't forget them.
+set -eu
+strict= web=
+for a in "$@"; do
+	case $a in
+	--strict-mcp-config) strict=1 ;;
+	--tools|WebFetch*|*"WebFetch WebSearch"*) web=1 ;;
+	esac
+done
+[ -n "$strict" ] && [ -n "$web" ] || { echo "ai-run: needs --strict-mcp-config and web tools denied (--disallowedTools \"WebFetch WebSearch\" or --tools)" >&2; exit 2; }
+backend=$(hs-setting HS_AI_BACKEND 2>/dev/null) || backend=headless
+# `api-PROVIDER` (issue 263): text-only one-shot calls through ai-api, only when the caller passes `--tools ""`
+# (no tools to run); any other call stays on the headless CLI (a missing profile makes ai-api fail, exit 2).
+notools=
+prev=
+for a in "$@"; do
+	[ "$prev" = --tools ] && [ -z "$a" ] && notools=1
+	prev=$a
+done
+case $backend in
+api-anthropic | api-openai | api-gemini)
+	if [ -n "$notools" ]; then
+		exec "${HS_AI_API:-$(dirname "$0")/ai-api}" "${backend#api-}" "$@"
+	fi
+	exec claude "$@" ;;
+headless | *) exec claude "$@" ;;
+esac

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Propose an issue to the home-server tracker (user brain). The only way the second brain reaches
+# the ops side: the issue lands in issues/proposed/ (Status backlog, label proposed, Origin:) and
+# becomes work only when the owner approves it in the tracker. Token: ~/.secrets/tracker-propose.
+#   brain-propose TITLE DESC-FILE ORIGIN [PARENT-ID] [LABEL...]
+# PARENT-ID ("" for none) must be another proposal (an epic proposed earlier). Prints the new id
+# and the tracker link that opens it (https://HOST:8444/#NNN, issue 043).
+set -eu
+. /etc/home-server.env
+[ $# -ge 3 ] && [ -f "$2" ] || { sed -n '5,7s/^# //p' "$0" >&2; exit 2; }
+title=$1 desc=$2 origin=$3; shift 3
+parent=${1:-}; [ $# -gt 0 ] && shift
+body=$(jq -n --arg t "$title" --rawfile d "$desc" --arg o "$origin" --arg p "$parent" \
+	'{title: $t, desc: $d, origin: $o, labels: $ARGS.positional} + (if $p == "" then {} else {parent: $p} end)' --args "$@")
+out=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$HOME/.secrets/tracker-propose")" |
+	curl -sS -K - -w '\n%{http_code}' -X POST -H "Host: $HS_TS_HOST:8444" -H 'Content-Type: application/json' \
+		--data-binary "$body" http://127.0.0.1:3004/api/propose)
+code=$(printf '%s' "$out" | tail -1); res=$(printf '%s' "$out" | sed '$d')
+[ "$code" = 201 ] || { echo "brain-propose: HTTP $code $res" >&2; exit 1; }
+printf '%s\n' "$res" | jq -r --arg u "https://$HS_TS_HOST:8444/#" '"ok: #\(.id) \(.file) \($u)\(.id)"'

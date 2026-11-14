@@ -1,0 +1,23 @@
+#!/bin/sh
+# hs-protect-guard (issue 513, epic 476): PreToolUse hook for "Security enabled". With it on, the agent
+# (ops session, ops-auto) cannot write the protected files (secrets, sudoers, env, scripts and service
+# definitions that run as root, the deploy and these guards) without the owner's OK: the tool call is
+# an "ask", which the owner answers in the interactive session and which a headless run cannot answer
+# (= denied). With it off: silent, as before. Input: the hook JSON on stdin (Write/Edit/NotebookEdit
+# by file path; Bash by the command text, only when it looks like a write or touches .secrets).
+# One list: PROTECTED below (ERE on the path or command text).
+"${HS_SECURITY_BIN:-$(dirname "$0")/hs-security-enabled}" || exit 0
+PROTECTED='/\.secrets(/|$)|/etc/sudoers|(^|/)home-server\.env([^.a-zA-Z]|$)|device/edge/debian/sv/|device/edge/debian/(cron\.d-home-server|crontab-user|crontab-brain|deploy-worker|hs-security-enabled|hs-protect-guard|ops-auto-guard|ops-auto|hs-run|hs-attribution|sudoers[^ ]*)([^a-zA-Z-]|$)|device/edge/(deploy|deploy-request|check|install[a-z-]*\.sh)([^a-zA-Z-]|$)|device/edge/git-hooks/|\.claude/settings(\.local)?\.json|/usr/local/(sbin|bin)/'
+in=$(cat)
+tool=$(printf '%s' "$in" | jq -r '.tool_name // ""' 2>/dev/null)
+if [ "$tool" = Bash ]; then
+	c=$(printf '%s' "$in" | jq -r '.tool_input.command // ""' 2>/dev/null)
+	[ "$c" = device/edge/deploy ] && exit 0
+	printf '%s' "$c" | grep -Eq '/\.secrets(/|$)|(^|[^>])>|>>|\btee\b|sed +(-[a-z]*i|--in-place)|\b(cp|mv|rm|chmod|chown|ln|install|dd|truncate|patch)\b|perl +-[a-z]*i|git +(checkout|restore|apply)' || exit 0
+	t=$c
+else
+	t=$(printf '%s' "$in" | jq -r '.tool_input | (.file_path // .notebook_path // "")' 2>/dev/null)
+fi
+printf '%s' "$t" | grep -Eq "$PROTECTED" || exit 0
+msg="Security enabled: questo tocca un file protetto (segreti, sudoers, script o servizi che girano come root, deploy). Serve l'OK del proprietario."
+jq -n --arg m "$msg" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $m}}'

@@ -15,12 +15,12 @@ git clone -q "$t/remote.git" "$t/seed" 2> /dev/null
 (cd "$t/seed" && git checkout -q -b main && echo old > README.md && git add -A && git commit -q -m "vecchia storia" && git push -q origin main)
 old=$(git -C "$t/remote.git" rev-parse main)
 git clone -q "$t/remote.git" "$t/pub"
-(cd "$t/pub" && rm README.md && mkdir sub && echo a > sub/a.sh && echo b > b.txt && git add -A && git commit -q -m "Pubblicazione di prova")
+(cd "$t/pub" && rm README.md && mkdir sub && echo a > sub/a.sh && echo b > b.txt && git add -A && git commit -q -m "Update test")
 new=$(git -C "$t/pub" rev-parse HEAD)
 printf 'HS_APPETITO_REPO=someone/appetito\nHS_APPETITO_URL=%s\n' "$t/remote.git" > "$t/env"
 printf '# projects\nhome-server | - | - | active | issues | - | -\nother | https://github.com/someone/other.git | - | active | github | - | -\n' > "$t/projects"
 printf 'b.txt\nsub/a.sh\n' > "$t/list"
-export HS_ENV_FILE="$t/env" HS_PROJECTS_FILE="$t/projects" HS_APPETITO_FILES_CMD="cat $t/list" HS_APPETITO_CHECK_CMD=true HS_SECRETS_CMD=true HS_ATTRIBUTION_CMD=true HS_GIT_TOKEN="$t/none"
+export HS_ENV_FILE="$t/env" HS_PROJECTS_FILE="$t/projects" HS_APPETITO_FILES_CMD="cat $t/list" HS_APPETITO_CHECK_CMD=true HS_APPETITO_SELFCHECK_CMD=true HS_SECRETS_CMD=true HS_ATTRIBUTION_CMD=true HS_GIT_TOKEN="$t/none"
 remote() { git -C "$t/remote.git" rev-parse main; }
 refused() { # NAME PATTERN [ARGS...]: must exit != 0, say PATTERN, and leave the remote alone
 	n=$1; pat=$2; shift 2
@@ -50,6 +50,7 @@ printf 'b.txt\n' > "$t/list"; refused "file outside the list" "non sono l'elenco
 printf 'b.txt\nsub/a.sh\nmissing.txt\n' > "$t/list"; refused "file missing from the copy" "non sono l'elenco" "$t/pub"
 printf 'b.txt\nsub/a.sh\n' > "$t/list"
 HS_APPETITO_CHECK_CMD=false refused "failing check" "controllo dei file" "$t/pub"
+HS_APPETITO_SELFCHECK_CMD=false refused "failing selfcheck" "non passa i suoi test" "$t/pub"
 HS_SECRETS_CMD=false refused "secrets verdict" "segreti" "$t/pub"
 HS_ATTRIBUTION_CMD=false refused "attribution" "attribuzione" "$t/pub"
 # the check sees the files of the commit, without .git
@@ -70,7 +71,7 @@ echo "$out" | grep -q "niente da pubblicare" || fail "second run message: $out"
 [ "$(remote)" = "$new" ] || fail "second run moved the remote"
 # a remote that refuses the push: exit 1, said plainly
 printf '#!/bin/sh\nexit 1\n' > "$t/remote.git/hooks/pre-receive"; chmod +x "$t/remote.git/hooks/pre-receive"
-(cd "$t/pub" && echo c >> b.txt && git add -A && git commit -q -m "Pubblicazione seconda")
+(cd "$t/pub" && echo c >> b.txt && git add -A && git commit -q -m "Update second")
 refused "push rejected by the remote" "push rifiutato" "$t/pub"
 # the token never appears in the script's own text paths: only through GIT_ASKPASS
 grep -q 'GIT_ASKPASS' "$P" || fail "no GIT_ASKPASS"

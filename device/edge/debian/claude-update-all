@@ -1,0 +1,38 @@
+#!/bin/sh
+# claude-update-all (issue 442): keeps Claude Code current for every user that has it (HS_USER and the service users).
+# The native updater only runs while a claude session is open, so users who rarely run it stayed behind (brain 2.1.299
+# against 2.1.319). Root cron, hourly: for each user with ~/.local/bin/claude run `claude update` as that user (no-op when
+# current), log old -> new, exit 1 if any update failed (hs-run turns it into an issue). Reads no user data: only the
+# version name of the binary. Env overrides (tests): CLAUDE_UPDATE_USERS ("name:home ..."), CLAUDE_UPDATE_AS (command prefix, default runuser -u).
+set -u
+if [ -z "${CLAUDE_UPDATE_USERS:-}" ]; then
+	# The admin user (HS_USER) plus the service users that exist; homes come from the passwd database.
+	[ -r /etc/home-server.env ] && . /etc/home-server.env
+	CLAUDE_UPDATE_USERS=""
+	for n in "${HS_USER:-}" brain sumisura library studio; do
+		[ -n "$n" ] || continue
+		h=$(getent passwd "$n" | cut -d: -f6)
+		[ -n "$h" ] && CLAUDE_UPDATE_USERS="$CLAUDE_UPDATE_USERS $n:$h"
+	done
+fi
+USERS=$CLAUDE_UPDATE_USERS
+ver() { b=$(basename "$(readlink -f "$1" 2>/dev/null)"); case $b in [0-9]*) echo "$b" ;; *) echo "?" ;; esac; }
+rc=0
+for e in $USERS; do
+	u=${e%%:*}; h=${e#*:}; l=$h/.local/bin/claude
+	[ -e "$l" ] || continue
+	old=$(ver "$l")
+	if [ -n "${CLAUDE_UPDATE_AS:-}" ]; then
+		out=$($CLAUDE_UPDATE_AS "$u" "$l" update 2>&1) && ok=1 || ok=0
+	else
+		out=$(cd "$h" && runuser -u "$u" -- env HOME="$h" "$l" update 2>&1) && ok=1 || ok=0
+	fi
+	new=$(ver "$l")
+	if [ "$ok" = 0 ]; then
+		echo "$(date '+%F %T') claude-update-all: $u: update FAILED ($old): $(echo "$out" | tail -n 3 | tr '\n' ' ' | cut -c1-300)"
+		rc=1
+	elif [ "$old" != "$new" ]; then
+		echo "$(date '+%F %T') claude-update-all: $u: $old -> $new"
+	fi
+done
+exit $rc

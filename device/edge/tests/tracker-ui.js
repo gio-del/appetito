@@ -115,13 +115,15 @@ function layoutCheck() {
   const label = el => el.id ? `#${el.id}` : el.className ? `.${String(el.className).split(' ')[0]}` : el.tagName.toLowerCase();
   const errs = [], W = document.documentElement.clientWidth;
   const groups = [[...document.querySelectorAll('.top > *')], [...document.querySelectorAll('.filters > *')], [...document.querySelectorAll('.tabs > *')], [...document.querySelectorAll('.actions > *')]];
-  const pl = document.querySelector('a#projects-link[href="projects.html"]');
+  const pl = document.querySelector(W <= 760 ? '.bnav a[href="projects.html"]' : 'a#projects-link[href="projects.html"]');
   if (!pl || !vis(pl)) errs.push('manca il link a projects.html nella barra');
   for (const g of groups) {
     const els = g.filter(vis);
     for (const el of els) {
       const b = box(el);
-      if (b.left < -0.5 || b.right > W + 0.5) errs.push(`${label(el)} esce dallo schermo (${Math.round(b.left)}..${Math.round(b.right)} su ${W})`);
+      // Phone tabs scroll sideways inside their own row (issue 505): only the selected one must be fully inside it.
+      const sc = el.parentElement.classList.contains('tabs') && el.parentElement.scrollWidth > el.parentElement.clientWidth + 0.5;
+      if (sc ? el.getAttribute('aria-selected') === 'true' && (b.left < -0.5 || b.right > W + 0.5) : (b.left < -0.5 || b.right > W + 0.5)) errs.push(`${label(el)} esce dallo schermo (${Math.round(b.left)}..${Math.round(b.right)} su ${W})`);
     }
     for (let i = 0; i < els.length; i++) for (let j = i + 1; j < els.length; j++) {
       const a = box(els[i]), b = box(els[j]);
@@ -241,6 +243,58 @@ async function main() {
     fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
     if (errs.length) { failed++; console.log(`FAIL ${k.name} (${k.width}px): ${file}`); for (const e of errs) console.log(`    ${e}`); }
     else console.log(`ok ${k.name} (${k.width}px): ${file}`);
+  }
+  // Board rifatta (issue 505): 360/390/1280 px, chiaro e scuro; niente scroll orizzontale, bersagli ≥ 44 px sul telefono, icone sempre
+  // disegnate, «Ti aspetta» pieno e vuoto, cinque colonne, tocchi ripetuti, testo ostile nei titoli.
+  {
+    const repo = env.TRACKER_REPO, hostile = '<img src=x onerror="window.__pwn=1"> & "citazione" {{x}}';
+    fs.writeFileSync(path.join(repo, 'issues', 'proposed', '096-ostile.md'), `# ${hostile}\n\nOpened: 2026-01-01\nBlocked on: -\nStatus: backlog\nLabels: proposed\nSource: brain\n\n## Problema\nx\n`);
+    fs.writeFileSync(path.join(repo, 'issues', 'open', '095-ostile.md'), `# ${hostile}\n\nOpened: 2026-01-01\nBlocked on: user (prova)\nStatus: in-progress\n\n## Problema\nx\n`);
+    const errs = [];
+    for (const [w, hgt, mobile] of [[360, 740, true], [390, 844, true], [1280, 800, false]]) for (const dark of [false, true]) {
+      const tag = `board ${w}px ${dark ? 'scuro' : 'chiaro'}`;
+      await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: dark ? 'dark' : 'light' }] });
+      await c.send('Emulation.setDeviceMetricsOverride', { width: w, height: hgt, deviceScaleFactor: 1, mobile });
+      const loaded = c.once('Page.loadEventFired'); await c.send('Page.navigate', { url: `${base}/` }); await loaded;
+      if (!await waitFor(() => evaluate(`!document.querySelector('#app').hidden && document.querySelectorAll('#board .card').length > 0 && !!document.querySelector('#wait-p') && !!document.querySelector('#wait-q')`))) { errs.push(tag + ': board o «Ti aspetta» non caricati'); continue; }
+      const r = await evaluateRead(`(() => { const e = [], W = innerWidth, vis = x => x.getClientRects().length && getComputedStyle(x).visibility !== 'hidden';
+        if (document.documentElement.scrollWidth > W + 0.5) e.push('scroll orizzontale');
+        if (getComputedStyle(document.body).backgroundColor !== '${dark ? 'rgb(14, 20, 36)' : 'rgb(244, 246, 250)'}') e.push('tema non applicato: ' + getComputedStyle(document.body).backgroundColor);
+        for (const x of document.querySelectorAll('svg.ic')) { const b = x.getBoundingClientRect(); if (vis(x) && (!x.innerHTML.trim() || b.width < 8 || b.height < 8)) e.push('icona vuota o minuscola'); }
+        const txt = document.body.innerText; for (const g of ['⛔', '⏳', '💬', '⑂', '☰', '⧉']) if (txt.includes(g)) e.push('glifo senza icona SVG: ' + g);
+        if (window.__pwn) e.push('HTML eseguito dal titolo');
+        if (!document.querySelector('#board .card[data-id="095"] .card-title').textContent.includes('<img src=x') || !document.querySelector('#board .card[data-id="095"] .card-title').textContent.includes('{{x}}')) e.push('titolo ostile non mostrato come testo');
+        if (${mobile}) for (const x of document.querySelectorAll('.top .btn, .top input, .actions a, .actions button, .tabs button, .wait-row, #f-toggle')) { if (!vis(x)) continue; const b = x.getBoundingClientRect();
+          if (b.height < 43.5 || (x.matches('button, a') && b.width < 43.5)) e.push('bersaglio piccolo: ' + (x.id || x.className || x.tagName) + ' ' + Math.round(b.width) + 'x' + Math.round(b.height)); }
+        for (const id of ['menu-btn', 'new', 'f-toggle', 'projects-link', 'auto-pill', 'help-btn']) { if (${mobile} && ['projects-link', 'auto-pill', 'help-btn'].includes(id)) continue; const x = document.getElementById(id); if (!x || !vis(x)) e.push('manca #' + id); else if (!x.querySelector('svg.ic')) e.push('#' + id + ' senza icona'); if (x && !x.textContent.trim() && !x.getAttribute('aria-label')) e.push('#' + id + ' senza etichetta'); }
+        if (document.querySelectorAll('#board .col').length !== 5 || document.querySelector('#board .col[data-col="proposed"]')) e.push('le colonne non sono cinque senza Proposte');
+        const tabs = [...document.querySelectorAll('#tabs button')]; if (${mobile} && (tabs.length !== 5 || tabs.some(t => !t.querySelector('.tab-name').getBoundingClientRect().width))) e.push('schede senza nome');
+        if (${mobile} && document.querySelector('#tabs [aria-selected=true] .tab-n').textContent === '0') e.push('scheda aperta vuota');
+        return e; })()`);
+      for (const e of r) errs.push(tag + ': ' + e);
+      fs.writeFileSync(path.join(SHOTS, `board-${w}-${dark ? 'dark' : 'light'}.png`), Buffer.from((await c.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+      if (w === 390 || w === 1280) {
+        // tocchi ripetuti: tre tocchi = un solo cambio di stato, niente duplicati
+        const t = await evaluate(`(() => { const f0 = document.querySelector('.filters').classList.contains('open'); for (const id of ['wait-p', 'wait-p', 'wait-p', 'f-toggle', 'f-toggle', 'f-toggle', 'menu-btn', 'menu-btn', 'menu-btn']) document.getElementById(id).click();
+          const menu = !document.getElementById('menu-panel').hidden; const bt = [...document.querySelectorAll('#tabs button')]; if (bt.length) { bt[0].click(); bt[0].click(); bt[0].click(); }
+          return { menu, props: document.querySelectorAll('.wait-prop').length, rows: document.querySelectorAll('#wait-p').length, filt: document.querySelector('.filters').classList.contains('open') !== f0, cols: document.querySelectorAll('#board .col').length }; })()`);
+        if (t.props !== 3 || t.rows !== 1 || !t.filt || !t.menu || t.cols !== 5) errs.push(tag + ': tocchi ripetuti: ' + JSON.stringify(t));
+        await evaluate(`document.getElementById('help-btn').click()`);
+        if (!await evaluate(`document.getElementById('menu-panel').hidden && !document.getElementById('help-panel').hidden`)) errs.push(tag + ': Menu e Aiuto non si escludono');
+        await evaluate(`closePanels(); if (S.filtersOpen) document.getElementById('f-toggle').click()`);
+      }
+    }
+    await c.send('Emulation.setEmulatedMedia', { features: [] });
+    // «Ti aspetta» vuoto: nessun riquadro; con le sole proposte, la riga delle domande manca.
+    const e2 = await evaluate(`(() => { const e = []; S.questions = 0; S.issues = S.issues.filter(i => i.column !== 'proposed'); renderBoard();
+      if (!document.getElementById('wait').hidden) e.push('«Ti aspetta» visibile senza nulla da decidere'); return e; })()`);
+    errs.push(...e2);
+    fs.rmSync(path.join(repo, 'issues', 'proposed', '096-ostile.md')); fs.rmSync(path.join(repo, 'issues', 'open', '095-ostile.md'));
+    if (errs.length) { failed++; console.log('FAIL board rifatta:'); for (const e of errs) console.log('    ' + e); }
+    else console.log('ok board rifatta: 360/390/1280 px, chiaro e scuro, icone, bersagli, «Ti aspetta», tocchi ripetuti, testo ostile');
+    await c.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    const l2 = c.once('Page.loadEventFired'); await c.send('Page.navigate', { url: `${base}/` }); await l2;
+    await waitFor(() => evaluate(`document.querySelectorAll('#board .card').length > 0`));
   }
   // Tap on a card's ⏳ chip at phone width (issue 154): the popover explains it, the card stays closed.
   await c.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
@@ -504,7 +558,7 @@ async function main() {
         if (cs.length !== 3) e.push('card ' + cs.length + ', attese 3 (la chiusa è nascosta)');
         cs.forEach((x, k) => { const r = x.getBoundingClientRect(); if (r.right > W + 0.5 || r.left < -0.5) e.push('card fuori schermo'); if (k && r.top < cs[k-1].getBoundingClientRect().bottom - 0.5 && r.left <= cs[k-1].getBoundingClientRect().left) e.push('card sovrapposte'); });
         if (!document.querySelector('.pj-cards .lbl')) e.push('manca il chip etichetta');
-        const bg = getComputedStyle(document.body).backgroundColor; if (bg !== 'rgb(16, 17, 18)') e.push('tema scuro non applicato: ' + bg);
+        const bg = getComputedStyle(document.body).backgroundColor; if (bg !== 'rgb(14, 20, 36)') e.push('tema scuro non applicato: ' + bg);
         return e; })()`));
       for (const want of [1, 1, 1]) {
         await evaluate(`document.querySelector('.pj-cards .card').click()`);
@@ -570,7 +624,7 @@ async function main() {
       errs.push(...await evaluate(`(() => { const e = [], W = innerWidth;
         if (document.documentElement.scrollWidth > W + 0.5) e.push('la pagina scorre in orizzontale');
         for (const x of document.querySelectorAll('#qs-form input, #qs-form button')) { const r = x.getBoundingClientRect(); if (r.right > W + 0.5 || r.left < -0.5) e.push('fuori schermo: ' + (x.id || x.name)); if (r.height < 20) e.push('troppo basso: ' + (x.id || x.name)); }
-        if (getComputedStyle(document.body).backgroundColor !== 'rgb(16, 17, 18)') e.push('tema scuro non applicato');
+        if (getComputedStyle(document.body).backgroundColor !== 'rgb(14, 20, 36)') e.push('tema scuro non applicato');
         return e; })()`));
       const rot = await prev();
       fs.writeFileSync(path.join(tmp, 'rot.json'), JSON.stringify({ strategy: 'rotation', urgent_first: false, focus: '', sources: {} }));
@@ -619,7 +673,7 @@ async function main() {
         if (!/Ultima release: v0[.]4[.]0 del 1 ottobre 2026/.test(t)) e.push("ultima release: " + t);
         if (c.querySelector("b")) e.push("HTML del changelog interpretato");
         const b = c.querySelector("#rel-postpone-sumisura"); if (!b) e.push("manca Rimanda"); else { const q = b.getBoundingClientRect(); if (q.right > W + 0.5) e.push("Rimanda fuori schermo"); }
-        if (getComputedStyle(document.body).backgroundColor !== "rgb(16, 17, 18)") e.push("tema scuro non applicato");
+        if (getComputedStyle(document.body).backgroundColor !== "rgb(14, 20, 36)") e.push("tema scuro non applicato");
         return e; })()`));
       await evaluate(`(() => { const b = document.querySelector("#rel-postpone-sumisura"); b.click(); b.click(); b.click(); })()`);
       await sleep(2500);
@@ -737,6 +791,29 @@ async function main() {
     if (!got.inside) errs.push('fuori dallo schermo');
     if (errs.length) { failed++; console.log(`FAIL coda in attesa (${k.name}):`); for (const e of errs) console.log('    ' + e); }
     else console.log(`ok coda in attesa (${k.name}): la prossima non è in attesa, motivo mostrato, nessun overflow`);
+  }
+  // Ultima issue lavorata (issue 558): titolo, esito e fine nella scheda; titolo lungo a capo; senza lastRun la scheda non c'è.
+  for (const k of CASES.filter(k => !k.active && !k.open)) {
+    await c.send('Emulation.setDeviceMetricsOverride', { width: k.width, height: k.height, deviceScaleFactor: 1, mobile: k.mobile });
+    const loaded = c.once('Page.loadEventFired');
+    await c.send('Page.navigate', { url: `${base}/auto.html` });
+    await loaded;
+    const ready = await waitFor(() => evaluate(`typeof renderCurrent === 'function' && !!document.querySelector('#au-current')`));
+    if (!ready) { failed++; console.log(`FAIL ultima issue (${k.name}): pagina /auto.html non caricata`); continue; }
+    const got = await evaluateRead(`(() => { const el = document.querySelector('#au-current');
+      const lr = { total: 3, counts: { read: 2 }, tools: [], todo: [], cost: 0.1, id: '558', title: 'Un titolo molto lungo '.repeat(8), outcome: 'closed', end: Math.floor(Date.now() / 1000) - 600 };
+      renderCurrent({ current: null, lastRun: lr });
+      const a = el.querySelector('.last-who a.ilink');
+      const r = { hidden: el.hidden, href: a && a.getAttribute('href'), text: el.textContent, inside: el.getBoundingClientRect().right <= innerWidth && document.documentElement.scrollWidth <= innerWidth, wrap: a ? a.getBoundingClientRect().height > 30 : false };
+      renderCurrent({ current: null, lastRun: null }); r.noneHidden = el.hidden; return r; })()`);
+    const errs = [];
+    if (got.hidden || got.href !== '/#558') errs.push(`link: ${got.href}`);
+    if (!/Un titolo molto lungo/.test(got.text) || !/finita 10m|finita 10 m|finita/.test(got.text)) errs.push(`testo: «${got.text.slice(0, 160)}»`);
+    if (!got.wrap) errs.push('titolo lungo non va a capo');
+    if (!got.inside) errs.push('fuori dallo schermo');
+    if (!got.noneHidden) errs.push('senza lastRun la scheda resta');
+    if (errs.length) { failed++; console.log(`FAIL ultima issue (${k.name}):`); for (const e of errs) console.log('    ' + e); }
+    else console.log(`ok ultima issue (${k.name}): titolo, esito e fine, a capo, nascosta senza dati`);
   }
   // Coda vuota (issue 269): senza voci e senza `waiting` la sezione non mostra «null»/«undefined».
   for (const k of CASES.filter(k => !k.active && !k.open)) {
@@ -978,6 +1055,62 @@ async function main() {
     fs.writeFileSync(path.join(SHOTS, `mail-collegato-${k.name}.png`), Buffer.from((await c.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     if (errs.length) { failed++; console.log(`FAIL mail (${k.name}):`); for (const e of errs) console.log('    ' + e); }
     else console.log(`ok mail (${k.name}): passi, Salva con tocchi ripetuti, collegato con +edge, prova una volta sola, nessun overflow`);
+  }
+
+  // Barra in basso condivisa (issue 587): su ogni pagina, 360 e 390 px, chiaro e scuro.
+  {
+    const errs = [], pages = ['index.html', 'projects.html', 'auto.html', 'domande.html', 'jobs.html', 'queue.html', 'recent.html', 'settings.html', 'mail.html', 'phone-apps.html'];
+    const goto = async p => { const l = c.once('Page.loadEventFired'); await c.send('Page.navigate', { url: `${base}/${p}` }); await l; await waitFor(() => evaluate(`!!document.getElementById('bnav')`)); await sleep(200); };
+    const probe = `(() => { const n = document.getElementById('bnav'), e = []; if (!n) return ['barra assente'];
+      const r = n.getBoundingClientRect(), W = document.documentElement.clientWidth, H = innerHeight;
+      if (getComputedStyle(n).display === 'none' || Math.abs(r.bottom - H) > 1 || r.width < W - 1) e.push('barra non in basso a tutta larghezza');
+      const items = [...n.querySelectorAll('a, button')].map(x => x.dataset.nav); if (items.join() !== 'board,projects,auto,help') e.push('voci: ' + items);
+      for (const x of n.querySelectorAll('a, button')) { const b = x.getBoundingClientRect(); if (b.height < 43.5 || b.width < 43.5) e.push('bersaglio piccolo ' + x.dataset.nav); if (!x.querySelector('svg.ic') || !x.textContent.trim()) e.push('voce senza icona o testo ' + x.dataset.nav); }
+      const curr = [...n.querySelectorAll('[aria-current=page]')].map(x => x.dataset.nav); if (curr.length > 1) e.push('più voci correnti');
+      if (document.documentElement.scrollWidth > W) e.push('scroll orizzontale');
+      if (document.querySelectorAll('#bnav').length !== 1) e.push('barra duplicata');
+      return { e, curr: curr[0] || '', auto: n.querySelector('[data-nav=auto]').getAttribute('aria-label') || '' }; })()`;
+    const tap = async sel => {
+      const b = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      const l = c.once('Page.loadEventFired');
+      await c.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [b] }); await c.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await Promise.race([l, sleep(1500)]); await waitFor(() => evaluate(`!!document.getElementById('bnav')`)); await sleep(150);
+    };
+    for (const [w, mobile] of [[360, true], [390, true]]) for (const dark of [false, true]) {
+      await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: dark ? 'dark' : 'light' }] });
+      await c.send('Emulation.setDeviceMetricsOverride', { width: w, height: 800, deviceScaleFactor: 1, mobile });
+      await c.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+      let auto0 = '';
+      for (const p of pages) {
+        await goto(p);
+        const r = await evaluate(probe), tag = `barra ${p} ${w}px ${dark ? 'scuro' : 'chiaro'}`;
+        if (Array.isArray(r)) { errs.push(tag + ': ' + r); continue; }
+        for (const e of r.e) errs.push(tag + ': ' + e);
+        const want = { 'index.html': 'board', 'projects.html': 'projects', 'auto.html': 'auto' }[p] || '';
+        if (r.curr !== want) errs.push(`${tag}: voce corrente "${r.curr}" invece di "${want}"`);
+        if (p === 'index.html') auto0 = r.auto; else if (r.auto && auto0 && r.auto !== auto0) errs.push(`${tag}: stato Automatico diverso (${r.auto} vs ${auto0})`);
+        const pad = await evaluate(`(() => { const g = document.querySelector('.bnav-gap'); return g ? g.getBoundingClientRect().height : -1; })()`);
+        if (p !== 'index.html' && pad < 56) errs.push(`${tag}: spazio in fondo mancante (${pad})`);
+      }
+      // board → Progetti → Automatico → Board e ritorno, con tocchi veri: la barra resta sempre
+      await goto('index.html');
+      for (const [sel, file] of [['#bnav [data-nav=projects]', 'projects.html'], ['#bnav [data-nav=auto]', 'auto.html'], ['#bnav [data-nav=board]', 'index.html'], ['#bnav [data-nav=projects]', 'projects.html'], ['#bnav [data-nav=board]', 'index.html']]) {
+        await tap(sel);
+        const at = await evaluate(`location.pathname.split('/').pop() || 'index.html'`);
+        if (at !== file) errs.push(`tocco ${sel}: arrivato su ${at}, atteso ${file}`);
+        const r = await evaluate(probe); if (Array.isArray(r) || r.e.length) errs.push(`dopo il tocco su ${file} (${w}px): ${JSON.stringify(r)}`);
+      }
+      await goto('projects.html');
+      await tap('#bnav [data-nav=help]');
+      if (!await waitFor(() => evaluate(`!!document.getElementById('help-panel') && !document.getElementById('help-panel').hidden`))) errs.push('Aiuto da Progetti non apre l\'aiuto della board');
+    }
+    await c.send('Emulation.setEmulatedMedia', { features: [] });
+    await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+    await c.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    { const l = c.once('Page.loadEventFired'); await c.send('Page.navigate', { url: `${base}/projects.html` }); await l; await sleep(500); }
+    if (await evaluate(`getComputedStyle(document.getElementById('bnav')).display`) !== 'none') errs.push('barra visibile sul computer');
+    if (errs.length) { failed++; console.log('FAIL barra in basso:'); for (const e of errs) console.log('    ' + e); }
+    else console.log('ok barra in basso: 10 pagine a 360/390 px chiaro e scuro, bersagli, voce corrente, navigazione con tocchi, Aiuto, niente barra sul computer');
   }
   c.close();
   return failed ? 1 : 0;

@@ -1,0 +1,109 @@
+#!/bin/sh
+# Upgrade one app pinned in the repo, with no Claude run (issue 115): hs-monitor starts it once an
+# upgrade found by `update-apps --status` is 7 days old and not a major; by hand: bin/app-upgrade APP VERSION [REF].
+#   1. take ops-auto's lock (no Claude run edits the repo meanwhile) and require a tree with no changes outside issues/
+#   2. check the artifact upstream and compute the new pin (table below), rewrite PIN_* in the repo
+#      (and the app's hs-docs.list line, issue 141), commit only those files
+#   3. device/edge/deploy, the root step if any (`sudo update-apps --apply APP VERSION`), then check the installed
+#      version and the app's probe
+#   4. if anything after the commit fails: git revert of that commit, deploy, root step back, exit 1
+# App        | pin (file)                                 | checked against upstream                         | probe
+# vaultwarden| PIN_VERSION, PIN_DIGEST (vaultwarden-fetch)  | REF = the registry's linux/arm64 digest of PIN_TAG | :8222/alive
+# bw-cli     | PIN_BW (rotate-secrets)                       | the version exists on npm                       | - (installed only while rotate-secrets runs)
+# adguardhome| not pinned (update-apps --apply)              | the release's checksums.txt (update-apps)        | :3000/ (rollback: the previous binary)
+# node       | not pinned (update-apps --apply)              | SHASUMS256.txt (update-apps)                    | :3004/healthz (rollback: /opt/node.prev)
+# Others (sumisura, uptime-kuma) stay an issue for ops-auto. Exit: 0 done, 1 failed (rolled
+# back), 2 usage/unsupported, 75 busy (retry later). Output: the log hs-monitor quotes on failure.
+# Test: device/edge/tests/app-upgrade.sh (HS_UPGRADE_REPO, HS_UPGRADE_DEPLOY, HS_UPGRADE_SUDO, HS_UPGRADE_PROBE).
+set -u
+APP=${1:-} NEW=${2:-} REF=${3:-}
+REPO=${HS_UPGRADE_REPO:-$HOME/home-server}
+DEPLOY=${HS_UPGRADE_DEPLOY:-device/edge/deploy}
+SUDO=${HS_UPGRADE_SUDO:-sudo -n}
+D=device/edge/debian
+log() { echo "$(date '+%F %T') app-upgrade $APP: $*"; }
+die() { log "$*"; exit 1; }
+quit() { c=$1; shift; log "$*"; exit "$c"; }
+case $NEW in v[0-9]*|[0-9]*) ;; *) quit 2 "usage: app-upgrade APP VERSION [REF]" ;; esac
+printf %s "$NEW" | grep -Eq '^v?[0-9][0-9A-Za-z.+-]{0,40}$' || quit 2 "bad version: $NEW"
+cd "$REPO" || quit 2 "no repo $REPO"
+
+# probe URL CODES [BODY]: retried for ~3 min (a restart or a rebuilt cache takes a while).
+probe() {
+	[ -n "${HS_UPGRADE_PROBE:-}" ] && { $HS_UPGRADE_PROBE; return; }
+	i=0; while [ $i -lt 18 ]; do
+		code=$(curl -s -m 10 -o "$W/body" -w "%{http_code}" "$1")
+		case " $2 " in *" $code "*) [ -z "${3:-}" ] || [ "$(cat "$W/body")" = "$3" ] && return 0 ;; esac
+		i=$((i + 1)); sleep 10
+	done
+	log "probe $1 answered $code"; return 1
+}
+cur_pin() { sed -n "s/^$2=\([^ ]*\).*/\1/p" "$D/$1" | head -1; }
+setpin() { sed -i "s|^$2=[^ ]*|$2=$3|" "$D/$1" && [ "$(cur_pin "$1" "$2")" = "$3" ] || die "could not set $2 in $1"; }
+# setdocs APP VERSION URL SHA: the app's archive line in hs-docs.list follows the pin (issue 141).
+setdocs() {
+	HS_A=$1 HS_V=$2 HS_U=$3 HS_S=$4 perl -i -pe 's/^(\Q$ENV{HS_A}\E\s*\|\s*)\S+(\s*\|\s*)https:\S+(\s*\|\s*)\S+/$1$ENV{HS_V}$2$ENV{HS_U}$3$ENV{HS_S}/' "$D/hs-docs.list" &&
+		grep -Eq "^$1 *\| *$2 *\| *$3 *\| *$4 " "$D/hs-docs.list" || die "could not set the $1 line in hs-docs.list"
+}
+W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+
+case $APP in
+vaultwarden) F=vaultwarden-fetch V=$NEW
+	printf %s "$REF" | grep -Eq '^sha256:[0-9a-f]{64}$' || quit 2 "vaultwarden needs the digest as REF"
+	[ "$(cur_pin $F PIN_DIGEST)" != "$REF" ] || quit 2 "already pinned at $REF"
+	tag=$(cur_pin $F PIN_TAG)
+	tok=$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:vaultwarden/server:pull" | jq -r .token) || die "registry token failed"
+	dig=$(curl -fsS -H "Authorization: Bearer $tok" -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json' \
+		"https://registry-1.docker.io/v2/vaultwarden/server/manifests/$tag" |
+		jq -r '.manifests[] | select(.platform.architecture=="arm64" and .platform.os=="linux") | .digest' | head -1)
+	[ "$dig" = "$REF" ] || die "the registry's linux/arm64 digest of $tag is ${dig:-none}, not $REF"
+	# The docs (hs-docs.list) come from the source archive of the version's tag.
+	docurl="https://github.com/dani-garcia/vaultwarden/archive/refs/tags/$V.tar.gz"
+	curl -fsSL -o "$W/src.tar.gz" "$docurl" || die "download of the $V source archive failed"
+	tar -tzf "$W/src.tar.gz" 2>/dev/null | grep -q "^[^/]*/.env.template\$" || die "the $V source archive has no .env.template"
+	SHA=$(sha256sum "$W/src.tar.gz" | cut -d" " -f1)
+	edit() { setpin $F PIN_VERSION "$V" && setpin $F PIN_DIGEST "$REF" && setdocs vaultwarden "$V" "$docurl" "$SHA"; }
+	rootstep() { $SUDO /usr/local/sbin/update-apps --apply vaultwarden; }
+	installed() { [ "$(cut -d' ' -f2 /opt/vaultwarden/IMAGE 2>/dev/null)" = "$(cur_pin $F PIN_DIGEST)" ]; }
+	check() { probe http://127.0.0.1:8222/alive 200; } ;;
+bw-cli) F=rotate-secrets V=$NEW
+	[ "$(cur_pin $F PIN_BW)" != "$V" ] || quit 2 "already pinned at $V"
+	[ "$(npm view "@bitwarden/cli@$V" version 2>/dev/null)" = "$V" ] || die "@bitwarden/cli@$V not on npm"
+	edit() { setpin $F PIN_BW "$V"; }
+	rootstep() { :; }
+	installed() { [ "$("$HOME/bin/rotate-secrets" --pin)" = "$(cur_pin $F PIN_BW)" ]; }
+	check() { :; } ;;
+adguardhome) F= V=$NEW
+	rootstep() { $SUDO /usr/local/sbin/update-apps --apply adguardhome "$V"; }
+	installed() { [ "$(/opt/AdGuardHome/AdGuardHome --version | awk '{print $NF}')" = "$V" ]; }
+	check() { probe http://127.0.0.1:3000/ '200 302'; } ;;
+node) F= V=$NEW
+	rootstep() { $SUDO /usr/local/sbin/update-apps --apply node "$V"; }
+	installed() { [ "$(/opt/node/bin/node --version)" = "$V" ]; }
+	check() { probe http://127.0.0.1:3004/healthz 200; } ;;
+*) quit 2 "not supported: an issue for ops-auto instead" ;;
+esac
+
+LOCK=${HS_UPGRADE_LOCK:-$HOME/.local/state/ops-auto/lock}; mkdir -p "$(dirname "$LOCK")"
+exec 9>"$LOCK"
+flock -n 9 || quit 75 "ops-auto is running: retry later"
+[ -z "$(git status --porcelain -- . ':!issues')" ] || quit 75 "uncommitted changes outside issues/: retry later"
+
+if [ -z "$F" ]; then  # not pinned in the repo: update-apps installs and keeps the previous binary
+	log "installing $V"
+	rootstep && installed && check && { log "upgraded to $V"; exit 0; }
+	log "upgrade to $V failed: rolling back"
+	$SUDO /usr/local/sbin/update-apps --rollback "$APP" && check && die "rolled back to the previous binary"
+	die "ROLLBACK FAILED: $APP may be down"
+fi
+
+old=$(git log -1 --format=%h -- "$D/$F")
+edit
+git commit -q -m "$APP: $NEW (app-upgrade, issue 115)" -- "$D/$F" $(git diff --name-only -- "$D/hs-docs.list") || die "commit failed"
+sha=$(git rev-parse HEAD)
+log "pin bumped to $NEW in $F ($sha), deploying"
+$DEPLOY && rootstep && installed && check && { log "upgraded to $NEW"; exit 0; }
+log "upgrade to $NEW failed: reverting $sha"
+git revert --no-edit "$sha" >/dev/null || die "REVERT FAILED: git revert $sha by hand, then deploy"
+$DEPLOY && rootstep && check && die "reverted to the previous pin (commit $old), the app answers again"
+die "REVERTED, BUT THE APP DOES NOT ANSWER: check $APP"

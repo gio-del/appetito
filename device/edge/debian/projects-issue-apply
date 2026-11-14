@@ -1,0 +1,131 @@
+#!/bin/sh
+# Service + cron every minute ($HS_USER; issues 184, 332): applies to GitHub the changes the owner asked for from the
+# tracker's page /projects.html (comment, close/reopen, add/remove a label on an issue of a Project).
+# The tracker (user tracker) has no token: it writes /var/lib/projects-writes/<id>.req.json
+# ({id, at, project, number, action, text|label}) and this job answers with <id>.res.json
+# ({id, ok, msg}); the dir is owned by $HS_USER, group tracker (setgid). With projects-issues-sync and
+# projects-publish it is a reader of the token ~/.secrets/git-github (curl, on stdin only).
+# Everything in a request is untrusted and validated here: id 16 hex, the Project must be in the
+# Gateway list on github.com, number an integer, action in a fixed list, text <= 4000 chars, label
+# plain. GitHub is the source: the issue is read again before writing (it must exist, not be a PR) and
+# a change that GitHub already shows (state, label) is refused with a message, nothing is written.
+# Runs as a service (sv/projects-issue-apply, every 2 s when a request waits, issue 332) and from cron as a
+# safety net; a lock keeps two instances from applying the same request.
+# A request older than 10 minutes is refused (the Edge was off). Answered files go after a day.
+set -eu
+export LC_ALL=C
+TOKEN=$HOME/.secrets/git-github
+DIR=${HS_WRITES_DIR:-/var/lib/projects-writes}
+MIRROR=${HS_MIRROR:-/var/lib/edge-status/projects-issues.json}
+[ -d "$DIR" ] || exit 0
+exec 9> "$DIR/.lock"
+flock -n 9 || exit 0
+now=$(date +%s)
+
+api() { # METHOD path [json-body]; token on stdin only
+	m=$1; p=$2
+	if [ -n "${3:-}" ]; then
+		printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN")" |
+			curl -fsS --max-time 30 -K - -X "$m" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' -d "$3" "https://api.github.com$p"
+	else
+		printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN")" |
+			curl -fsS --max-time 30 -K - -X "$m" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com$p"
+	fi
+}
+answer() { # id ok msg [extra-json-object]
+	jq -n --arg id "$1" --argjson ok "$2" --arg m "$3" --argjson x "${4:-{\}}" '{id:$id, ok:$ok, msg:$m} + $x' > "$DIR/$1.res.json.tmp"
+	mv "$DIR/$1.res.json.tmp" "$DIR/$1.res.json"
+	chmod 640 "$DIR/$1.res.json"
+	echo "$(date '+%F %T') $1 ok=$2 $3"
+}
+handle() { # request file
+	f=$1
+	id=$(jq -r '.id // empty | select(type == "string" and test("^[a-f0-9]{16}$"))' "$f" 2>/dev/null) || return 0
+	[ -n "$id" ] && [ "$f" = "$DIR/$id.req.json" ] || return 0
+	[ ! -e "$DIR/$id.res.json" ] || return 0
+	at=$(jq -r '.at // 0 | floor' "$f" 2>/dev/null) || at=0
+	[ $((now - at)) -le 600 ] || { answer "$id" false "richiesta scaduta (più di 10 minuti): riprova"; return 0; }
+	[ -r "$TOKEN" ] || { answer "$id" false "token GitHub mancante"; return 0; }
+	project=$(jq -r '.project // "" | select(type == "string" and test("^[a-z0-9][a-z0-9-]{0,40}$"))' "$f")
+	number=$(jq -r '.number | select(type == "number" and . == floor and . > 0 and . < 10000000)' "$f")
+	action=$(jq -r '.action // "" | select(. == "comment" or . == "read" or . == "answer" or . == "close" or . == "reopen" or . == "label-add" or . == "label-remove")' "$f")
+	[ -n "$project" ] && [ -n "$number" ] && [ -n "$action" ] || { answer "$id" false "richiesta non valida"; return 0; }
+	url=$(gateway-projects | awk -v n="$project" '$1 == n { print $2 }')
+	case $url in https://github.com/*/*) ;; *) answer "$id" false "Progetto '$project' non elencato o non su github.com"; return 0 ;; esac
+	repo=${url#https://github.com/}; repo=${repo%.git}; repo=${repo%/}
+	cur=$(api GET "/repos/$repo/issues/$number") || { answer "$id" false "GitHub non raggiungibile o issue inesistente"; return 0; }
+	if printf %s "$cur" | jq -e 'has("pull_request")' > /dev/null; then answer "$id" false "$project#$number è una pull request, non una issue"; return 0; fi
+	state=$(printf %s "$cur" | jq -r .state)
+	case $action in
+	read | answer)
+		# Reading comments and answering are only for issues of the owner (trust author/self-assigned, issue 160).
+		jq -e --arg p "$project" --argjson n "$number" '.projects[$p].issues[]? | select(.number == $n and (.trust == "author" or .trust == "self-assigned"))' "$MIRROR" > /dev/null 2>&1 ||
+			{ answer "$id" false "$project#$number non è una tua issue (fiducia): niente lettura né risposta"; return 0; }
+		# Unticked (HITL) steps of the body, as they are now on GitHub.
+		steps=$(printf %s "$cur" | jq -c '[(.body // "") | split("\n")[] | select(test("^\\s*- \\[ \\] \\(HITL\\)")) | sub("^\\s*- \\[ \\] "; "") | .[0:200]] | .[0:20]')
+		if [ "$action" = read ]; then
+			last=$(api GET "/repos/$repo/issues/$number/comments?per_page=100" | jq -c '(last // {}) | {by: (.user.login // ""), text: ((.body // "")[0:1500])}') || { answer "$id" false "commenti non leggibili"; return 0; }
+			no=$(printf %s "$cur" | jq 'any(.labels[]?; (if type == "object" then .name else . end) == "needs-owner")')
+			answer "$id" true "letto" "$(jq -nc --argjson s "$steps" --argjson l "$last" --argjson no "$no" '{steps:$s, last:$l, needs_owner:$no}')"
+			return 0
+		fi
+		[ "$state" = open ] || { answer "$id" false "$project#$number è chiusa: niente risposta"; return 0; }
+		# answers: [{text, kind: answer|done, note}]; every text must be a current unticked step (or empty when there are none)
+		ans=$(jq -c '.answers // [] | if type == "array" and length >= 1 and length <= 20 and all(.[]; type == "object" and (.kind == "answer" or .kind == "done") and ((.text // "") | type == "string" and length <= 200) and ((.note // "") | type == "string" and length <= 2000) and (.kind == "done" or ((.note // "") | length) > 0)) and ([.[] | (.text // "") + (.note // "")] | add | length) <= 4000 then map({text: (.text // ""), kind, note: (.note // "")}) else empty end' "$f") || ans=
+		[ -n "$ans" ] || { answer "$id" false "risposta vuota o non valida (max 4000 caratteri)"; return 0; }
+		bad=$(jq -rn --argjson a "$ans" --argjson s "$steps" '[$a[] | select(.text as $t | if ($s | length) == 0 then $t != "" else ($s | index($t)) == null end)] | length')
+		[ "$bad" = 0 ] || { answer "$id" false "i passi sono cambiati su GitHub: riapri la issue e riprova"; return 0; }
+		body=$(jq -rn --argjson a "$ans" '"(owner)\n" + ($a | map((if .text != "" then "**" + .text + "**\n" else "" end) + (if .note != "" then .note else "Fatto" end)) | join("\n\n"))')
+		api POST "/repos/$repo/issues/$number/comments" "$(jq -nc --arg b "$body" '{body:$b}')" > /dev/null || { answer "$id" false "risposta non inviata"; return 0; }
+		# needs-owner goes away when nothing is left to wait for: no steps, or the first one answered (like the local Rispondi, issue 173)
+		first=$(jq -rn --argjson s "$steps" 'if ($s | length) == 0 then "" else $s[0] end')
+		rel=$(jq -rn --argjson a "$ans" --arg f "$first" '($f == "") or any($a[]; .text == $f)')
+		has=$(printf %s "$cur" | jq -r 'any(.labels[]?; (if type == "object" then .name else . end) == "needs-owner")')
+		if [ "$rel" = true ] && [ "$has" = true ]; then
+			api DELETE "/repos/$repo/issues/$number/labels/needs-owner" > /dev/null || { answer "$id" false "risposta inviata, ma needs-owner non tolta"; changed=1; return 0; }
+			answer "$id" true "risposta inviata a $project#$number: torna in coda"
+		elif [ "$has" = true ]; then
+			answer "$id" true "risposta inviata a $project#$number: resta a te, manca il primo passo"
+		else
+			answer "$id" true "risposta inviata a $project#$number"
+		fi
+		;;
+	comment)
+		text=$(jq -r '.text // "" | select(type == "string" and length >= 1 and length <= 4000)' "$f")
+		[ -n "$text" ] || { answer "$id" false "commento vuoto o troppo lungo (max 4000 caratteri)"; return 0; }
+		api POST "/repos/$repo/issues/$number/comments" "$(jq -nc --arg b "$text" '{body:$b}')" > /dev/null || { answer "$id" false "commento non inviato"; return 0; }
+		answer "$id" true "commento aggiunto a $project#$number"
+		;;
+	close|reopen)
+		want=closed; [ "$action" = reopen ] && want=open
+		if [ "$state" = "$want" ]; then answer "$id" false "su GitHub $project#$number è già $([ $want = open ] && echo aperta || echo chiusa): nessuna modifica"; return 0; fi
+		api PATCH "/repos/$repo/issues/$number" "$(jq -nc --arg s "$want" '{state:$s}')" > /dev/null || { answer "$id" false "cambio di stato non riuscito"; return 0; }
+		answer "$id" true "$project#$number ora è $([ $want = open ] && echo aperta || echo chiusa)"
+		;;
+	label-add|label-remove)
+		label=$(jq -r '.label // "" | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,49}$"))' "$f")
+		[ -n "$label" ] || { answer "$id" false "etichetta non valida"; return 0; }
+		has=$(printf %s "$cur" | jq -r --arg l "$label" 'any(.labels[]?; (if type == "object" then .name else . end) == $l)')
+		if [ "$action" = label-add ]; then
+			[ "$has" = false ] || { answer "$id" false "$project#$number ha già l'etichetta «$label»"; return 0; }
+			api POST "/repos/$repo/issues/$number/labels" "$(jq -nc --arg l "$label" '{labels:[$l]}')" > /dev/null || { answer "$id" false "etichetta non aggiunta"; return 0; }
+			answer "$id" true "etichetta «$label» aggiunta a $project#$number"
+		else
+			[ "$has" = true ] || { answer "$id" false "$project#$number non ha l'etichetta «$label»"; return 0; }
+			api DELETE "/repos/$repo/issues/$number/labels/$(printf %s "$label" | jq -sRr @uri)" > /dev/null || { answer "$id" false "etichetta non tolta"; return 0; }
+			answer "$id" true "etichetta «$label» tolta da $project#$number"
+		fi
+		;;
+	esac
+	changed=1
+}
+
+changed=
+for f in "$DIR"/*.req.json; do
+	[ -e "$f" ] || continue
+	handle "$f"
+done
+find "$DIR" -maxdepth 1 -type f \( -name '*.req.json' -o -name '*.res.json' \) -mmin +1440 -delete 2>/dev/null || true
+# The mirror would show the change only after the next 10-minute run: refresh it now.
+[ -z "$changed" ] || "$HOME/bin/projects-issues-sync" > /dev/null 2>&1 || true
+exit 0

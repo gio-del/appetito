@@ -1,0 +1,13 @@
+#!/bin/sh
+# runit logger shared by every service (issue 031), installed by the deploy as
+# /etc/hs-sv/<service>/log/run: svlogd keeps the service's output in
+# /var/log/hs/<service>/current (-tt: UTC timestamps), rotated at 1 MB, 5 old files.
+# Runs as $HS_USER (hs-monitor reads the tail), dir 700: logs may carry untrusted text.
+set -a; . /etc/home-server.env; set +a
+n=$(basename "$(dirname "$(pwd -P)")")
+d=/var/log/hs/$n
+install -d -m 755 -o root -g root /var/log/hs
+install -d -m 700 -o "$HS_USER" -g "$HS_USER" "$d"
+printf 's1000000\nn5\n' > "$d/config"
+chown "$HS_USER:$HS_USER" "$d/config"
+exec setpriv --reuid="$HS_USER" --regid="$HS_USER" --init-groups --no-new-privs /usr/bin/svlogd -tt "$d"

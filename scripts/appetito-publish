@@ -9,14 +9,15 @@
 #   1. DIR e' un repo git su `main`, senza modifiche non committate, con origin = quel repo;
 #   2. quel repo non e' tra i Project (/etc/hs-projects): quelli passano dalle PR;
 #   3. il commit locale sta sopra `main` pubblicato (nessuna storia riscritta);
-#   4. i file sono esattamente l'elenco (`appetito-build --files` sul commit HEAD di home-server);
+#   4. i file sono esattamente l'elenco (`appetito-build --paths` sul commit HEAD di home-server);
 #   5. `appetito-check` sulla copia dei file (valori personali, segreti, attribuzione);
+#   5b. `appetito-selfcheck`: la copia passa da sola `device/edge/check` (issue 568);
 #   6. `hs-secrets verdict` sulla storia e `hs-attribution commits` sui commit nuovi.
 # Dopo il push: `ls-remote` deve mostrare il commit, altrimenti esce 1.
 # Il token ~/.secrets/git-github arriva a git solo da uno script GIT_ASKPASS temporaneo (come projects-git):
 # mai in una riga di comando, in un URL, in .git/config o nei log.
 # Per i test: HS_ENV_FILE (file dei valori; puo' definire HS_APPETITO_URL al posto di github.com),
-# HS_PROJECTS_FILE, HS_APPETITO_FILES_CMD, HS_APPETITO_CHECK_CMD, HS_SECRETS_CMD, HS_ATTRIBUTION_CMD, HS_GIT_TOKEN.
+# HS_PROJECTS_FILE, HS_APPETITO_FILES_CMD, HS_APPETITO_CHECK_CMD, HS_APPETITO_SELFCHECK_CMD, HS_SECRETS_CMD, HS_ATTRIBUTION_CMD, HS_GIT_TOKEN.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 die() { echo "appetito-publish: $*" >&2; exit 1; }
@@ -80,7 +81,7 @@ git -C "$dir" merge-base --is-ancestor "$base" "$head" || die "il commit locale 
 [ "$base" != "$head" ] || { echo "niente da pubblicare: main e' gia' a $(echo "$head" | cut -c1-7)"; exit 0; }
 
 # 4. i file sono l'elenco
-${HS_APPETITO_FILES_CMD:-sh "$here/scripts/appetito-build" --files} | sort > "$tmp/want" || die "elenco dei file non leggibile"
+${HS_APPETITO_FILES_CMD:-sh "$here/scripts/appetito-build" --paths} | sort > "$tmp/want" || die "elenco dei file non leggibile"
 git -C "$dir" ls-files | sort > "$tmp/have"
 if ! cmp -s "$tmp/want" "$tmp/have"; then
 	echo "appetito-publish: i file non sono l'elenco (< solo nell'elenco, > solo nella copia):" >&2
@@ -92,6 +93,8 @@ fi
 mkdir "$tmp/copy"
 git -C "$dir" archive HEAD | tar -x --no-same-owner -C "$tmp/copy"
 ${HS_APPETITO_CHECK_CMD:-sh "$here/scripts/appetito-check"} "$tmp/copy" || die "bloccata dal controllo dei file"
+# 5b. la copia deve passare i suoi test da sola (issue 568)
+${HS_APPETITO_SELFCHECK_CMD:-sh "$here/scripts/appetito-selfcheck"} || die "bloccata: la copia non passa i suoi test da sola (appetito-selfcheck)"
 
 # 6. storia e commit nuovi
 ${HS_SECRETS_CMD:-hs-secrets} verdict "$dir" > "$tmp/verdict" 2>&1 || { tail -5 "$tmp/verdict" >&2; die "bloccata dallo scanner dei segreti"; }

@@ -1,6 +1,7 @@
-# Elenco dei file pubblici di Appetito (issue 485, epic 476).
-# Un file è pubblico solo se una riga qui sotto lo nomina; tutto il resto resta privato
-# (issues/, docs/, DIREZIONE.md, README.md, CLAUDE.md, cloudflare/, public-site/, device/watch/ ...).
+# Elenco dei file pubblici di Appetito (issue 485, epic 476; ristretto dall'issue 584).
+# Appetito e' il SEME del piano originale piu' il sistema dei Project, non una copia del server dell'owner.
+# La regola (cosa dentro, cosa fuori) e' in docs/appetito-inventario.md. Un file nuovo entra solo se la rispetta:
+# altrimenti resta privato (appetito/private) o passa da appetito-propose.
 #
 # Formato, una voce per riga:
 #   percorso        un file tracciato da git
@@ -8,50 +9,199 @@
 #   modello*        schema con * (come `case` di sh: * vale anche per /)
 #   !voce           esclude quello che le voci precedenti hanno incluso
 # Righe vuote e righe con # iniziale sono ignorate. Una voce positiva che non trova nessun file
-# è un errore (elenco rimasto indietro). Solo file nella classe G di docs/appetito-inventario.md:
-# i gruppi R (#508, #509, #510) entrano quando sono resi generali.
+# e' un errore (elenco rimasto indietro).
 
-# Installazione e verifica
+# Installazione, verifica, runit
 device/edge/deploy
+device/edge/deploy-request
 device/edge/check
 device/edge/render-schedule
 device/edge/projects-check
-device/edge/install*.sh
 device/edge/brain-fw.sh
-device/edge/studio-fw.sh
-device/edge/debloat-watchdog.sh
-device/edge/allow-3p.txt
+device/edge/install-brain-fw.sh
 device/edge/home-server.env.example
-device/edge/debian/projects.example
 device/edge/git-hooks/
+device/edge/debian/projects.example
+device/edge/debian/Caddyfile
+device/edge/debian/sv/brain/
+device/edge/debian/sv/caddy/
+device/edge/debian/sv/cron/
+device/edge/debian/sv/deploy-worker/
+device/edge/debian/sv/ntfy/
+device/edge/debian/sv/ops/
+device/edge/debian/sv/projects-issue-apply/
+device/edge/debian/sv/radicale/
+device/edge/debian/sv/syncthing/
+device/edge/debian/sv/tailscaled/
+device/edge/debian/sv/tracker/
+device/edge/debian/sv-log-run
+device/edge/debian/deploy-worker
+device/edge/debian/sshd-home-server.conf
+device/edge/debian/policy-rc.d
+device/edge/debian/bash_aliases
+device/edge/debian/crontab-user
+device/edge/debian/crontab-brain
+device/edge/debian/cron.d-home-server
+device/edge/debian/restart-stale
+device/edge/debian/restart-tailscaled
+device/edge/debian/caddy-reload
+device/edge/debian/tls-renew
+device/edge/debian/owners-check
+device/edge/debian/apt-autoupdate
+device/edge/debian/apt-unattended.conf
+device/edge/debian/update-apps
+device/edge/debian/app-upgrade
+device/edge/debian/hs-docs-fetch
+device/edge/debian/hs-docs.list
 
-# Servizi runit
-device/edge/debian/sv/
+# Issue: formato e strumenti issues-*
+device/edge/debian/issues-autocommit
+device/edge/debian/issues-context
+device/edge/debian/issues-housekeep
+device/edge/debian/issues-lint
+device/edge/debian/issues-new
+device/edge/debian/issues-next-id
+device/edge/debian/issues-similar
+device/edge/debian/issues-triage
 
-# Tracker e dashboard
+# Tracker e impostazioni (hs-setting)
 device/edge/tracker/
+device/edge/debian/tracker-passwd
+device/edge/debian/tracker-setup
+device/edge/debian/hs-setting
+device/edge/debian/proposals-card
+device/edge/debian/questions/
+device/edge/debian/questions-recheck
+device/edge/debian/questions-recheck-ai
+device/edge/debian/questions-suggest
+device/edge/debian/owner-notify
+device/edge/debian/hs-notify
+device/edge/debian/ntfy/
+device/edge/debian/ntfy-setup
 
-# Test (ops-auto-log.sh usa un percorso personale come dato: R-1)
-device/edge/tests/
-!device/edge/tests/ops-auto-log.sh
-!device/edge/tests/appetito-check.sh
-!device/edge/tests/hs-secrets.sh
-!device/edge/tests/hs-protect-guard.sh
+# Worker ops-auto, proposte ops-suggest, attriti, strumenti AI
+device/edge/debian/ops-auto
+device/edge/debian/ops-auto-card
+device/edge/debian/ops-auto-guard
+device/edge/debian/ops-auto-log
+device/edge/debian/ops-auto-model
+device/edge/debian/ops-auto-prompt.md
+device/edge/debian/ops-auto-request
+device/edge/debian/ops-refresh
+device/edge/debian/ops-suggest
+device/edge/debian/ops-suggest-index
+device/edge/debian/ops-suggest-prompt.md
+device/edge/debian/ops-suggest-signals
+device/edge/debian/attriti
+device/edge/debian/attriti-card
+device/edge/debian/attriti-signals
+device/edge/debian/credentials
+device/edge/debian/skips
+device/edge/debian/ai-api
+device/edge/debian/ai-delegate
+device/edge/debian/ai-run
+device/edge/debian/claude-update-all
+device/edge/debian/claude-usage
+device/edge/debian/brain-usage
+device/edge/debian/apps-idle
+device/edge/debian/sessions-refresh
 
-# Policy della tailnet (solo il modello)
+# hs-run, hs-runlog, hs-monitor e i loro controlli
+device/edge/debian/hs-run
+device/edge/debian/hs-runlog
+device/edge/debian/hs-runbook
+device/edge/debian/hs-monitor
+device/edge/debian/jobs-status
+device/edge/debian/check-nightly
+device/edge/debian/disk-eta
+device/edge/debian/log-trim
+device/edge/debian/log-trim-system
+
+# Second brain, calendario opzionale spento
+device/edge/debian/brain/
+device/edge/debian/brain-cal
+device/edge/debian/brain-digest
+device/edge/debian/brain-propose
+device/edge/debian/brain-refresh
+device/edge/debian/brain-setup
+device/edge/debian/brain-sort
+device/edge/debian/vault-autocommit
+device/edge/debian/radicale/
+device/edge/debian/radicale-backup
+device/edge/debian/radicale-setup
+device/edge/debian/tasks-web/
+
+# Sicurezza, porte, backup
+scripts/security-audit
+scripts/restore-backup
+device/edge/debian/hs-advisories
+device/edge/debian/hs-attribution
+device/edge/debian/hs-protect-guard
+device/edge/debian/hs-scanner-fetch
+device/edge/debian/hs-secrets
+device/edge/debian/hs-security-enabled
+device/edge/debian/hs-on-android
+appetito/root/install.sh
+appetito/root/.github/workflows/install.yml
+device/edge/debian/hs-skill-fetch
+device/edge/debian/ports-check
+device/edge/debian/ssh-login-watch
+device/edge/debian/backup-all
+device/edge/debian/state-backup
+device/edge/debian/repo-backup
 tailscale/policy.template.hujson
 tailscale/render-policy
 
-# Strumenti
-scripts/security-audit
-scripts/restore-backup
+# Sistema dei Project (meccanismo generico; mai gli script di un Project specifico)
+device/edge/debian/gateway/
+device/edge/debian/gateway-projects
+device/edge/debian/gateway-sync
+device/edge/debian/project-cd
+device/edge/debian/project-issue-body
+device/edge/debian/project-run
+device/edge/debian/project-tools
+device/edge/debian/project-worktree
+device/edge/debian/projects-ci-watch
+device/edge/debian/projects-git
+device/edge/debian/projects-issue-apply
+device/edge/debian/projects-issues-sync
+device/edge/debian/projects-publish
+device/edge/debian/projects-publish-pending
+device/edge/debian/release-gate
+device/edge/debian/ops-auto-project-prompt.md
+
+# Test dei file qui sopra (per nome: un test entra solo se il suo file e' nella copia)
+device/edge/tests/
+
+# Strumenti di Appetito
 scripts/appetito-build
 scripts/appetito-propose
 scripts/appetito-check
 scripts/appetito-publish
+scripts/appetito-auto
+scripts/appetito-selfcheck
 appetito/files
 appetito/private
 
 # Configurazione dell'agente e git
 .claude/settings.json
 .gitignore
+
+# --- Esclusi dai test: leggono file privati del server dell'owner (issue 578) o usano valori personali come dato
+!device/edge/tests/ops-auto-log.sh
+!device/edge/tests/appetito-check.sh
+!device/edge/tests/hs-secrets.sh
+!device/edge/tests/hs-protect-guard.sh
+!device/edge/tests/direzione.sh
+!device/edge/tests/gateway-core.sh
+!device/edge/tests/ops-auto-project.sh
+!device/edge/tests/watch-view.sh
+!device/edge/debian/studio/CLAUDE.md
+!device/edge/debian/sumisura/*-prompt.md
+# --- Esclusi con la 584: test dei file tolti dalla copia (script di un Project specifico, mail, dashboard, Android)
+!device/edge/tests/studio*
+!device/edge/tests/sumisura*
+!device/edge/tests/library*
+!device/edge/tests/mail*
+!device/edge/tests/dashboard*
+!device/edge/tests/restore-backup.sh

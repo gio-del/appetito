@@ -1,0 +1,6 @@
+#!/bin/sh
+# Print the Projects of this server's Gateway (issue 018) from /etc/hs-projects (repo:
+# device/edge/debian/projects), one "name url app status issues rules release" line each, comments and
+# blanks skipped; the optional last three columns default to "-".
+set -eu
+sed -e 's/#.*//' /etc/hs-projects | awk -F'|' 'NF >= 4 { for (i = 1; i <= 7; i++) { gsub(/^[ \t]+|[ \t]+$/, "", $i); if ($i == "") $i = "-" } print $1, $2, $3, $4, $5, $6, $7 }'

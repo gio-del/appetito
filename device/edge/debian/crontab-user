@@ -1,0 +1,62 @@
+# crontab of $HS_USER (cron runs jobs from $HOME, so paths are relative to it)
+PATH=/usr/local/bin:/usr/bin:/bin
+# "#@ [Categoria] title | when | what" lines feed the dashboard group "Attività programmate"
+# (device/edge/render-schedule, run by the deploy): every job needs one, right above it.
+#@ [Sistema] Batteria e allarmi | Ogni minuto | Card batteria, mail se il server tace
+* * * * * hs-run edge-watch bin/edge-watch >> .local/state/edge-watch.log 2>&1
+#@ [Sistema] Numeri della dashboard | Ogni minuto | CPU, memoria, disco e statistiche AdGuard per la dashboard statica
+* * * * * hs-run dashboard-stats bin/dashboard-stats >> .local/state/dashboard-stats.log 2>&1
+#@ [Sistema] Salvataggio issue | Ogni minuto | Commit delle issue
+* * * * * hs-run issues-autocommit bin/issues-autocommit >> .local/state/issues-autocommit.log 2>&1
+#@ [Sistema] App del telefono | Ogni 12 ore | Nuove versioni su GitHub
+*/10 * * * * hs-run phone-apps-check bin/phone-apps-check >> .local/state/phone-apps-check.log 2>&1
+#@ [Progetti] Issue dei Progetti | Ogni 10 minuti | Copia in sola lettura delle issue GitHub
+*/10 * * * * hs-run projects-issues-sync bin/projects-issues-sync >> .local/state/projects-issues-sync.log 2>&1
+#@ [Progetti] Proposte per i Progetti | Ogni 2 minuti | Crea su GitHub la issue delle proposte approvate per un altro Progetto
+*/2 * * * * hs-run projects-publish-pending bin/projects-publish-pending >> .local/state/projects-publish-pending.log 2>&1
+#@ [Progetti] Modifiche alle issue dei Progetti | Ogni minuto | Scrive su GitHub quello che chiedi dalla pagina Issue dei Progetti
+* * * * * hs-run projects-issue-apply bin/projects-issue-apply >> .local/state/projects-issue-apply.log 2>&1
+#@ [Progetti] CI delle PR dei Progetti | Ogni 5 minuti | Se la CI di una PR aperta da ops-auto è rossa, rimette la issue in coda per correggerla
+*/5 * * * * hs-run projects-ci-watch bin/projects-ci-watch >> .local/state/projects-ci-watch.log 2>&1
+#@ [Sviluppo automatico] Controllo errori | Ogni 5 minuti | Apre una issue se qualcosa si rompe
+*/5 * * * * hs-run hs-monitor bin/hs-monitor >> .local/state/hs-monitor.log 2>&1
+#@ [Sviluppo automatico] Manutenzione e Sviluppo automatico | Ogni 30 minuti | L'AI lavora una issue aperta
+7,37 * * * * hs-run ops-auto bin/ops-auto >> .local/state/ops-auto.log 2>&1
+#@ [Sviluppo automatico] Avvio manuale | Ogni minuto | Fa partire la manutenzione quando premi «Avvia ora» nel tracker
+* * * * * hs-run ops-auto-request bin/ops-auto-request >> .local/state/ops-auto-request.log 2>&1
+#@ [Sviluppo automatico] Proposte giornaliere | Ogni giorno all'ora scelta (Impostazioni) | L'AI propone migliorie da approvare | proposals.json schedule
+50 * * * * hs-run ops-suggest bin/ops-suggest >> .local/state/ops-suggest.log 2>&1
+#@ [Progetti] Gateway dei progetti | Ogni ora | Aggiorna lo stato dei progetti in ~/projects/GATEWAY.md
+23 * * * * hs-run gateway-sync bin/gateway-sync >> .local/state/gateway-sync.log 2>&1
+#@ [Sviluppo automatico] Consumo dell'AI | Ogni ora | Aggiorna i numeri della sezione Consumo in Sviluppo automatico
+41 * * * * hs-run claude-usage bin/claude-usage --card >> .local/state/claude-usage.log 2>&1
+#@ [Sviluppo automatico] Attriti | Ogni settimana (controllo ogni giorno alle 5:20) | L'AI cerca ciò che chiede all'owner senza bisogno e apre le issue per correggerlo
+20 5 * * * hs-run attriti bin/attriti >> .local/state/attriti.log 2>&1
+#@ [Sviluppo automatico] Misura degli attriti | Ogni giorno alle 5:10 | Conta quante domande e issue aspettano l'owner e la tendenza settimanale (nessuna chiamata a Claude)
+10 5 * * * hs-run attriti-card bin/attriti-card >> .local/state/attriti.log 2>&1
+#@ [Sviluppo automatico] Segnali di costo e qualità | Ogni ora | Aggiorna la sezione Segnali in Sviluppo automatico (nessuna chiamata a Claude)
+44 * * * * hs-run ops-suggest-signals bin/ops-suggest-signals --card >> .local/state/ops-suggest-signals.log 2>&1
+#@ [Sviluppo automatico] Controllo notturno | Ogni notte alle 2:43 | Test e controlli del repo su main, issue se falliscono
+43 2 * * * hs-run check-nightly bin/check-nightly >> .local/state/check-nightly.log 2>&1
+#@ [Sistema] Pulizia log | Ogni notte alle 4:53 | Accorcia i log dei job oltre 1 MB (cronologia di Sviluppo automatico: 35 giorni)
+53 4 * * * hs-run log-trim sh -c 'log-trim 1048576 .local/state/*.log /var/lib/edge-status/history.jsonl && log-trim --keep-days 35 5242880 .local/state/ops-auto/ops-auto.log .local/state/ops-suggest/ops-suggest.log' >> .local/state/log-trim.log 2>&1
+#@ [Progetti] Rilascio dei Progetti | Ogni ora | Annuncia e unisce la Release PR di un Progetto quando le regole valgono (24 h per fermarla)
+17 * * * * hs-run release-gate bin/release-gate >> .local/state/release-gate.log 2>&1
+#@ [Sistema] Avvisi per l'owner | Ogni 15 minuti | Notifica sul telefono: riepilogo di proposte e release da unire, subito i passi tuoi che fermano il lavoro (tetto giornaliero nelle impostazioni)
+*/15 * * * * hs-run owner-notify bin/owner-notify >> .local/state/owner-notify.log 2>&1
+#@ [Sistema] Risposte suggerite alle Domande | Ogni 10 minuti | L'AI prepara una risposta consigliata per ogni domanda della pagina Domande (mai inviata da sola)
+*/10 * * * * hs-run questions-suggest bin/questions-suggest >> .local/state/questions-suggest.log 2>&1
+#@ [Sistema] Risposte arrivate da sole | Ogni 6 ore | Controlla le domande con un controllo automatico (pacchetto, release, URL, file) e segnala sulla carta se la risposta è già arrivata (non chiude nulla)
+0 */6 * * * hs-run questions-recheck bin/questions-recheck >> .local/state/questions-recheck.log 2>&1
+#@ [Sistema] Risposte arrivate da sole (AI) | Ogni 6 ore | L'AI guarda le domande senza controllo automatico e segnala sulla carta se i dati mostrano che la risposta è già arrivata (non chiude nulla)
+30 */6 * * * hs-run questions-recheck-ai bin/questions-recheck-ai >> .local/state/questions-recheck-ai.log 2>&1
+#@ [Sistema] Sessione ops aggiornata | Ogni 10 minuti | Se Claude Code si è aggiornato, riapre la sessione ops sulla versione nuova quando è inattiva
+*/10 * * * * hs-run ops-refresh bin/ops-refresh >> .local/state/ops-refresh.log 2>&1
+#@ [Sviluppo automatico] Pulizia delle issue fuori direzione | Ogni giorno alle 5:30 | L'AI sposta in backlog le issue To do che non servono alla direzione (DIREZIONE.md), con il motivo; mai quelle che hai scelto tu
+30 5 * * * hs-run issues-triage bin/issues-triage >> .local/state/issues-triage.log 2>&1
+#@ [Sviluppo automatico] Proposte per Appetito | Ogni giorno alle 5:25 | Propone nel tracker i file nuovi da aggiungere alla copia pubblica (nessuna chiamata all'AI)
+25 5 * * * hs-run appetito-propose sh home-server/scripts/appetito-propose --max 3 >> .local/state/appetito-propose.log 2>&1
+#@ [Sviluppo automatico] Pubblicazione di Appetito | Ogni giorno alle 5:40 | Se il codice è cambiato, aggiorna la copia pubblica di Appetito dopo i controlli (solo se attiva nelle Impostazioni, nessuna chiamata all'AI)
+40 5 * * * hs-run appetito-auto sh home-server/scripts/appetito-auto >> .local/state/appetito-auto.log 2>&1
+#@ [Sviluppo automatico] Prova della copia di Appetito | Ogni giorno alle 4:10 | Costruisce la copia pubblica e ci esegue tutti i test da sola; l'esito resta valido finché la copia non cambia, così la pubblicazione delle 5:40 e i giri dell'AI non rifanno la prova (nessuna chiamata all'AI)
+10 4 * * * hs-run appetito-selfcheck sh home-server/scripts/appetito-selfcheck >> .local/state/appetito-selfcheck.log 2>&1

@@ -38,7 +38,7 @@ chmod +x "$T/repo/device/edge/deploy"; touch "$T/repo/device/edge/home-server.en
 git -C "$T/repo" init -q; git -C "$T/repo" config user.email t@t; git -C "$T/repo" config user.name t
 echo good > "$T/repo/device/edge/VERSION"; git -C "$T/repo" add -A; git -C "$T/repo" commit -qm one
 good=$(git -C "$T/repo" rev-parse HEAD)
-req() { sh "$R/device/edge/deploy-request" "$@" > "$T/req.out" 2>&1 & rp=$!; sh "$D/deploy-worker" & wp=$!; rc=0; wait $rp || rc=$?; wait $wp || true; }
+req() { sh "$R/device/edge/deploy-request" "$@" > "$T/req.out" 2>&1 & rp=$!; sh "$D/deploy-worker" & wp=$!; rc=0; wait $rp || rc=$?; kill $wp 2> /dev/null || true; wait $wp 2> /dev/null || true; } # the worker never ends by itself if the request side failed (issue 578)
 touch "$T/d/alive"
 
 # 1. good deploy: ok, version recorded

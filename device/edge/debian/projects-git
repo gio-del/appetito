@@ -1,0 +1,33 @@
+#!/bin/sh
+# Read-side git for the Projects (issue 190): works on a private GitHub repo like on a public one.
+# The token ~/.secrets/git-github (HS_GIT_TOKEN overrides the path; run as the user who owns it,
+# e.g. `runuser -u $HS_USER -- env HOME=... projects-git`) reaches git only through a temporary
+# GIT_ASKPASS script (mode 700, removed on exit): never in a command line, URL, .git/config or log.
+# Only for https://github.com/ URLs, and only when the file is readable; otherwise plain git.
+#   projects-git ls-remote URL [ARGS...]    git ls-remote -q URL ARGS
+#   projects-git clone URL DIR              git clone -q URL DIR (origin keeps the clean URL)
+#   projects-git fetch DIR [REF...]         git -C DIR fetch -q origin REF...
+set -eu
+TOKEN=${HS_GIT_TOKEN:-$HOME/.secrets/git-github}
+export GIT_TERMINAL_PROMPT=0
+die() { echo "projects-git: $*" >&2; exit 1; }
+[ $# -ge 2 ] || die "uso: ls-remote URL [ARGS] | clone URL DIR | fetch DIR [REF...]"
+cmd=$1; shift
+case $cmd in
+ls-remote | clone) url=$1 ;;
+fetch) url=$(git -C "$1" remote get-url origin) ;;
+*) die "comando sconosciuto: $cmd" ;;
+esac
+case $url in
+https://github.com/*) if [ -r "$TOKEN" ]; then
+	ask=$(mktemp); trap 'rm -f "$ask"' EXIT
+	printf '#!/bin/sh\ncase $1 in Username*) echo x-access-token ;; *) cat %s ;; esac\n' "'$TOKEN'" > "$ask"
+	chmod 700 "$ask"
+	export GIT_ASKPASS=$ask
+fi ;;
+esac
+case $cmd in
+ls-remote) git ls-remote -q "$@" ;;
+clone) git clone -q "$@" ;;
+fetch) d=$1; shift; git -C "$d" fetch -q origin "$@" ;;
+esac

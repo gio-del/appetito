@@ -1,0 +1,45 @@
+#!/bin/sh
+# SSH login alerts (issue 046). sshd runs with -E /var/log/sshd.log (no syslog in the chroot,
+# see debian.sh); root cron every minute. Every new "Accepted ..." line is kept in
+# /var/lib/ssh-login-watch/logins (with the time it was seen, sshd -E writes none) and sent to
+# the channels $HS_USER has set up (secrets, never in git):
+#  - ~/.secrets/hc-ssh-url: a healthchecks.io check of its own (email, like edge-watch's):
+#    a login pings /fail with the details ("DOWN" email), the next quiet run pings success
+#    (re-arm, "UP" email), plus one success ping a day so the check never times out.
+#  - hs-notify: push through the local ntfy (issue 230; nothing when the service is off).
+# A failed send exits 1 without advancing, so hs-run reports it and the next run retries.
+# Source addresses are not informative: tailnet SSH arrives via tailscaled from 127.0.0.1.
+set -eu
+. /etc/home-server.env
+LOG=/var/log/sshd.log
+ST=/var/lib/ssh-login-watch
+SEC=/home/$HS_USER/.secrets
+install -d -m 700 "$ST"
+[ -f "$LOG" ] || exit 0
+size=$(stat -c %s "$LOG")
+# First run: start from the end, don't replay old logins.
+[ -f "$ST/offset" ] || { echo "$size" > "$ST/offset"; exit 0; }
+off=$(cat "$ST/offset")
+[ "$off" -le "$size" ] || off=0  # log was truncated
+new=$(tail -c +$((off + 1)) "$LOG" | head -c $((size - off)) | grep '^Accepted ' || true)
+hc=$(cat "$SEC/hc-ssh-url" 2>/dev/null || true)
+if [ -n "$new" ]; then
+	now=$(date '+%Y-%m-%d %H:%M')
+	# "Accepted publickey for gio from 127.0.0.1 port 1234 ssh2: ED25519 SHA256:..." -> user + key
+	msg=$(echo "$new" | sed -E 's/^Accepted ([^ ]+) for ([^ ]+) from .* ssh2:? ?(.*)$/utente \2 (\1 \3)/')
+	if [ -n "$hc" ]; then
+		curl -fsS -m 15 --retry 2 -o /dev/null --data-raw "Accesso SSH all'Edge, $now: $msg" "$hc/fail"
+		touch "$ST/rearm"
+	fi
+	/usr/local/bin/hs-notify --urgent --tag key "Accesso SSH all'Edge" "$now: $msg"
+	echo "$new" | sed "s/^/$now /" >> "$ST/logins"
+elif [ -n "$hc" ] && { [ -f "$ST/rearm" ] || [ "$(cat "$ST/hc-day" 2>/dev/null)" != "$(date +%F)" ]; }; then
+	curl -fsS -m 15 --retry 2 -o /dev/null --data-raw "nessun nuovo accesso" "$hc"
+	rm -f "$ST/rearm"; date +%F > "$ST/hc-day"
+fi
+echo "$size" > "$ST/offset"
+# Keep the log small: sshd appends (O_APPEND), so rewriting it in place is safe.
+if [ "$size" -gt 1048576 ]; then
+	tail -n 2000 "$LOG" > "$ST/sshd.log.tmp" && cat "$ST/sshd.log.tmp" > "$LOG" && rm -f "$ST/sshd.log.tmp"
+	stat -c %s "$LOG" > "$ST/offset"
+fi

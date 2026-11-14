@@ -3,7 +3,9 @@
 # Copia nella cartella di lavoro OUT i soli file tracciati e nell'elenco, dal commit HEAD di REPO
 # (mai il working tree, mai file gitignored), e fa UN commit per pubblicazione nella storia di OUT.
 # La storia di REPO non entra mai in OUT. Non pubblica: il push e' un'altra issue (#489).
-# Uso: scripts/appetito-build (OUT | --files)  [--repo REPO] [--list FILE] [--message TESTO] [--env FILE]...
+# Uso: scripts/appetito-build (OUT | --files | --paths)  [--repo REPO] [--list FILE] [--message TESTO] [--env FILE]...
+# I file dell'elenco sotto appetito/root/ finiscono alla radice della copia (appetito/root/README.md -> README.md,
+# issue 564): --files stampa i percorsi di home-server, --paths quelli pubblicati.
 # Prima del commit esegue scripts/appetito-check (valori personali, segreti, attribuzione): se trova qualcosa esce 1.
 # Esce 0 anche se non c'e' nulla di nuovo (nessun commit). Elenco: appetito/files.
 set -eu
@@ -16,12 +18,13 @@ while [ $# -gt 0 ]; do
     --list) list=$2; shift 2 ;;
     --message) msg=$2; shift 2 ;;
     --files) show=1; shift ;;
+    --paths) show=2; shift ;;
     --env) envs="$envs --env $2"; shift 2 ;;
     -*) echo "opzione sconosciuta: $1" >&2; exit 2 ;;
     *) [ -z "$out" ] || { echo "una sola cartella di lavoro" >&2; exit 2; }; out=$1; shift ;;
   esac
 done
-[ -n "$out" ] || [ "$show" = 1 ] || { echo "uso: appetito-build OUT [--repo REPO] [--list FILE] [--message TESTO] [--env FILE]..." >&2; exit 2; }
+[ -n "$out" ] || [ "$show" != 0 ] || { echo "uso: appetito-build OUT [--repo REPO] [--list FILE] [--message TESTO] [--env FILE]..." >&2; exit 2; }
 [ -n "$list" ] || list=$repo/appetito/files
 # L'elenco si legge dal commit HEAD, come i file: una modifica non committata non pubblica nulla.
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -53,19 +56,28 @@ done < "$tmp/list"
 sort -u "$tmp/sel" > "$tmp/files"
 [ -s "$tmp/files" ] || { echo "elenco vuoto: niente da pubblicare" >&2; exit 1; }
 # --files: stampa i file selezionati ed esce (usato da appetito-propose), senza copiare nulla.
-[ "$show" = 0 ] || { cat "$tmp/files"; exit 0; }
+[ "$show" != 1 ] || { cat "$tmp/files"; exit 0; }
+# Percorsi pubblicati: appetito/root/X diventa X; due file sullo stesso percorso sono un errore.
+sed 's|^appetito/root/||' "$tmp/files" | sort > "$tmp/paths"
+dup=$(uniq -d "$tmp/paths" | head -3)
+[ -z "$dup" ] || { echo "due file dell'elenco finiscono sullo stesso percorso: $dup" >&2; exit 1; }
+[ "$show" != 2 ] || { cat "$tmp/paths"; exit 0; }
 
 mkdir -p "$out"
 [ -d "$out/.git" ] || git -C "$out" init -q -b main
 # Svuota la copia (tranne .git) e riscrive solo i file dell'elenco.
 find "$out" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 xargs -d '\n' git -C "$repo" archive HEAD -- < "$tmp/files" | tar -x --no-same-owner -C "$out"
+if [ -d "$out/appetito/root" ]; then
+  (cd "$out/appetito/root" && tar -c .) | tar -x --no-same-owner -C "$out"
+  rm -rf "$out/appetito/root"
+fi
 # Controllo prima della pubblicazione (#486): se trova qualcosa la copia non viene committata.
 # shellcheck disable=SC2086
 sh "$(dirname "$0")/appetito-check" "$out" $envs || { echo "pubblicazione bloccata dal controllo" >&2; exit 1; }
 git -C "$out" add -A
 if git -C "$out" diff --cached --quiet; then echo "nessuna modifica: nessun commit"; exit 0; fi
-[ -n "$msg" ] || msg="Pubblicazione $(date +%Y-%m-%d)"
+[ -n "$msg" ] || msg="Update $(date +%Y-%m-%d)"  # in inglese, come la storia del repo pubblico (issue 563)
 git -C "$out" -c user.name="${APPETITO_AUTHOR_NAME:-Appetito}" -c user.email="${APPETITO_AUTHOR_EMAIL:-appetito@localhost}" \
   commit -q -m "$msg"
-echo "commit $(git -C "$out" rev-parse --short HEAD): $(wc -l < "$tmp/files") file"
+echo "commit $(git -C "$out" rev-parse --short HEAD): $(wc -l < "$tmp/paths") file"

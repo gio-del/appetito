@@ -1,0 +1,110 @@
+#!/bin/sh
+# Second brain sorting job (cron of user brain, every 5 min). Cheap check first: Claude
+# starts only when Inbox/ has new or changed items that are ready, i.e. untouched for
+# BRAIN_QUIET_S seconds (Obsidian saves while typing) or tagged #ora. One run at a time,
+# skipped over the weekly quota set in Impostazioni/Second brain.md, backoff after a failure.
+# Fixed rules: /usr/local/share/brain/sort-prompt.md (root-owned, not in the vault).
+# State in ~/.local/state/brain: seen (snapshot lines of items already sorted), usage (last
+# 7-day utilization and its reset), quota-skipped and failed-at (for the digest), sort.log.
+# Every run is kept in runs/ (hs-runlog: 700, 30 days, 200 MB; it carries vault text, so
+# only brain reads it); sort.log gets the names of denied tools, never their input (issue 051).
+set -eu
+export PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 CLAUDE_CODE_TMPDIR=$HOME/.cache/claude-tmp
+AI_RUN=${HS_AI_RUN:-$(cd "$(dirname "$0")" && pwd)/ai-run}  # backend wrapper (issue 249), next to the script
+V=$HOME/vault
+ST=$HOME/.local/state/brain
+PROMPT=/usr/local/share/brain/sort-prompt.md
+ANSWERS=${BRAIN_ANSWERS:-/var/lib/brain-answers}  # answers to brain's questions asked in the tracker (issue 294)
+QUIET=${BRAIN_QUIET_S:-600}
+# Model from the settings page (issue 085); "default" = no --model; unreadable = sonnet.
+MODEL=$(hs-setting HS_BRAIN_MODEL 2>/dev/null) || MODEL=sonnet
+[ "$MODEL" != default ] || MODEL=
+mkdir -p "$ST"
+exec 9>"$ST/lock"
+flock -n 9 || exit 0
+log() { echo "$(date '+%F %T') $*" >> "$ST/sort.log"; }
+now=$(date +%s)
+
+# "mtime size path" for every Inbox item (hidden files, .keep, Syncthing temp files excluded).
+snap() { (cd "$V/Inbox" && find . -type f ! -name '.*' ! -name '*~syncthing~*' -printf '%Ts %s %P\n' | sort -k3); }
+touch "$ST/seen"
+ready=$(snap | grep -vxFf "$ST/seen" | while read -r mt _ p; do
+	if [ $((now - mt)) -ge "$QUIET" ]; then echo "$p"
+	else case $p in *.md) grep -qw '#ora' "$V/Inbox/$p" && echo "$p" ;; esac; fi
+done) || true
+# Riordino (issue 072): names Android can't store never reach the phone. A run also starts
+# for such names (outside .git/.obsidian and Projects/Sumisura, issue 198; quiet for QUIET) not
+# tried yet; tidy-tried keeps the ones already handed to a run, so a name brain can't fix doesn't loop.
+bad() { (cd "$V" && find . \( -name .git -o -name .obsidian -o -path ./Projects/Sumisura \) -prune -o -mindepth 1 ! -name '.*' ! -name '*~syncthing~*' \
+	-printf '%Ts\t%P\t%f\n' | awk -F'\t' -v now="$now" -v q="$QUIET" '$3 ~ /[]:*?"<>|\\#^[]/ && now - $1 >= q {print $2}' | sort); }
+touch "$ST/tidy-tried"
+tidy=$(bad | grep -vxFf "$ST/tidy-tried") || true
+# Answers not handled yet (file name + mtime in answers-seen): the owner answered a question in the tracker.
+touch "$ST/answers-seen"
+answers=$(find "$ANSWERS" -maxdepth 1 -name '*.json' -printf '%f %Ts\n' 2>/dev/null | sort | grep -vxFf "$ST/answers-seen") || true
+[ -n "$ready$tidy$answers" ] || exit 0
+
+if [ -s "$ST/failed-at" ] && [ $((now - $(cat "$ST/failed-at"))) -lt 3600 ]; then exit 0; fi
+
+# Quota gate: last utilization seen by a run, valid until its window resets.
+max=$(awk -F: '/^quota_settimanale_max:/{gsub(/[ %]/,"",$2); print $2; exit}' "$V/Impostazioni/Second brain.md" 2>/dev/null) || true
+case $max in ''|*[!0-9]*) max=30 ;; esac
+if [ -s "$ST/usage" ]; then
+	read -r util reset < "$ST/usage"
+	if [ "$now" -lt "$reset" ] && [ "$util" -ge "$max" ]; then
+		[ -s "$ST/quota-skipped" ] || { echo "$now" > "$ST/quota-skipped"; log "quota: ${util}% >= ${max}%, skipping until $(date -d "@$reset" '+%F %T')"; }
+		exit 0
+	fi
+fi
+rm -f "$ST/quota-skipped"
+
+n=0; [ -z "$ready" ] || n=$(printf '%s\n' "$ready" | wc -l)
+a=0; [ -z "$answers" ] || a=$(printf '%s\n' "$answers" | wc -l)
+t=0; [ -z "$tidy" ] || t=$(printf '%s\n' "$tidy" | wc -l)
+log "run: $n item(s), $a answer(s), $t name(s) to tidy: $(printf '%s\n' "$ready" | tr '\n' '|')"
+msg="Data e ora: $(date '+%F %H:%M')."
+[ -z "$ready" ] || msg="$msg
+Smista questi elementi di Inbox/ secondo le regole di smistamento:
+$(printf '%s\n' "$ready" | sed 's|^|- Inbox/|')"
+[ -z "$tidy" ] || msg="$msg
+Riordino: questi nomi contengono caratteri vietati, rinominali secondo «Nomi di file e cartelle» (correggi anche i link):
+$(printf '%s\n' "$tidy" | sed 's|^|- |')"
+[ -z "$answers" ] || msg="$msg
+Risposte di Gio a tue domande nel tracker (leggi ogni file con Read, regole in «Domande nel tracker»):
+$(printf '%s\n' "$answers" | sed "s|^\([^ ]*\) .*|- $ANSWERS/\1|")"
+cd "$V"
+log "model ${MODEL:-default}"
+run=$(date '+%F_%H%M')_sort
+rc=0
+timeout 1800 "$AI_RUN" -p "$msg" ${MODEL:+--model "$MODEL"} --output-format stream-json --verbose \
+	--no-session-persistence --append-system-prompt "$(cat "$PROMPT")" \
+	--strict-mcp-config --disable-slash-commands --permission-mode dontAsk --disallowedTools "WebFetch WebSearch" \
+	--allowedTools "Read Write Edit Glob Grep Bash(mkdir *) Bash(mv *) Bash(cp *) Bash(ls *) Bash(date *) Bash(brain-cal *) Bash(brain-propose *) Read(/$ANSWERS/*.json)" \
+	> "$ST/last-run.jsonl" 2> "$ST/last-run.err" || rc=$?
+hs-runlog "$ST/runs" "$run" "$ST/last-run.jsonl" "$ST/last-run.err" || log "hs-runlog failed"
+
+jq -r 'select(.type=="rate_limit_event") | .rate_limit_info.unifiedWindows.seven_day // empty
+	| "\((.utilization * 100) | round) \(.resetsAt)"' "$ST/last-run.jsonl" 2>/dev/null | tail -1 > "$ST/usage.new" || true
+[ -s "$ST/usage.new" ] && mv "$ST/usage.new" "$ST/usage" || rm -f "$ST/usage.new"
+res=$(jq -c 'select(.type=="result") | {subtype, is_error, num_turns, total_cost_usd, denied: (.permission_denials // [] | length)}' "$ST/last-run.jsonl" 2>/dev/null | tail -1) || true
+den=$(jq -r 'select(.type=="result") | [.permission_denials[]? | .tool_name | tostring | gsub("[^A-Za-z0-9_-]"; "")] | join(",")' "$ST/last-run.jsonl" 2>/dev/null | tail -1) || true
+[ -z "$den" ] || log "denied tools ($run): $den"
+if [ "$rc" -ne 0 ] || [ -z "$res" ] || printf '%s' "$res" | grep -q '"is_error":true'; then
+	echo "$now" > "$ST/failed-at"
+	log "failed (rc=$rc): ${res:-no result} $(tail -c 300 "$ST/last-run.err" | tr '\n' ' ')"
+	exit 1
+fi
+rm -f "$ST/failed-at"
+{ cat "$ST/answers-seen"; printf '%s\n' "$answers"; } | grep -v '^$' | sort -u > "$ST/answers-seen.new" || true
+mv "$ST/answers-seen.new" "$ST/answers-seen"
+{ cat "$ST/tidy-tried"; printf '%s\n' "$tidy"; } | grep -v '^$' | sort -u > "$ST/tidy-tried.new" || true
+mv "$ST/tidy-tried.new" "$ST/tidy-tried"
+# New seen: this run's items as they are now (brain's own edits, e.g. a question, don't
+# retrigger; an owner answer changes the item and does) plus old lines still unchanged.
+# Items not ready this run (too fresh) stay out, so they are sorted once quiet.
+printf '%s\n' "$ready" > "$ST/ready"
+snap > "$ST/snap"
+awk -v R="$ST/ready" -v S="$ST/seen" 'FILENAME==R{r[$0]=1; next} FILENAME==S{s[$0]=1; next}
+	{p=$0; sub(/^[^ ]* [^ ]* /, "", p); if ((p in r) || ($0 in s)) print}' "$ST/ready" "$ST/seen" "$ST/snap" > "$ST/seen.new"
+mv "$ST/seen.new" "$ST/seen"; rm -f "$ST/ready" "$ST/snap"
+log "done: $res usage7d=$(cut -d' ' -f1 "$ST/usage" 2>/dev/null)%"

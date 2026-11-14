@@ -1,0 +1,14 @@
+#!/bin/sh
+# Renew the tailnet HTTPS cert (Let's Encrypt via `tailscale cert`) for Caddy's
+# :8443 site and reload Caddy if it changed. Root cron: /etc/cron.d/home-server.
+set -eu
+. /etc/home-server.env
+HOST=$HS_TS_HOST
+DIR=/var/lib/caddy/tls
+mkdir -p "$DIR"; chmod 700 "$DIR"; chown caddy:caddy "$DIR"
+before=$(sha256sum "$DIR/$HOST.crt" 2>/dev/null || true)
+tailscale cert --cert-file "$DIR/$HOST.crt" --key-file "$DIR/$HOST.key" "$HOST" >/dev/null 2>&1
+chmod 600 "$DIR/$HOST.key"
+chown -R caddy:caddy "$DIR"  # Caddy runs as caddy
+[ "$before" = "$(sha256sum "$DIR/$HOST.crt")" ] ||
+	/usr/local/sbin/caddy-reload

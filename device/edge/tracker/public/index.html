@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="style.css">
 <script src="icons.js" defer></script>
 <script src="app.js" defer></script>
+<script src="nav.js" defer></script>
 </head>
 <body>
 <div id="login" class="login" hidden>
@@ -48,15 +49,27 @@
       <button type="button" id="f-stale" class="btn ghost fstale" aria-pressed="false" title="Solo le issue ferme in Backlog da troppo tempo" hidden></button>
       <button type="button" id="f-children" class="btn ghost fchildren" aria-pressed="false" title="Mostra solo issue autonome ed epic (le sotto-issue restano nel drawer del padre)" hidden></button>
     </div>
-    <div class="actions">
-      <a id="recent-link" class="auto-pill" href="recent.html" title="Cosa è successo negli ultimi 7 giorni"><span class="lbl">Novità</span><span aria-hidden="true">☰</span></a>
-      <a id="domande-link" class="auto-pill" href="domande.html" title="Le domande aperte verso di te, una alla volta"><span class="lbl">Domande</span><span aria-hidden="true">?</span></a>
-      <a id="projects-link" class="auto-pill" href="projects.html" title="Issue GitHub dei Progetti"><span class="lbl">Progetti</span><span aria-hidden="true">⧉</span></a>
+    <nav class="actions" aria-label="Sezioni">
+      <a id="projects-link" class="auto-pill" href="projects.html" title="Issue GitHub dei Progetti"><span class="ico"></span><span class="tx">Progetti</span></a>
       <a id="auto-pill" class="auto-pill" href="auto.html" title="Sviluppo automatico: stato e avvio manuale"></a>
-      <button id="new" class="btn primary" title="Nuova issue (C)">+ Nuova</button>
-      <button id="logout" class="btn ghost" title="Esci">Esci</button>
+      <button type="button" id="help-btn" class="auto-pill" aria-expanded="false" aria-controls="help-panel"><span class="tx">Aiuto</span></button>
+    </nav>
+    <div class="menu-wrap">
+      <button type="button" id="menu-btn" class="btn" aria-expanded="false" aria-controls="menu-panel"><span class="tx">Menu</span></button>
+      <div id="menu-panel" class="menu-panel" hidden>
+        <a id="recent-link" href="recent.html" title="Cosa è successo negli ultimi 7 giorni"><span class="ico"></span><span class="tx">Novità</span></a>
+        <a id="domande-link" href="domande.html" title="Le domande aperte verso di te, una alla volta"><span class="ico"></span><span class="tx">Domande</span></a>
+        <button type="button" id="logout" class="menu-item" title="Esci">Esci</button>
+      </div>
     </div>
+    <button id="new" class="btn primary" title="Nuova issue (C)"><span class="tx">Nuova</span></button>
   </header>
+  <div id="help-panel" class="help-panel" hidden>
+    <h2>Come si legge la board</h2>
+    <p><b>Ti aspetta</b>: domande e proposte che solo tu puoi decidere. <b>Backlog</b>: idee da valutare. <b>Da fare</b>: pronte per la manutenzione automatica. <b>In corso</b>: ci si sta lavorando. <b>Bloccate</b>: aspettano te o un'altra issue. <b>Fatte</b>: chiuse.</p>
+    <p>Scorciatoie: <kbd>/</kbd> cerca, <kbd>C</kbd> nuova issue, <kbd>Esc</kbd> chiude.</p>
+  </div>
+  <section id="wait" class="wait" aria-label="Ti aspetta" hidden></section>
   <nav id="tabs" class="tabs" aria-label="Colonne"></nav>
   <main id="board" class="board"></main>
 </div>

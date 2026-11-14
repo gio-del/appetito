@@ -1,0 +1,628 @@
+#!/usr/bin/env node
+// claude-usage ($HS_USER; no Claude; issue 111): what the headless Claude jobs cost, from the runs
+// already kept by hs-runlog. Reads only the numeric fields of the stream-json (usage, cost, turns,
+// duration, model, rate_limit_event), tool names, the first word of Bash commands, Read paths and the
+// size of tool outputs: never message, thinking or tool-output text. Outcome from ops-auto.log,
+// issue labels from the Labels: line of issues/open|done.
+// Interactive sessions (job ops-interattivo): the transcripts in ~/.claude/projects/*/*.jsonl, only
+// message.usage (deduplicated by message.id, last copy wins: streaming repeats it), model, timestamps
+// and tool names; headless transcripts (entrypoint sdk-cli) are skipped. They carry no cost: it is the
+// list price of PRICES (cache writes split 5 min / 1 h as the transcript reports them).
+// Brain (jobs brain-sort, brain-interattivo; issue 130): its runs and transcripts carry vault text, so
+// gio never reads them: brain-usage, run as brain (sudo -n -H -u brain), prints only their numbers.
+// CLI: claude-usage [--since YYYY-MM-DD] [--job ops-auto|ops-interattivo|brain-sort|brain-interattivo] [--json] [--runs] [--by-issue] | --windows | --card
+// --by-issue: only the per-issue table (cost, runs, attempts, outcome), JSON with --json (issue 365).
+// --windows: one line per quota window (5 h / 7 days, identified by resetsAt) seen in the runs, merged
+// into WINDOWS_FILE (history outlives the 30 days of runs) and printed as JSON lines.
+// --card (hourly cron, issue 131): --windows, then CARD_FILE with numbers only for the last 7 days (per
+// job, top issues by cost, last 7-day windows) for the "Consumo" section of the tracker's /auto.html.
+// No paths, no text: edge-status is served to the LAN by Caddy (only the files it lists, but still).
+// Env (tests): CLAUDE_USAGE_RUNS (ops-auto runs dir), CLAUDE_USAGE_LOG (ops-auto.log),
+// CLAUDE_USAGE_SUGGEST_LOG (ops-suggest.log), CLAUDE_USAGE_WINDOWS (windows.jsonl),
+// CLAUDE_USAGE_SESSIONS (transcripts dir), CLAUDE_USAGE_BRAIN (brain-usage command line),
+// CLAUDE_USAGE_CARD (usage.json), CLAUDE_USAGE_HS_DOCS (hs-docs INDEX.md), HS_REPO.
+// Quality and determinism (issue 132, in --json and text): from git log (issue numbers, file names, rename
+// status) and the issue headers; failed deploys per run from the tool_result is_error flag; sizes of the
+// jobs' context files.
+// Not measured yet: ops-suggest has no per-run log (issue 107).
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const zlib = require('zlib');
+
+const HOME = process.env.HOME || require('os').homedir();
+const RUNS = process.env.CLAUDE_USAGE_RUNS || path.join(HOME, '.local/state/ops-auto/runs');
+const LOG = process.env.CLAUDE_USAGE_LOG || path.join(HOME, '.local/state/ops-auto/ops-auto.log');
+const REPO = process.env.HS_REPO || path.join(HOME, 'home-server');
+const SUGGEST_LOG = process.env.CLAUDE_USAGE_SUGGEST_LOG || path.join(HOME, '.local/state/ops-suggest/ops-suggest.log');
+const WINDOWS_FILE = process.env.CLAUDE_USAGE_WINDOWS || path.join(HOME, '.local/state/claude-usage/windows.jsonl');
+const CARD_FILE = process.env.CLAUDE_USAGE_CARD || '/var/lib/edge-status/usage.json';
+const HS_DOCS_INDEX = process.env.CLAUDE_USAGE_HS_DOCS || '/usr/local/share/hs-docs/INDEX.md';
+const SESSIONS = process.env.CLAUDE_USAGE_SESSIONS || path.join(HOME, '.claude/projects');
+const BRAIN_CMD = (process.env.CLAUDE_USAGE_BRAIN || 'sudo -n -H -u brain /usr/local/bin/brain-usage').split(' ').filter(Boolean);
+const JOBS = ['ops-auto', 'ops-interattivo', 'brain-sort', 'brain-interattivo'];
+// List price, USD per million tokens (fitted on the runs' modelUsage.costUSD, costBasis "list").
+const PRICES = { 'claude-opus-5-5': { input: 4, cacheWrite5m: 5, cacheWrite1h: 8, cacheRead: 0.2, output: 20 } };
+const WINDOWS = ['five_hour', 'seven_day'];
+const WINDOW_SECS = { five_hour: 5 * 3600, seven_day: 7 * 86400 };
+
+function args(argv) {
+  const o = { since: null, job: null, json: false, runs: false, windows: false, card: false, byIssue: false };
+  const usage = `usage: claude-usage [--since YYYY-MM-DD] [--job ${JOBS.join("|")}] [--json] [--runs] [--by-issue] | --windows | --card\n`;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--since') o.since = argv[++i];
+    else if (a === '--job') o.job = argv[++i];
+    else if (a === '--json') o.json = true;
+    else if (a === '--runs') o.runs = true;
+    else if (a === '--by-issue') o.byIssue = true;
+    else if (a === '--windows') o.windows = true;
+    else if (a === '--card') o.card = true;
+    else { process.stderr.write(usage); process.exit(2); }
+  }
+  if (o.since && !/^\d{4}-\d{2}-\d{2}$/.test(o.since)) { process.stderr.write('claude-usage: --since YYYY-MM-DD\n'); process.exit(2); }
+  if (o.job && !JOBS.includes(o.job)) { process.stderr.write(`claude-usage: job sconosciuto o non ancora misurato: ${o.job}\n`); process.exit(2); }
+  return o;
+}
+
+function readStream(file) {
+  let buf = fs.readFileSync(file);
+  if (file.endsWith('.gz')) buf = zlib.gunzipSync(buf);
+  const out = [];
+  for (const line of buf.toString('utf8').split('\n')) {
+    if (!line) continue;
+    try { out.push(JSON.parse(line)); } catch { /* truncated last line of a killed run */ }
+  }
+  return out;
+}
+
+// First word(s) of a Bash command → category.
+function bashCategory(cmd) {
+  const c = String(cmd || '').trim().replace(/^(sudo\s+(-\S+\s+)*)/, '');
+  if (/^(\S*\/)?device\/edge\/deploy\b/.test(c)) return 'deploy';
+  if (/(^|\/)tests\/|\btest\b|\.test\./.test(c.split(/\s/)[0] || '')) return 'test';
+  if (/^git\s+(add|commit|mv|rm|stash|tag|revert)\b/.test(c)) return 'git';
+  if (/^sed\s+(-\S*\s+)*-i/.test(c) || /^(cp|mv|mkdir|tee|touch|rm|chmod|chown|ln|install|printf|cat\s*>|echo)\b/.test(c)) return 'modifica';
+  return 'lettura';
+}
+
+// Name of the program of a blocked Bash command: never arguments, paths or log text.
+function firstProgram(cmd) {
+  const c = String(cmd || "").trim().replace(/^cd\s+\S+\s*(&&|;)\s*/, "").replace(/^(sudo\s+(-\S+\s+)*)/, "");
+  const w = c.split(/\s/)[0];
+  return /^[A-Za-z0-9_.-]{1,40}$/.test(w) ? w : "altro";
+}
+
+const textLen = c => typeof c === 'string' ? Buffer.byteLength(c)
+  : Array.isArray(c) ? c.reduce((n, b) => n + (b && typeof b.text === 'string' ? Buffer.byteLength(b.text) : 0), 0) : 0;
+
+function analyse(events) {
+  const r = {
+    model: null, cost: 0, turns: 0, durationMs: 0, isError: false, subtype: null, limited: false,
+    tokens: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, thinking: 0 },
+    prefixTokens: 0, tools: {}, bash: {}, toolOutputBytes: {}, readBytes: {}, denied: 0, deniedTools: {}, deniedBash: {}, deploys: 0, deploysFailed: 0,
+    quota: {},
+  };
+  const toolById = {};
+  const msgUsage = new Map(); // message.id → usage (last copy)
+  const win = {};
+  let results = 0;
+  let sum = null; // per-message sum, fallback when the run has no result line
+  for (const e of events) {
+    if (e.type === 'system' && e.subtype === 'init' && e.model) r.model = e.model;
+    if (e.type === 'assistant' && e.message) {
+      const m = e.message, u = m.usage;
+      if (u && m.id) {
+        if (!r.prefixTokens) r.prefixTokens = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+        msgUsage.set(m.id, u);
+        if (!r.model && m.model && m.model !== '<synthetic>') r.model = m.model;
+      }
+      for (const b of Array.isArray(m.content) ? m.content : []) {
+        if (!b || b.type !== 'tool_use') continue;
+        const name = String(b.name || '?');
+        r.tools[name] = (r.tools[name] || 0) + 1;
+        toolById[b.id] = { name, file: name === 'Read' && b.input ? String(b.input.file_path || '') : '' };
+        if (name === 'Bash') {
+          const k = bashCategory(b.input && b.input.command); r.bash[k] = (r.bash[k] || 0) + 1;
+          if (k === 'deploy') { toolById[b.id].deploy = true; r.deploys++; }
+        }
+      }
+    }
+    if (e.type === 'user' && e.message && Array.isArray(e.message.content)) {
+      for (const b of e.message.content) {
+        if (!b || b.type !== 'tool_result') continue;
+        const t = toolById[b.tool_use_id] || { name: '?', file: '' };
+        const n = textLen(b.content);
+        r.toolOutputBytes[t.name] = (r.toolOutputBytes[t.name] || 0) + n;
+        if (t.file) r.readBytes[t.file] = (r.readBytes[t.file] || 0) + n;
+        if (t.deploy && b.is_error === true) r.deploysFailed++; // deploy stopped or rc≠0: the flag only, never its text
+      }
+    }
+    if (e.type === 'rate_limit_event' && e.rate_limit_info) {
+      if (e.rate_limit_info.status === 'rejected') r.limited = true;
+      const uw = e.rate_limit_info.unifiedWindows || {};
+      for (const w of WINDOWS) {
+        const x = uw[w];
+        if (!x || typeof x.utilization !== 'number') continue;
+        // A window is identified by its resetsAt; a new resetsAt or a drop = a new window.
+        const segs = win[w] = win[w] || [];
+        const s = segs[segs.length - 1];
+        if (!s || s.resetsAt !== x.resetsAt || x.utilization < s.last) segs.push({ resetsAt: x.resetsAt, first: x.utilization, last: x.utilization });
+        else s.last = x.utilization;
+      }
+    }
+    if (e.type === 'result') {
+      // A run can have several result lines (a background task resumed it): total_cost_usd is
+      // cumulative, usage/turns/duration are per result.
+      r.subtype = e.subtype || null; r.isError = !!e.is_error;
+      r.cost = Number(e.total_cost_usd) || 0; r.turns += e.num_turns || 0; r.durationMs += e.duration_ms || 0;
+      r.denied += Array.isArray(e.permission_denials) ? e.permission_denials.length : 0;
+      if (Array.isArray(e.permission_denials)) for (const d of e.permission_denials) { const n = d && typeof d.tool_name === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(d.tool_name) ? d.tool_name : "altro"; r.deniedTools[n] = (r.deniedTools[n] || 0) + 1; if (n === "Bash") { const p = firstProgram(d.tool_input && d.tool_input.command); r.deniedBash[p] = (r.deniedBash[p] || 0) + 1; } }
+      const u = e.usage || {}, t = r.tokens;
+      if (!results++) for (const k of Object.keys(t)) t[k] = 0;
+      t.input += u.input_tokens || 0; t.cacheWrite += u.cache_creation_input_tokens || 0;
+      t.cacheRead += u.cache_read_input_tokens || 0; t.output += u.output_tokens || 0;
+      t.thinking += (u.output_tokens_details && u.output_tokens_details.thinking_tokens) || 0;
+      if (!r.model && e.modelUsage) r.model = Object.keys(e.modelUsage)[0] || null;
+    }
+  }
+  for (const u of msgUsage.values()) {
+    sum = sum || { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, n: 0, cw1h: 0 };
+    sum.input += u.input_tokens || 0; sum.cacheWrite += u.cache_creation_input_tokens || 0;
+    sum.cacheRead += u.cache_read_input_tokens || 0; sum.output += u.output_tokens || 0; sum.n++;
+    sum.cw1h += (u.cache_creation && u.cache_creation.ephemeral_1h_input_tokens) || 0;
+  }
+  if (sum && !results) { // no result line (killed run, interactive session): tokens from the messages
+    r.tokens = { input: sum.input, cacheWrite: sum.cacheWrite, cacheRead: sum.cacheRead, output: sum.output, thinking: 0 };
+    r.turns = r.turns || sum.n;
+    const p = PRICES[r.model];
+    r.listCost = p ? round((sum.input * p.input + (sum.cacheWrite - sum.cw1h) * p.cacheWrite5m + sum.cw1h * p.cacheWrite1h
+      + sum.cacheRead * p.cacheRead + sum.output * p.output) / 1e6, 4) : null;
+  }
+  const inTok = r.tokens.input + r.tokens.cacheWrite + r.tokens.cacheRead;
+  // Fixed context: the first turn's prefix is re-sent on every turn.
+  r.prefixShare = inTok ? Math.min(1, (r.prefixTokens * r.turns) / inTok) : 0;
+  for (const w of WINDOWS) {
+    const segs = win[w] || [];
+    r.quota[w] = { delta: round(segs.reduce((n, s) => n + (s.last - s.first), 0), 4),
+      start: segs.length ? segs[0].first : null, end: segs.length ? segs[segs.length - 1].last : null,
+      resetsAt: segs.length ? segs[segs.length - 1].resetsAt : null };
+  }
+  r.segments = win;
+  return r;
+}
+
+const round = (x, d = 2) => Math.round(x * 10 ** d) / 10 ** d;
+
+// ops-auto.log: "YYYY-MM-DD HH:MM:SS #NNN: run N (file)" … "#NNN: <outcome> rc=…"
+function outcomes() {
+  const map = {};
+  let text = '';
+  try { text = fs.readFileSync(LOG, 'utf8'); } catch { return map; }
+  const open = {};
+  for (const line of text.split('\n')) {
+    let m = line.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):\d{2} #(\d+): run (\d+) /);
+    if (m) { open[m[4]] = { key: `${m[1]}_${m[2]}${m[3]}_${m[4]}`, attempt: Number(m[5]) }; map[open[m[4]].key] = { attempt: Number(m[5]), outcome: null }; continue; }
+    m = line.match(/^\S+ \S+ #(\d+): (chiusa|aspetta te|in corso) rc=/);
+    if (m && open[m[1]]) { map[open[m[1]].key].outcome = m[2] === 'aspetta te' ? 'consegnata' : m[2]; delete open[m[1]]; }
+  }
+  return map;
+}
+
+function labelsOf(id) {
+  for (const d of ['open', 'done']) {
+    let files = [];
+    try { files = fs.readdirSync(path.join(REPO, 'issues', d)).filter(f => f.startsWith(id + '-') && f.endsWith('.md')); } catch { continue; }
+    if (!files.length) continue;
+    const head = fs.readFileSync(path.join(REPO, 'issues', d, files[0]), 'utf8').split('\n## ')[0];
+    const m = head.match(/^Labels:\s*(.*)$/m);
+    const l = m ? m[1].split(',').map(s => s.trim()).filter(Boolean) : [];
+    return l.length ? l : ['(nessuna)'];
+  }
+  return ['(sconosciuta)'];
+}
+
+function opsAutoRuns(since) {
+  let files = [];
+  try { files = fs.readdirSync(RUNS).filter(f => /^\d{4}-\d{2}-\d{2}_\d{4}_\d+\.jsonl(\.gz)?$/.test(f)).sort(); } catch { return []; }
+  const oc = outcomes();
+  const near = (key) => {
+    if (oc[key]) return oc[key];
+    // the run name is taken a moment before the "run N" log line: allow ±1 minute
+    const [d, hm, id] = key.split('_');
+    const t = new Date(`${d}T${hm.slice(0, 2)}:${hm.slice(2)}:00`);
+    for (const dm of [1, -1]) {
+      const x = new Date(t.getTime() + dm * 60000);
+      const p = n => String(n).padStart(2, '0');
+      const k = `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}_${p(x.getHours())}${p(x.getMinutes())}_${id}`;
+      if (oc[k]) return oc[k];
+    }
+    return { attempt: null, outcome: null };
+  };
+  const out = [];
+  for (const f of files) {
+    const key = f.replace(/\.jsonl(\.gz)?$/, '');
+    if (since && key.slice(0, 10) < since) continue;
+    let ev;
+    try { ev = readStream(path.join(RUNS, f)); } catch { continue; }
+    const r = analyse(ev);
+    const id = key.split('_')[2];
+    const o = near(key);
+    let outcome = o.outcome;
+    if (r.limited) outcome = 'limite';
+    else if (r.isError || (!r.subtype && !outcome)) outcome = outcome || 'errore';
+    out.push(Object.assign({ job: 'ops-auto', run: key, start: `${key.slice(0, 10)} ${key.slice(11, 13)}:${key.slice(13, 15)}`,
+      issue: id, attempt: o.attempt, outcome: outcome || 'errore', labels: labelsOf(id) }, r));
+  }
+  return out;
+}
+
+// Interactive sessions: one run per transcript (all project dirs), only its messages since --since.
+function interactiveRuns(since) {
+  let files = [];
+  try {
+    for (const d of fs.readdirSync(SESSIONS)) {
+      let fl = [];
+      try { fl = fs.readdirSync(path.join(SESSIONS, d)).filter(f => f.endsWith('.jsonl')); } catch { continue; }
+      for (const f of fl) files.push(path.join(SESSIONS, d, f));
+    }
+  } catch { return []; }
+  const local = t => { const x = new Date(t), p = n => String(n).padStart(2, '0');
+    return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())} ${p(x.getHours())}:${p(x.getMinutes())}`; };
+  const out = [];
+  for (const file of files) {
+    let ev;
+    try { ev = readStream(file); } catch { continue; }
+    ev = ev.filter(e => (e.type === 'assistant' || e.type === 'user') && e.message && e.entrypoint !== 'sdk-cli'
+      && !(since && typeof e.timestamp === 'string' && local(e.timestamp).slice(0, 10) < since));
+    if (!ev.some(e => e.type === 'assistant' && e.message.usage)) continue;
+    const r = analyse(ev);
+    const ts = ev.map(e => Date.parse(e.timestamp)).filter(Number.isFinite);
+    const start = ts.length ? local(Math.min(...ts)) : '';
+    r.durationMs = ts.length ? Math.max(...ts) - Math.min(...ts) : 0; // wall clock, idle time included
+    r.cost = r.listCost || 0; r.costEstimated = true;
+    out.push(Object.assign({ job: 'ops-interattivo', run: start.replace(' ', '_').replace(':', '') + '_' + path.basename(file, '.jsonl').slice(0, 8),
+      start, issue: null, attempt: null, outcome: 'sessione', labels: [] }, r));
+  }
+  return out.sort((a, b) => a.start.localeCompare(b.start));
+}
+
+// brain-sort and brain-interattivo, numbers only, from brain-usage (run as brain).
+function brainRuns(since) {
+  const res = require('child_process').spawnSync(BRAIN_CMD[0], BRAIN_CMD.slice(1).concat(since ? ['--since', since] : []),
+    { encoding: 'utf8', maxBuffer: 64 << 20 });
+  let list;
+  try { list = JSON.parse(res.stdout); } catch { list = null; }
+  if (res.status !== 0 || !Array.isArray(list)) { process.stderr.write('claude-usage: brain-usage non disponibile, brain escluso\n'); return []; }
+  return list.filter(r => r && JOBS.includes(r.job) && r.job.startsWith('brain-'))
+    .map(r => Object.assign(r, { issue: null, attempt: null, labels: [], readBytes: {} }));
+}
+
+function addTo(acc, r) {
+  acc.runs++; acc.cost += r.cost; acc.turns += r.turns; acc.durationMs += r.durationMs;
+  for (const k of Object.keys(acc.tokens)) acc.tokens[k] += r.tokens[k] || 0;
+  acc.prefixTokens += r.prefixTokens; acc.prefixWeighted += r.prefixShare * (r.tokens.input + r.tokens.cacheWrite + r.tokens.cacheRead);
+  for (const w of WINDOWS) acc.quota[w] += r.quota[w].delta;
+  acc.denied += r.denied;
+  for (const [k, v] of Object.entries(r.deniedTools || {})) acc.deniedTools[k] = (acc.deniedTools[k] || 0) + v;
+  for (const [k, v] of Object.entries(r.deniedBash || {})) acc.deniedBash[k] = (acc.deniedBash[k] || 0) + v;
+  acc.deploys += r.deploys || 0; acc.deploysFailed += r.deploysFailed || 0;
+  for (const [k, v] of Object.entries(r.tools)) acc.tools[k] = (acc.tools[k] || 0) + v;
+  for (const [k, v] of Object.entries(r.bash)) acc.bash[k] = (acc.bash[k] || 0) + v;
+  for (const [k, v] of Object.entries(r.toolOutputBytes)) acc.toolOutputBytes[k] = (acc.toolOutputBytes[k] || 0) + v;
+  for (const [k, v] of Object.entries(r.readBytes)) acc.readBytes[k] = (acc.readBytes[k] || 0) + v;
+  acc.outcomes[r.outcome] = (acc.outcomes[r.outcome] || 0) + 1;
+  return acc;
+}
+const blank = () => ({ runs: 0, cost: 0, turns: 0, durationMs: 0, prefixTokens: 0, prefixWeighted: 0, denied: 0, deniedTools: {}, deniedBash: {}, deploys: 0, deploysFailed: 0,
+  tokens: { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, thinking: 0 }, quota: { five_hour: 0, seven_day: 0 },
+  tools: {}, bash: {}, toolOutputBytes: {}, readBytes: {}, outcomes: {} });
+
+function finish(acc, topFiles = 10) {
+  const inTok = acc.tokens.input + acc.tokens.cacheWrite + acc.tokens.cacheRead;
+  const top = Object.entries(acc.readBytes).sort((a, b) => b[1] - a[1]).slice(0, topFiles).map(([file, bytes]) => ({ file, bytes }));
+  return { runs: acc.runs, costUsd: round(acc.cost, 4), avgCostUsd: acc.runs ? round(acc.cost / acc.runs, 4) : 0,
+    turns: acc.turns, avgTurns: acc.runs ? round(acc.turns / acc.runs, 1) : 0, durationMin: round(acc.durationMs / 60000, 1),
+    tokens: acc.tokens, avgPrefixTokens: acc.runs ? Math.round(acc.prefixTokens / acc.runs) : 0,
+    prefixShare: inTok ? round(acc.prefixWeighted / inTok, 3) : 0,
+    quotaPct: { five_hour: round(acc.quota.five_hour * 100, 1), seven_day: round(acc.quota.seven_day * 100, 1) },
+    denied: acc.denied, deniedTools: acc.deniedTools, deniedBash: acc.deniedBash, deploys: acc.deploys, deploysFailed: acc.deploysFailed, outcomes: acc.outcomes, tools: acc.tools, bash: acc.bash, toolOutputBytes: acc.toolOutputBytes, topReadFiles: top };
+}
+
+function report(runs) {
+  const jobs = {}, labels = {}, issues = {};
+  const mech = { monitor: 1, lint: 1, update: 1 };
+  let mechCost = 0, all = 0;
+  runs = runs.slice().sort((a, b) => a.start.localeCompare(b.start));
+  for (const r of runs) {
+    addTo(jobs[r.job] = jobs[r.job] || blank(), r);
+    if (!r.issue) continue; // interactive sessions: no issue, no label
+    for (const l of r.labels) addTo(labels[l] = labels[l] || blank(), r);
+    const i = issues[r.issue] = issues[r.issue] || { issue: r.issue, runs: 0, costUsd: 0, turns: 0, outcome: null, labels: r.labels, attempts: 0 };
+    i.runs++; i.costUsd = round(i.costUsd + r.cost, 4); i.turns += r.turns; i.outcome = r.outcome; i.attempts = Math.max(i.attempts, r.attempt || 0);
+    all += r.cost;
+    if (r.labels.some(l => mech[l])) mechCost += r.cost;
+  }
+  const byIssue = Object.values(issues);
+  const att = { 1: 0, 2: 0, 3: 0, consegnata: 0 };
+  for (const i of byIssue) {
+    if (i.outcome === 'consegnata') att.consegnata++;
+    else if (i.outcome === 'chiusa') att[Math.min(3, Math.max(1, i.attempts || 1))]++;
+  }
+  return {
+    generated: new Date().toISOString(),
+    from: runs.length ? runs[0].start : null, to: runs.length ? runs[runs.length - 1].start : null,
+    jobs: Object.fromEntries(Object.entries(jobs).map(([k, v]) => [k, finish(v)])),
+    labels: Object.fromEntries(Object.entries(labels).map(([k, v]) => [k, (({ runs, costUsd, avgCostUsd, avgTurns, outcomes }) => ({ runs, costUsd, avgCostUsd, avgTurns, outcomes }))(finish(v))])),
+    mechanicalShare: all ? round(mechCost / all, 3) : 0,
+    closedAtAttempt: att,
+    topIssues: byIssue.sort((a, b) => b.costUsd - a.costUsd).slice(0, 10),
+    issues: byIssue,
+  };
+}
+
+// Quality and determinism (issue 132), from git and the issue headers: issue numbers, fingerprint
+// kinds, counts. Commits: "NNN…: …" subjects are attributed to issue NNN; a commit renaming
+// issues/open/NNN-* to issues/done/NNN-* closes it, the reverse reopens it.
+const CONTEXT_FILES = ['CLAUDE.md', 'issues/README.md', 'device/edge/debian/ops-auto-prompt.md',
+  'device/edge/debian/ops-suggest-prompt.md', 'device/edge/debian/brain/sort-prompt.md'];
+const notCode = f => f.startsWith('issues/') || f.startsWith('docs/') || f === 'README.md' || f === 'CLAUDE.md';
+
+function gitCommits() {
+  let out = '';
+  try {
+    out = require('child_process').execFileSync('git', ['-C', REPO, 'log', '--reverse', '-M', '--name-status', '--format=%x00%ct %s'],
+      { encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch { return null; }
+  const list = [];
+  for (const chunk of out.split('\0').slice(1)) {
+    const [head, ...rest] = chunk.split('\n');
+    const m = head.match(/^(\d+) (.*)$/);
+    if (!m) continue;
+    const c = { t: Number(m[1]), issue: (m[2].match(/^(\d{1,4})\b/) || [])[1] || null, revert: /^Revert\b/.test(m[2]),
+      files: [], closes: [], reopens: [] };
+    for (const l of rest) {
+      const p = l.split('\t');
+      if (p.length < 2) continue;
+      const to = p[p.length - 1];
+      c.files.push(to);
+      // an issue written straight into done/ (lint issues are often committed only when closed) closes too
+      if (p[0][0] === 'A') { const n = (to.match(/^issues\/done\/(\d+)-/) || [])[1]; if (n) c.closes.push(n); }
+      if (p[0][0] === 'R' && p.length === 3) {
+        const n = (to.match(/^issues\/(?:done|open)\/(\d+)-/) || [])[1];
+        if (n && p[1].startsWith('issues/open/') && to.startsWith('issues/done/')) c.closes.push(n);
+        if (n && p[1].startsWith('issues/done/') && to.startsWith('issues/open/')) c.reopens.push(n);
+      }
+    }
+    list.push(c);
+  }
+  return list;
+}
+
+function localDay(sec) { const x = new Date(sec * 1000), p = n => String(n).padStart(2, '0'); return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`; }
+
+function quality(since, commits = gitCommits()) {
+  if (!commits) return null;
+  const inRange = c => !since || localDay(c.t) >= since;
+  const code = {}; // issue → code files of its commits
+  for (const c of commits) if (c.issue) for (const f of c.files) if (!notCode(f)) (code[c.issue] = code[c.issue] || new Set()).add(f);
+  const reopened = new Set(), followed = [], closed = [];
+  for (const [k, c] of commits.entries()) {
+    if (!inRange(c)) continue;
+    c.reopens.forEach(n => reopened.add(n));
+    for (const n of c.closes) {
+      closed.push(n);
+      const files = code[n] || new Set();
+      if (!files.size) continue;
+      // followed up: within 48 h another issue's commit touches the same code
+      if (commits.slice(k + 1).some(d => d.t - c.t <= 48 * 3600 && d.issue && d.issue !== n && d.files.some(f => files.has(f)))) followed.push(n);
+    }
+  }
+  return { closed: closed.length, reopened: [...reopened].sort(), followedUp48h: [...new Set(followed)].sort(),
+    reverts: commits.filter(c => inRange(c) && c.revert).length };
+}
+
+// Per fingerprint kind (issues hs-monitor and issues-lint write): opened, closed, closed without code
+// changes (the closing commit touches only issues/).
+function determinism(since, commits = gitCommits()) {
+  const closer = {};
+  for (const c of commits || []) for (const n of c.closes) closer[n] = c;
+  // kind = fingerprint up to its first id-like part (lint-no-status-119 → lint-no-status, advisory-debian-cve-2026-1-caddy → advisory-debian-cve)
+  const kindOf = fp => { const p = fp.split('-'), i = p.findIndex((x, j) => j && /\d/.test(x)); return (i < 0 ? p : p.slice(0, i)).join('-'); };
+  const kinds = {};
+  for (const dir of ['open', 'done']) {
+    let names = [];
+    try { names = fs.readdirSync(path.join(REPO, 'issues', dir)); } catch { continue; }
+    for (const n of names) {
+      const m = /^(\d+)-.*\.md$/.exec(n);
+      if (!m) continue;
+      let head = '';
+      try { head = fs.readFileSync(path.join(REPO, 'issues', dir, n), 'utf8').split('\n## ')[0]; } catch { continue; }
+      const fp = (/^Fingerprint: ([a-z0-9.-]+)$/m.exec(head) || [])[1];
+      const opened = (/^Opened: (\d{4}-\d\d-\d\d)/m.exec(head) || [])[1];
+      if (!fp || (since && (!opened || opened < since))) continue;
+      const k = kinds[kindOf(fp)] = kinds[kindOf(fp)] || { opened: 0, open: 0, closed: 0, closedNoCode: 0 };
+      k.opened++;
+      if (dir === 'open') { k.open++; continue; }
+      k.closed++;
+      const c = closer[m[1]];
+      if (c && c.files.every(f => f.startsWith('issues/'))) k.closedNoCode++;
+    }
+  }
+  return Object.fromEntries(Object.entries(kinds).sort((a, b) => b[1].opened - a[1].opened || a[0].localeCompare(b[0])));
+}
+
+// Fixed context files of the jobs: bytes and ≈ tokens (bytes / 4).
+function contextFiles() {
+  return CONTEXT_FILES.map(f => { let b = null; try { b = fs.statSync(path.join(REPO, f)).size; } catch { /* missing */ }
+    return { file: f, bytes: b, tokens: b === null ? null : Math.round(b / 4) }; });
+}
+
+// Space of the installed docs (issue 141): the total hs-docs-fetch writes in INDEX.md, null if missing.
+function hsDocsKb() {
+  try { const m = fs.readFileSync(HS_DOCS_INDEX, 'utf8').match(/Total: (\d+) KB/); return m ? Number(m[1]) : null; } catch { return null; }
+}
+
+// Quota windows. Per window (kind + resetsAt): first and final utilization seen, delta per job (sum of
+// the runs' segments in it), unattributed = what grew outside the runs (before the first run and between
+// one run's last event and the next one's first: interactive sessions, apps), unused at reset,
+// hours the jobs stood still for their quota threshold (ops-auto rounds every 30 min, ops-suggest hourly).
+function stoppedTimes(file, re) {
+  let t = '';
+  try { t = fs.readFileSync(file, 'utf8'); } catch { return []; }
+  const out = [];
+  for (const line of t.split('\n')) {
+    const m = line.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) (.*)$/);
+    if (m && re.test(m[3])) out.push(new Date(`${m[1]}T${m[2]}`).getTime() / 1000);
+  }
+  return out;
+}
+
+function windows(runs, nowSec = Date.now() / 1000) {
+  const map = {};
+  const stops = { 'ops-auto': [stoppedTimes(LOG, /^round end: fermo per la quota/), 0.5],
+    'ops-suggest': [stoppedTimes(SUGGEST_LOG, /^skip: quota settimanale/), 1] };
+  for (const r of runs) {
+    for (const kind of WINDOWS) {
+      for (const sg of (r.segments || {})[kind] || []) {
+        if (typeof sg.resetsAt !== 'number') continue;
+        const k = `${kind}:${sg.resetsAt}`;
+        const w = map[k] = map[k] || { window: kind, start: sg.resetsAt - WINDOW_SECS[kind], resetsAt: sg.resetsAt,
+          first: sg.first, final: sg.last, jobs: {}, unattributed: sg.first, runs: 0 };
+        if (w.runs) w.unattributed += Math.max(0, sg.first - w.final);
+        w.final = Math.max(w.final, sg.last);
+        w.jobs[r.job] = (w.jobs[r.job] || 0) + (sg.last - sg.first);
+        w.runs++;
+      }
+    }
+  }
+  return Object.values(map).sort((a, b) => a.start - b.start || a.window.localeCompare(b.window)).map(w => {
+    const stopped = {};
+    for (const [job, [ts, h]] of Object.entries(stops)) {
+      const n = ts.filter(t => t >= w.start && t < w.resetsAt).length;
+      if (n) stopped[job] = n * h;
+    }
+    return { window: w.window, start: new Date(w.start * 1000).toISOString(), resetsAt: new Date(w.resetsAt * 1000).toISOString(),
+      closed: w.resetsAt <= nowSec, runs: w.runs, firstPct: round(w.first * 100, 1), finalPct: round(w.final * 100, 1),
+      unusedPct: round((1 - w.final) * 100, 1),
+      jobsPct: Object.fromEntries(Object.entries(w.jobs).map(([j, v]) => [j, round(v * 100, 1)])),
+      unattributedPct: round(w.unattributed * 100, 1), stoppedForQuotaHours: stopped };
+  });
+}
+
+// Merge into the history file: recomputed windows replace their old line, older ones (runs pruned) stay.
+function writeWindows(list) {
+  const all = {};
+  try {
+    for (const line of fs.readFileSync(WINDOWS_FILE, 'utf8').split('\n')) {
+      if (!line) continue;
+      try { const w = JSON.parse(line); all[`${w.window}:${w.resetsAt}`] = w; } catch { /* skip */ }
+    }
+  } catch { /* first run */ }
+  for (const w of list) all[`${w.window}:${w.resetsAt}`] = w;
+  const lines = Object.values(all).sort((a, b) => a.start.localeCompare(b.start) || a.window.localeCompare(b.window)).map(w => JSON.stringify(w));
+  fs.mkdirSync(path.dirname(WINDOWS_FILE), { recursive: true });
+  const tmp = WINDOWS_FILE + '.tmp';
+  fs.writeFileSync(tmp, lines.join('\n') + (lines.length ? '\n' : ''));
+  fs.renameSync(tmp, WINDOWS_FILE);
+  return lines;
+}
+
+// usage.json (--card): only numbers, fixed job names, issue numbers and label-shaped words.
+function card(rep, winLines, days) {
+  const word = (x, re) => typeof x === 'string' && re.test(x) ? x : 'altro';
+  const label = x => word(x, /^\(?[A-Za-z0-9-]{1,30}\)?$/);
+  const jobs = {};
+  for (const [j, s] of Object.entries(rep.jobs)) {
+    if (!JOBS.includes(j)) continue;
+    jobs[j] = { runs: s.runs, costUsd: s.costUsd, listPrice: j.endsWith('-interattivo'), avgCostUsd: s.avgCostUsd, avgTurns: s.avgTurns,
+      durationMin: s.durationMin, avgPrefixTokens: s.avgPrefixTokens, prefixShare: s.prefixShare, quota7dPct: s.quotaPct.seven_day,
+      tokens: s.tokens, denied: s.denied };
+  }
+  const nums = o => Object.fromEntries(Object.entries(o || {}).filter(([k, v]) => /^[a-z-]{1,30}$/.test(k) && typeof v === 'number'));
+  const win = winLines.map(l => JSON.parse(l)).filter(w => w.window === 'seven_day').slice(-4).map(w => ({
+    start: w.start, resetsAt: w.resetsAt, closed: !!w.closed, runs: w.runs, finalPct: w.finalPct, unusedPct: w.unusedPct,
+    jobsPct: nums(w.jobsPct), unattributedPct: w.unattributedPct, stoppedForQuotaHours: nums(w.stoppedForQuotaHours) }));
+  return { v: 1, generated: rep.generated, days, from: rep.from, to: rep.to, jobs,
+    mechanicalShare: rep.mechanicalShare, closedAtAttempt: rep.closedAtAttempt,
+    topIssues: rep.topIssues.filter(i => /^\d{1,4}$/.test(i.issue)).map(i => ({ issue: i.issue, costUsd: i.costUsd, runs: i.runs,
+      turns: i.turns, attempts: i.attempts, outcome: word(i.outcome, /^[a-z ]{1,20}$/), labels: i.labels.map(label) })),
+    // every issue worked in the window (issue 365): the tracker shows the cost next to the closed ones
+    byIssue: Object.fromEntries(rep.issues.filter(i => /^\d{1,4}$/.test(i.issue)).map(i => [i.issue, { costUsd: i.costUsd, runs: i.runs, attempts: i.attempts }])),
+    windows: win };
+}
+
+function writeCard(obj) {
+  fs.mkdirSync(path.dirname(CARD_FILE), { recursive: true });
+  const tmp = CARD_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(obj) + '\n', { mode: 0o644 });
+  fs.renameSync(tmp, CARD_FILE);
+}
+
+function textByIssue(rep) {
+  const L = ['Per issue (costo, giri, tentativi):'];
+  for (const i of rep.issues.slice().sort((a, b) => b.costUsd - a.costUsd)) L.push(`   #${i.issue}: $${i.costUsd.toFixed(2)}, ${i.runs} run, ${i.attempts} tentativi, ${i.outcome}`);
+  return L.join('\n') + '\n';
+}
+
+function text(rep) {
+  const L = [];
+  const $ = x => '$' + x.toFixed(2);
+  L.push(`Periodo: ${rep.from || '-'} → ${rep.to || '-'}`);
+  for (const [j, s] of Object.entries(rep.jobs)) {
+    L.push('', `== ${j}: ${s.runs} run, ${$(s.costUsd)}${j.endsWith('-interattivo') ? ' di listino' : ''} (media ${$(s.avgCostUsd)}), turni medi ${s.avgTurns}, ${s.durationMin} min`);
+    L.push(`   token: input ${s.tokens.input}, cache write ${s.tokens.cacheWrite}, cache read ${s.tokens.cacheRead}, output ${s.tokens.output} (thinking ${s.tokens.thinking})`);
+    L.push(`   contesto fisso: prefisso medio ${s.avgPrefixTokens} token, ${Math.round(s.prefixShare * 100)}% dei token in ingresso`);
+    L.push(`   quota: 5 ore +${s.quotaPct.five_hour}%, 7 giorni +${s.quotaPct.seven_day}% (somma dei run)`);
+    L.push(`   esiti: ${Object.entries(s.outcomes).map(([k, v]) => `${k} ${v}`).join(', ')}; azioni bloccate ${s.denied}`);
+    if (s.deploys) L.push(`   deploy: ${s.deploys}, falliti ${s.deploysFailed}`);
+    L.push(`   tool: ${Object.entries(s.tools).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+    L.push(`   Bash: ${Object.entries(s.bash).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+    L.push(`   output dei tool (KB): ${Object.entries(s.toolOutputBytes).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${Math.round(v / 1024)}`).join(', ')}`);
+    if (s.topReadFiles.length) L.push('   file letti più grossi (KB): ' + s.topReadFiles.slice(0, 5).map(f => `${f.file} ${Math.round(f.bytes / 1024)}`).join(', '));
+  }
+  L.push('', 'Per label:');
+  for (const [l, s] of Object.entries(rep.labels).sort((a, b) => b[1].costUsd - a[1].costUsd)) L.push(`   ${l}: ${s.runs} run, ${$(s.costUsd)} (media ${$(s.avgCostUsd)}), turni medi ${s.avgTurns}`);
+  L.push(`Quota "meccanica" (monitor/lint/update): ${Math.round(rep.mechanicalShare * 100)}% del costo di ops-auto`);
+  const a = rep.closedAtAttempt;
+  L.push(`Chiuse al 1° tentativo ${a[1]}, al 2° ${a[2]}, al 3° ${a[3]}; consegnate ${a.consegnata}`);
+  L.push('', 'Issue più costose:');
+  for (const i of rep.topIssues) L.push(`   #${i.issue}: ${$(i.costUsd)}, ${i.runs} run, ${i.turns} turni, ${i.outcome} [${i.labels.join(', ')}]`);
+  const q = rep.quality;
+  if (q) L.push('', `Qualità: ${q.closed} issue chiuse, riaperte ${q.reopened.length}${q.reopened.length ? ' (#' + q.reopened.join(', #') + ')' : ''}, seguite entro 48 h da un'altra issue sugli stessi file ${q.followedUp48h.length}${q.followedUp48h.length ? ' (#' + q.followedUp48h.join(', #') + ')' : ''}, commit revertiti ${q.reverts}`);
+  if (rep.determinism && Object.keys(rep.determinism).length) {
+    L.push('', 'Determinismo (issue di monitor/lint per fingerprint: aperte, ancora aperte, chiuse, chiuse senza toccare il codice):');
+    for (const [k, d] of Object.entries(rep.determinism)) L.push(`   ${k}: ${d.opened}, aperte ${d.open}, chiuse ${d.closed}, senza codice ${d.closedNoCode}`);
+  }
+  if (rep.contextFiles) L.push('', 'File di contesto (≈ token = byte / 4): ' + rep.contextFiles.map(c => `${c.file} ${c.tokens === null ? '-' : c.tokens}`).join(', '));
+  if (rep.hsDocsKb !== undefined) L.push(`Docs installate (/usr/local/share/hs-docs): ${rep.hsDocsKb === null ? '-' : rep.hsDocsKb + ' KB'}`);
+  return L.join('\n') + '\n';
+}
+
+if (require.main === module) {
+  const o = args(process.argv.slice(2));
+  if (o.windows) { process.stdout.write(writeWindows(windows(opsAutoRuns(null).concat(brainRuns(null)))).map(l => l + '\n').join('')); process.exit(0); }
+  if (o.card) {
+    const lines = writeWindows(windows(opsAutoRuns(null).concat(brainRuns(null))));
+    const d = new Date(Date.now() - 7 * 86400000), p = n => String(n).padStart(2, '0');
+    const since = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    writeCard(card(report(opsAutoRuns(since).concat(interactiveRuns(since), brainRuns(since))), lines, 7));
+    process.exit(0);
+  }
+  let runs = [];
+  if (!o.job || o.job === 'ops-auto') runs = runs.concat(opsAutoRuns(o.since));
+  if (!o.job || o.job === 'ops-interattivo') runs = runs.concat(interactiveRuns(o.since));
+  if (!o.job || o.job.startsWith('brain-')) runs = runs.concat(brainRuns(o.since).filter(r => !o.job || r.job === o.job));
+  const rep = report(runs);
+  if (o.byIssue) {
+    const t = rep.issues.slice().sort((a, b) => b.costUsd - a.costUsd).map(i => ({ issue: i.issue, costUsd: i.costUsd, runs: i.runs, attempts: i.attempts, outcome: i.outcome }));
+    process.stdout.write(o.json ? JSON.stringify(t, null, 1) + '\n' : textByIssue(rep));
+    process.exit(0);
+  }
+  const commits = gitCommits();
+  Object.assign(rep, { quality: quality(o.since, commits), determinism: determinism(o.since, commits), contextFiles: contextFiles(), hsDocsKb: hsDocsKb() });
+  if (o.runs) rep.runs = runs.map(r => { const x = Object.assign({}, r); delete x.readBytes; delete x.segments; delete x.listCost; return x; });
+  process.stdout.write(o.json ? JSON.stringify(rep, null, 1) + '\n' : text(rep));
+}
+
+module.exports = { firstProgram, analyse, readStream, bashCategory, report, windows, card, quality, determinism, contextFiles, hsDocsKb };

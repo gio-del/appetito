@@ -8,6 +8,11 @@ mkdir -p /run/tailscale /var/lib/tailscale
 [ -f /var/log/tailscaled.log ] && mv -f /var/log/tailscaled.log /var/log/tailscaled.log.1
 # Append (>>): log-trim (issue 129) rewrites the file in place, a plain > would leave it sparse.
 rm -f /run/tailscale/tailscaled.sock
+# Not on Android (issue 569): a normal machine has no netd to fight, so ordinary kernel-TUN Tailscale.
+hs-on-android || exec /usr/sbin/tailscaled \
+	--state=/var/lib/tailscale/tailscaled.state \
+	--socket=/run/tailscale/tailscaled.sock \
+	>>/var/log/tailscaled.log 2>&1
 exec /usr/sbin/tailscaled --tun=userspace-networking \
 	--state=/var/lib/tailscale/tailscaled.state \
 	--socket=/run/tailscale/tailscaled.sock \

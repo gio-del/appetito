@@ -29,7 +29,7 @@ for my $f (@ARGV) {
 			(@p == 3 || (@p == 4 && $p[3] =~ /^[\w.-]+\.json \w+$/)) or die "$f:$.: want \"#\@ [Category] title | when | what [| file.json field]\"\n";
 			$p[0] =~ s/^\[([^\]]+)\]\s*// or die "$f:$.: title needs a category: \"[" . join("|", @cats) . "] title\"\n";
 			$ok{$1} or die "$f:$.: unknown category \"$1\" (" . join(", ", @cats) . ")\n";
-			my $u = $ENV{HS_USER} // "gio"; s/\@HS_USER\@/$u/g for @p;
+			my $u = $ENV{HS_USER} // "user"; s/\@HS_USER\@/$u/g for @p;
 			my %i = (cat => $1, title => $p[0], when => $p[1], what => $p[2], live => $p[3] // "", name => "", every => 0, user => $user);
 			push @items, \%i; $cur = \%i; }
 		elsif (/^\s*[0-9*@]/) {
