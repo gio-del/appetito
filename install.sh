@@ -164,6 +164,13 @@ say "first deploy"
 # --skip-tests only here: the copy passed its checks before it was published, and its tests need the tracker and the
 # helpers this very deploy installs (the first deploy cannot satisfy them). Later deploys run them all.
 x runuser -u "$USER_NAME" -- sh -c "cd '$TARGET' && HS_DEPLOY_WORKER=1 device/edge/deploy --skip-tests"
+say "syncthing: sync port on 127.0.0.1 only"
+# A fresh Syncthing listens on every interface (:22000). Only a config made here is changed, never an existing one.
+ST=/home/$USER_NAME/.local/state/syncthing
+if [ ! -f "$ST/config.xml" ]; then
+	x runuser -u "$USER_NAME" -- env HOME="/home/$USER_NAME" syncthing generate --home="$ST"
+	x runuser -u "$USER_NAME" -- perl -pi -e 's{<listenAddress>default</listenAddress>}{<listenAddress>tcp://127.0.0.1:22000</listenAddress>}' "$ST/config.xml"
+fi
 say "base services"
 BASE="tracker caddy syncthing"
 [ -z "$TS" ] || BASE="$BASE tailscaled"

@@ -39,7 +39,11 @@ tests() {
 
 audit_edge() {
 	local rules listen
-	rules=$($SUDO tailscale debug netmap | jq -c '.PacketFilterRules // []')
+	# Without tailscale (install --no-tailscale) there is no tailnet filter: nothing is reachable from a tailnet,
+	# so the filter checks are skipped and every port counts as closed to it; the LAN checks below still run.
+	local ts=1
+	command -v tailscale >/dev/null 2>&1 || ts=
+	if [ -n "$ts" ]; then rules=$($SUDO tailscale debug netmap | jq -c '.PacketFilterRules // []'); else rules='[]'; fi
 	listen=$($SUDO ss -ltnpH)
 	# open SRC PORT: does the enforced filter let SRC reach our tailnet IP on tcp PORT?
 	# "*" means any source; with SRC "*" it asks "open to anyone at all".
@@ -52,7 +56,8 @@ audit_edge() {
 
 	echo "== Tailnet filter enforced on the Edge vs. policy tests"
 	local n=0 src verb port
-	while read -r src verb port; do
+	[ -n "$ts" ] || { warn "tailscale not installed: tailnet filter checks skipped"; n=1; }
+	while [ -n "$ts" ] && read -r src verb port; do
 		n=$((n + 1))
 		if [ -n "${HS_LIBRARY_GUEST:-}" ] && [ "$src" = "$HS_LIBRARY_GUEST" ]; then
 			# a shared node has no host alias: the filter lists its IP
