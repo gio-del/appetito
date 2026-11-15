@@ -63,7 +63,9 @@ if [ "$ci" = 1 ]; then
 	[ -n "$run" ] || { echo "none"; exit 0; }
 	sha=$(printf %s "$run" | jq -r '.head_sha[0:7]')
 	st=$(printf %s "$run" | jq -r 'if .status != "completed" then "pending" elif .conclusion == "success" then "green" else "red" end')
-	echo "$sha $st"
+	# durata del run (issue 572: l'installazione pulita deve stare sotto i 30 minuti); vuota se GitHub non da' le date
+	dur=$(printf %s "$run" | jq -r 'select(.run_started_at and .updated_at and .status == "completed") | ((.updated_at | fromdate) - (.run_started_at | fromdate)) | " (\(. / 60 | floor) min \(. % 60) s)"' 2> /dev/null || true)
+	echo "$sha $st$dur"
 	if [ "$st" = red ]; then
 		id=$(printf %s "$run" | jq -r .id)
 		jobs=$(get "/repos/$HS_APPETITO_REPO/actions/runs/$id/jobs?per_page=20") || die "job del run non leggibili"

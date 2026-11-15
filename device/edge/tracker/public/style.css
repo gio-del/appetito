@@ -26,6 +26,13 @@ body {
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--blue); }
+/* Tocchi da app (issue 594): niente riquadro azzurro del browser, feedback proprio al tocco; il focus da tastiera resta. */
+html { -webkit-tap-highlight-color: transparent; }
+a, button, summary, [role=button] { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+button:active, .menu-panel a:active, .card:active { background: var(--card-h); }
+.bnav a:active, .bnav button:active { background: var(--card-h); }
+.bnav a, .bnav button, .tabs button, .menu-panel a, .menu-panel .menu-item, a.card, button.card { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 .err { color: var(--red); min-height: 1.2em; margin: 0; font-size: 13px; }

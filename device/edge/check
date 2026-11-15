@@ -4,6 +4,7 @@
 # lint (violations are only printed: hs-monitor turns them into issues), then every
 # device/edge/tests/*.sh. No network. Exit 1 with the list of failures.
 # Usage (from anywhere): device/edge/check [--fast|--changed] [FILE...]
+#   (--changed also reads device/edge/check-map: file pattern -> tests that depend on it without naming it)
 #   --fast  skip the tests; --changed  run only the tests whose text names one of the files (FILE... or,
 #   without them, staged + uncommitted files): git pre-commit hook (issue 355); FILE...  check only these files (repo-relative)
 set -u
@@ -51,6 +52,9 @@ fi
 
 [ ! -d issues ] || [ -s DIREZIONE.md ] || { echo "FAIL DIREZIONE.md manca (issue 472)"; fails=$((fails + 1)); }
 
+# A tracked file at the root named only with digits is a stray redirect (`> 0`), issue 595.
+git ls-files | grep -E '^[0-9]+$' > "$T/out" && { sed 's/^/    /' "$T/out" > "$T/out2"; mv "$T/out2" "$T/out"; fail "file numerico alla radice (redirect sbagliato?)"; }
+
 # An executable file must start with its shebang (issue 502: a line pasted above it broke three scripts).
 git ls-files -s | awk '$1 == "100755" { print $4 }' | while IFS= read -r f; do
 	[ -f "$f" ] || continue
@@ -76,7 +80,13 @@ if [ -n "$CHANGED" ]; then
 	for f in "$@"; do
 		case $f in
 		device/edge/tests/*.sh) echo "$f" ;;
-		*) grep -lF -- "${f##*/}" device/edge/tests/*.sh 2> /dev/null ;;
+		*) grep -lF -- "${f##*/}" device/edge/tests/*.sh 2> /dev/null
+			# explicit dependencies the tests do not name (issue 589): device/edge/check-map
+			grep -v '^#' "${CHECK_MAP:-device/edge/check-map}" 2> /dev/null | while read -r pat tests; do
+				[ -n "$pat" ] || continue
+				# shellcheck disable=SC2254
+				case $f in $pat) for x in $tests; do echo "device/edge/tests/$x"; done ;; esac
+			done ;;
 		esac
 	done | sort -u > "$T/sel"
 	while read -r t; do

@@ -1069,6 +1069,11 @@ async function main() {
       const curr = [...n.querySelectorAll('[aria-current=page]')].map(x => x.dataset.nav); if (curr.length > 1) e.push('più voci correnti');
       if (document.documentElement.scrollWidth > W) e.push('scroll orizzontale');
       if (document.querySelectorAll('#bnav').length !== 1) e.push('barra duplicata');
+      for (const x of n.querySelectorAll('a, button')) { const s = getComputedStyle(x);
+        if (s.webkitTapHighlightColor !== 'rgba(0, 0, 0, 0)') e.push('riquadro di tocco del browser su ' + x.dataset.nav + ': ' + s.webkitTapHighlightColor);
+        if (s.userSelect !== 'none') e.push('voce selezionabile (menu alla pressione lunga) su ' + x.dataset.nav); }
+      const tc = [...document.querySelectorAll('meta[name=theme-color]')].map(m => m.media); if (!tc.some(m => /light/.test(m)) || !tc.some(m => /dark/.test(m))) e.push('theme-color chiaro/scuro mancante');
+      const tx = document.querySelector('main, body'); if (getComputedStyle(tx).userSelect === 'none') e.push('testo della pagina non selezionabile');
       return { e, curr: curr[0] || '', auto: n.querySelector('[data-nav=auto]').getAttribute('aria-label') || '' }; })()`;
     const tap = async sel => {
       const b = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
