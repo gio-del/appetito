@@ -9,6 +9,7 @@
 # Dashboard over HTTPS (Tailscale cert): needed for installing it as an app (PWA) on phones
 # and desktops. Tailnet and home LAN (AdGuard rewrites the name to the LAN IP).
 https://{$HS_TS_HOST} {
+	bind {$HS_CADDY_BIND:0.0.0.0}
 	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
 	header Strict-Transport-Security "max-age=31536000"
 	# no-cache: the browser revalidates (ETag, 304) instead of keeping an old page for days (issue 579)
@@ -27,6 +28,7 @@ https://{$HS_TS_HOST} {
 }
 
 :80 {
+	bind {$HS_CADDY_BIND:0.0.0.0}
 	header Cache-Control no-cache
 	# Static dashboard (issue 109): the page is in /usr/local/share/dashboard-web, its numbers are the JSON files
 	# of /var/lib/edge-status, also read by hs-monitor through 127.0.0.1.
@@ -54,7 +56,10 @@ https://{$HS_TS_HOST} {
 # the name to the LAN IP for Wi-Fi clients). Never the internet: no port forward on the router.
 # Not :443, which Tailscale Funnel would own if it were ever re-enabled.
 # {$HS_*} come from /etc/home-server.env (loaded by the runit service).
+# HS_CADDY_BIND (optional, env): addresses of the three LAN-facing sites (dashboard, :80, :8443). Unset = every
+# interface (the owner's server, LAN access); install.sh --no-tailscale sets it to 127.0.0.1 unless --listen-lan.
 https://{$HS_TS_HOST}:8443 {
+	bind {$HS_CADDY_BIND:0.0.0.0}
 	tls /var/lib/caddy/tls/{$HS_TS_HOST}.crt /var/lib/caddy/tls/{$HS_TS_HOST}.key
 	header Strict-Transport-Security "max-age=31536000"
 	reverse_proxy 127.0.0.1:8222

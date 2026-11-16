@@ -60,6 +60,14 @@ mk "$t/c2" ubuntu 24.04
 out=$(run "$t/c2" --user hs2 --no-tailscale) || fail "ubuntu 24.04: $out"
 echo "$out" | grep -q 'tailscale' && fail "--no-tailscale still touches tailscale"
 echo "$out" | grep -q 'ln -s /etc/hs-sv/tracker' || fail "ubuntu: tracker missing"
+# without Tailscale Caddy stays on loopback (issue 596); with Tailscale, or --listen-lan, the value is not written
+grep -qx 'HS_CADDY_BIND=127.0.0.1' "$t/c2/device/edge/home-server.env" || fail "--no-tailscale: Caddy not on loopback"
+grep -q '^HS_CADDY_BIND=' "$t/c1/device/edge/home-server.env" && fail "with Tailscale HS_CADDY_BIND written"
+mk "$t/c2b" debian 13
+run "$t/c2b" --user hs2 --no-tailscale --listen-lan > /dev/null || fail "--listen-lan refused"
+grep -q '^HS_CADDY_BIND=' "$t/c2b/device/edge/home-server.env" && fail "--listen-lan still binds loopback"
+# the three LAN-facing Caddy sites follow HS_CADDY_BIND and default to every IPv4 interface (the owner's server is unchanged)
+[ "$(grep -c 'bind {\$HS_CADDY_BIND:0.0.0.0}' "$repo/device/edge/debian/Caddyfile")" = 3 ] || fail "Caddyfile: three sites must use HS_CADDY_BIND"
 
 # refusals
 mk "$t/c3" debian 12

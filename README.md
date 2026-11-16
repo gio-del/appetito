@@ -14,7 +14,7 @@ cd <repo>
 sudo ./install.sh --user hs
 ```
 
-`--user` is the Linux user that will own the server (created if missing). Add `--no-tailscale` to skip Tailscale; `--dry-run` prints every command without running it. The script is safe to run again.
+`--user` is the Linux user that will own the server (created if missing). Add `--no-tailscale` to skip Tailscale: nothing then filters the network, so everything, Caddy included, listens on `127.0.0.1` only (reach it with an SSH tunnel). `--listen-lan` (only with `--no-tailscale`) lets Caddy's dashboard and ports 80/8443 listen on every interface: anyone who can reach the machine can then reach them, so use it only behind a firewall you control. `--dry-run` prints every command without running it. The script is safe to run again.
 
 It installs the packages, starts [runit](http://smarden.org/runit/) as a system service, writes `device/edge/home-server.env` from its template, puts the copy in `~hs/home-server`, runs the first deploy and enables the base services: the issue tracker, Caddy and Syncthing (plus Tailscale unless skipped). Optional services stay off. Everything listens on `127.0.0.1`.
 

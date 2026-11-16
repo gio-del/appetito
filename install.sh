@@ -1,6 +1,8 @@
 #!/bin/sh
 # Installer for a clean Debian 13 or Ubuntu 24.04 (issue 569, epic 567). Run it as root from the folder of this copy:
-#   sudo ./install.sh [--user NAME] [--no-tailscale] [--dry-run]
+#   sudo ./install.sh [--user NAME] [--no-tailscale [--listen-lan]] [--dry-run]
+# Without Tailscale the web sites (Caddy 80, 443, 8443) listen on 127.0.0.1 only; --listen-lan opens them to every
+# network interface (anyone who can reach the machine can then reach them: only behind a firewall you control).
 # What it does, in order: checks the system, installs the packages, creates the user (NAME, asked if not given),
 # starts runit as a system service (systemd unit hs-runsvdir), writes device/edge/home-server.env from its template,
 # puts the copy in the user's home as ~/home-server, runs the first deploy as that user and enables the base services.
@@ -10,7 +12,7 @@
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=${HS_INSTALL_ROOT:-}
-USER_NAME=""; TS=1; DRY=""
+USER_NAME=""; TS=1; DRY=""; LAN=""
 die() { echo "install.sh: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 x() { echo "+ $*"; [ -n "$DRY" ] || "$@"; }
@@ -18,6 +20,7 @@ while [ $# -gt 0 ]; do
 	case $1 in
 	--user) [ $# -ge 2 ] || die "--user wants a name"; USER_NAME=$2; shift 2 ;;
 	--no-tailscale) TS=""; shift ;;
+	--listen-lan) LAN=1; shift ;;
 	--dry-run) DRY=1; shift ;;
 	-h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) die "unknown option: $1 (see --help)" ;;
@@ -127,6 +130,8 @@ if [ ! -s "$ENVF" ]; then
 	sed -i "s/^HS_USER=.*/HS_USER=$USER_NAME/" "$ENVF"
 	[ -z "$lan" ] || sed -i "s/^HS_LAN_IP=.*/HS_LAN_IP=$lan/" "$ENVF"
 	grep -q '^HS_SECURITY_ENABLED=' "$ENVF" || echo 'HS_SECURITY_ENABLED=true' >> "$ENVF"
+	# Without Tailscale nothing filters the network: Caddy stays on loopback unless --listen-lan (Caddyfile, HS_CADDY_BIND).
+	if [ -z "$TS" ] && [ -z "$LAN" ]; then echo 'HS_CADDY_BIND=127.0.0.1' >> "$ENVF"; fi
 	echo "written $ENVF (HS_SECURITY_ENABLED=true). HS_TS_* and HS_*_TS_IP stay at the template values until you set the tailnet ones."
 else
 	echo "$ENVF exists, kept"

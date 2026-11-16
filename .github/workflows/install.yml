@@ -54,10 +54,9 @@ jobs:
           H=/home/tester/home-server
           f=$(sudo -u tester sh -c "cd $H && device/edge/debian/issues-new 'Prova di installazione' --status backlog" | head -1)
           [ -f "$f" ] || [ -f "$H/$f" ] || fail "issues-new did not create an issue ($f)"
-          # Nothing may listen beyond loopback except sshd, the DNS stub and the four ports Caddy (80, 443, 8443) and
-          # Syncthing (22000) open on every interface by design (reachable only through the host firewall or tailnet).
-          # Any other port is a failure; narrowing these four to loopback is a separate decision.
-          bad=$(sudo ss -ltnH | awk '{print $4}' | grep -Ev '^(127\.|\[::1\]|\[::\]:22$|0\.0\.0\.0:22$|127\.0\.0\.53|\*:(80|443|8443|22000)$)' || true)
+          # Nothing may listen beyond loopback except sshd and the DNS stub (--no-tailscale binds Caddy and Syncthing
+          # to 127.0.0.1; --listen-lan is the explicit opt-out).
+          bad=$(sudo ss -ltnH | awk '{print $4}' | grep -Ev '^(127\.|\[::1\]|\[::\]:22$|0\.0\.0\.0:22$|127\.0\.0\.53)' || true)
           [ -z "$bad" ] || fail "listening beyond 127.0.0.1: $bad"
           sudo -u tester sh -c "cd $H && HS_AUDIT_CI=1 scripts/security-audit" || fail "security-audit"
       - name: Time
