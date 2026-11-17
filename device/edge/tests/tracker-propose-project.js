@@ -66,6 +66,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   assert.ok(!fs.existsSync(path.join(repo, "issues", "open", af)), "closed");
   const dt = fs.readFileSync(path.join(repo, "issues", "done", af), "utf8");
   assert.ok(/^GitHub: sumisura#17 https:\/\/github.com/m.test(dt) && /^Closed: \d{4}/m.test(dt) && /^Blocked on: -$/m.test(dt) && dt.includes("(sistema)"), dt);
+  assert.ok(dt.includes("Inoltrata a sumisura#17") && dt.includes("il lavoro non è ancora fatto") && /^Publish: done$/m.test(dt), "testo del commento");
   assert.ok(fs.readFileSync(argl, "utf8").startsWith("issue sumisura Proposta per Sumisura "), "args");
   assert.strictEqual(run().status, 0, "idempotent");
   assert.strictEqual(fs.readFileSync(argl, "utf8").trim().split("\n").length, 1, "published once");

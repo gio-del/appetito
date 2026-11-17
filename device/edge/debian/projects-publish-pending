@@ -36,7 +36,7 @@ for (const f of fs.readdirSync(openDir).filter(x => /^\d{3,}-.*\.md$/.test(x)).s
     setField(p, 'Publish', 'done');
     setField(p, 'Blocked on', '-');
     setField(p, 'Closed', t.date);
-    p.comments.push({ date: `${t.date} ${t.time}`, author: 'sistema', text: `Pubblicata su GitHub: ${name}#${m[1]} ${m[2]}. Da qui la segue il Project; questa copia locale è chiusa.` });
+    p.comments.push({ date: `${t.date} ${t.time}`, author: 'sistema', text: `Inoltrata a ${name}#${m[1]} ${m[2]}: il lavoro non è ancora fatto, lo segue il Project su GitHub. Questa copia si chiude solo per non contarlo due volte.` });
     const target = path.join(doneDir, f);
     fs.writeFileSync(target + '.tmp', serialize(p), { mode: 0o664 });
     fs.renameSync(target + '.tmp', target);

@@ -12,7 +12,7 @@ let srv;
 const cleanup = () => { try { srv && srv.kill('SIGKILL'); } catch {} fs.rmSync(tmp, { recursive: true, force: true }); };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const steps3 = '## Esecuzione\n- [ ] autonomo\n- [ ] (HITL) crea il token (serve il tuo account)\n- [ ] (HITL) scegli il nome\n- [ ] (HITL) conferma la data\n- [x] (HITL) già fatto';
+const steps3 = '## Esecuzione\n- [x] autonomo\n- [ ] (HITL) crea il token (serve il tuo account)\n- [ ] (HITL) scegli il nome\n- [ ] (HITL) conferma la data\n- [x] (HITL) già fatto';
 function fixture() {
   const repo = path.join(tmp, 'repo');
   for (const d of ['open', 'done', 'proposed']) fs.mkdirSync(path.join(repo, 'issues', d), { recursive: true });
@@ -71,7 +71,7 @@ function fixture() {
   assert.match(d.desc, /- \[x\] \(HITL\) crea il token/);
   assert.match(d.desc, /- \[ \] \(HITL\) scegli il nome/);
   assert.match(d.desc, /- \[x\] \(HITL\) conferma la data/);
-  assert.match(d.desc, /- \[ \] autonomo/);
+  assert.match(d.desc, /- \[x\] autonomo/);
   const c = d.commentList.at(-1);
   assert.equal(c.author, 'owner');
   assert.match(c.text, /\*\*\(HITL\) crea il token \(serve il tuo account\)\*\*\nFatto\. fatto dal telefono/);

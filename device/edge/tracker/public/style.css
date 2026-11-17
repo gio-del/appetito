@@ -202,6 +202,10 @@ textarea { width: 100%; resize: vertical; line-height: 1.5; }
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; box-shadow: var(--shadow);
 }
 .toast.bad { border-color: var(--red); }
+.newver {
+  position: fixed; left: 50%; top: max(12px, env(safe-area-inset-top)); transform: translateX(-50%); z-index: 60;
+  background: var(--panel); color: inherit; border: 1px solid var(--red); border-radius: 8px; padding: 10px 16px; box-shadow: var(--shadow); font: inherit;
+}
 
 /* phones: one column at a time, chosen with tabs */
 @media (max-width: 760px) {
@@ -688,7 +692,9 @@ kbd { border: 1px solid var(--line); border-radius: 6px; padding: 0 5px; backgro
 .wait-row[aria-expanded=true] .go { transform: none; }
 .badge { flex: none; border-radius: 14px; padding: 1px 9px; font-size: 13px; font-weight: 700; }
 .b-bad { background: var(--redbg); color: var(--red); } .b-warn { background: var(--warnbg); color: var(--orange); } .b-ok { background: var(--okbg); color: var(--green); }
-.wait-list { flex: 1 0 100%; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.wait { flex: none; }
+.wait-list { flex: 1 0 100%; display: flex; flex-direction: column; border-top: 1px solid var(--line); max-height: 45vh; max-height: 45dvh; overflow-y: auto; overscroll-behavior: contain; }
+.wait-prop { flex: none; }
 .wait-prop { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 14px; background: none; border: 0; border-bottom: 1px solid var(--line);
   color: var(--text); text-align: left; cursor: pointer; }
 .wait-prop:last-child { border-bottom: 0; }

@@ -270,6 +270,17 @@ function pjCard(i) {
       i.updated ? h('span', { tip: 'Aggiornata ' + new Date(i.updated).toLocaleString('it-IT') }, relTime(i.updated)) : null));
 }
 
+// Proposal approved for another Project (issues 189, 613): the work is not done here, it follows on GitHub.
+// Live state from the mirror (open / closed); the text is untrusted: h() sets textContent only.
+function forwardInfo(f) {
+  const m = S.pj.projects[f.project]?.issues.find(x => x.number === f.number);
+  const state = m ? (m.state === 'closed' ? 'chiusa' : 'aperta') : 'stato non disponibile';
+  const url = m?.url || f.url;
+  return h('div', { class: 'forward' }, h('span', { class: 'badge ' + (m?.state === 'closed' ? 'b-ok' : 'b-warn') }, 'Inoltrata'),
+    ' ', url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, `${f.project}#${f.number}`) : `${f.project}#${f.number}`,
+    ' · ', h('span', { class: 'fw-state' }, state), h('small', { class: 'muted' }, ' Il lavoro non è fatto qui: lo segue il Project su GitHub.'));
+}
+
 // Card state line (issue 505): what the card waits for, with an always visible icon; «Bloccata da #N» keeps its own chips.
 function stateLine(i) {
   if (i.column === 'done' || i.column === 'proposed') return null;
@@ -344,7 +355,7 @@ function renderBoard() {
     if (!shown.some(i => i.column === S.tab)) { const c = ['in-progress', 'todo', 'blocked', 'backlog', 'done'].find(col => shown.some(i => i.column === col)); if (c) S.tab = c; }
   }
   for (const [col, name] of BOARD_COLS) {
-    const items = shown.filter(i => i.column === col).sort((a, b) => sortIssues(a, b, col));
+    const items = shown.filter(i => i.column === col && !(col === 'done' && i.forward)).sort((a, b) => sortIssues(a, b, col));
     tabs.append(h('button', { role: 'tab', 'aria-selected': String(S.tab === col), 'aria-label': `${name}: ${items.length}`,
       onclick: () => { S.tab = col; localSet('tab', col); renderBoard(); } }, h('span', { class: 'tab-name' }, name), h('span', { class: 'tab-n' }, items.length)));
     const listEl = h('div', { class: 'col-list' }, items.length ? items.map(ext ? pjCard : card) : h('div', { class: 'empty' }, 'Nessuna issue'));
@@ -496,8 +507,10 @@ async function patch(body) {
   const d = S.detail;
   try {
     await api('PATCH', `/api/issues/${d.id}`, { version: d.version, ...body });
+    const fwd = d.column === 'proposed' && d.project && body.approve;
     await openIssue(d.id);
     refresh();
+    if (fwd) toast(`Inoltrata a ${d.project}: la issue su GitHub arriva tra un paio di minuti`);
     return true;
   } catch (e) {
     fail(e);
@@ -594,6 +607,7 @@ function renderDetail() {
     autoGo && [h('span', { class: 'k' }, 'Automatico'), h('div', null, autoGo)],
     d.source && [h('span', { class: 'k' }, 'Proposta da'), h('div', null, sourceBadge(d))],
     d.project && [h('span', { class: 'k' }, 'Project'), h('div', null, projectBadge(d))],
+    d.forward && [h('span', { class: 'k' }, 'Inoltrata'), forwardInfo(d.forward)],
     d.origin && [h('span', { class: 'k' }, 'Origine'), d.originUrl
       ? h('a', { class: 'origin', href: d.originUrl, title: 'Apri in Obsidian' }, d.origin)
       : h('span', { class: 'origin' }, d.origin)],

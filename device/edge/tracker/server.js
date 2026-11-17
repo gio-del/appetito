@@ -29,7 +29,7 @@ const PORT = Number(process.env.TRACKER_PORT || 3004);
 const ORIGINS = (process.env.TRACKER_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 const HOSTS = ORIGINS.map(o => new URL(o).host);
 const AUTHOR = process.env.TRACKER_AUTHOR || 'web';
-const PUBLIC = path.join(__dirname, 'public');
+const PUBLIC = process.env.TRACKER_PUBLIC || path.join(__dirname, 'public'); // TRACKER_PUBLIC: tests only
 const DIRS = { open: path.join(REPO, 'issues', 'open'), done: path.join(REPO, 'issues', 'done'), proposed: path.join(REPO, 'issues', 'proposed') };
 
 const STATUSES = ['backlog', 'todo', 'in-progress'];
@@ -102,6 +102,8 @@ function model(state, file, text, mtime) {
     parent: /^\d{3,}$/.test(parentRaw) ? parentRaw : '',
     opened: getField(p, 'Opened') || '', closed: getField(p, 'Closed') || '', origin,
     project: (getField(p, 'Project') || '').trim(),
+    // Forwarded to the Project's GitHub (issue 189, 613): the local copy is closed only so it is not counted twice.
+    forward: forwardOf(p),
     source, entry: entryOf(source, origin), originPath: source === 'brain' ? originPathOf(origin) : '',
     rejectReason: getField(p, 'Reject-reason') || '', backlogReviewed: getField(p, 'Backlog-reviewed') || '',
     related: idList(getField(p, 'Related')), duplicateOf: idList(getField(p, 'Duplicate of'))[0] || '',
@@ -109,6 +111,12 @@ function model(state, file, text, mtime) {
     tasks, comments: p.comments.length, updated: mtime,
     version: crypto.createHash('sha256').update(state + '\n' + text).digest('hex').slice(0, 16),
   };
+}
+
+function forwardOf(p) {
+  if ((getField(p, 'Publish') || '').trim() !== 'done') return null;
+  const m = /^([a-z0-9][a-z0-9-]{0,40})#(\d+)(?: (https:\/\/github\.com\/\S{0,250}))?$/.exec((getField(p, 'GitHub') || '').trim());
+  return m ? { project: m[1], number: Number(m[2]), url: m[3] || '' } : null;
 }
 
 async function listFiles() {
@@ -1243,6 +1251,18 @@ async function readJson(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { throw bad('bad json'); }
 }
 
+// Version of the static files (issue 623): hash of public/ computed once at start. Pages remember it at load and, when they
+// come back to the foreground and it changed (deploy), reload themselves (nav.js).
+let STATIC_VERSION = null;
+function staticVersion() {
+  if (STATIC_VERSION) return STATIC_VERSION;
+  const h = crypto.createHash('sha256');
+  for (const f of fs.readdirSync(PUBLIC).sort()) {
+    try { h.update(f + '\0'); h.update(fs.readFileSync(path.join(PUBLIC, f))); } catch { /* skip */ }
+  }
+  return (STATIC_VERSION = h.digest('hex').slice(0, 16));
+}
+
 async function serveStatic(res, urlPath) {
   const rel = urlPath === '/' ? 'index.html' : urlPath.slice(1);
   if (!/^[a-z0-9-]+\.[a-z]+$/.test(rel)) return send(res, 404, { error: 'not found' });
@@ -1361,6 +1381,7 @@ async function handle(req, res) {
   if (p === '/healthz') return send(res, 200, 'ok', { 'Content-Type': 'text/plain' });
   // Only via the configured names (Caddy keeps the client's Host): no DNS rebinding.
   if (!HOSTS.includes(req.headers.host)) return send(res, 421, { error: 'unknown host' });
+  if (p === '/api/version' && req.method === 'GET') return send(res, 200, { v: staticVersion() }, { 'Cache-Control': 'no-store' });
   // The proposer is a script with a bearer token, not a browser: no cookie, so no CSRF to stop.
   if (p === '/api/propose' && req.method === 'POST') {
     const source = proposer(req);

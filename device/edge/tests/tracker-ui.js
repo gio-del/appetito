@@ -51,6 +51,8 @@ function fixture() {
   const today = new Date().toISOString().slice(0, 10);
   issue('done', '020', 'Chiusa di oggi', `Blocked on: -\nStatus: done\nClosed: ${today}`);
   issue('done', '021', 'Scartata di oggi', `Blocked on: -\nStatus: done\nLabels: scartata\nClosed: ${today}`);
+  issue('done', '022', 'Inoltrata aperta', `Blocked on: -\nStatus: todo\nProject: sumisura\nPublish: done\nGitHub: sumisura#7 https://github.com/o/sumisura/issues/7\nClosed: ${today}`);
+  issue('done', '023', 'Inoltrata chiusa', `Blocked on: -\nStatus: todo\nProject: sumisura\nPublish: done\nGitHub: sumisura#6 https://github.com/o/sumisura/issues/6\nClosed: ${today}`);
   issue('proposed', '015', 'Proposta del brain', 'Blocked on: -\nStatus: backlog\nLabels: proposed\nSource: brain');
   issue('proposed', '016', 'Proposta del sistema', 'Blocked on: -\nStatus: backlog\nLabels: proposed\nSource: system');
   issue('open', '017', 'Aspetta una data', 'Blocked on: -\nStatus: todo\nNot before: 2099-12-31');
@@ -207,6 +209,10 @@ async function main() {
   // issueFile(dir, prefix): reads the fixture's issue file after an action (e.g. issueFile('open', '019')).
   const issueFile = (dir, prefix) => { const d = path.join(env.TRACKER_REPO, 'issues', dir), n = fs.readdirSync(d).find(x => x.startsWith(prefix + '-'));
     return n ? fs.readFileSync(path.join(d, n), 'utf8') : null; };
+  // swipe(x, y0, y1): a real finger drag (touchStart, 10 touchMove, touchEnd; needs Emulation.setTouchEmulationEnabled). scrollIntoView
+  // also scrolls an overflow:hidden box, so a scroll test must use this (issue 623).
+  const swipe = async (x, y0, y1) => { const tp = (type, y) => c.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
+    await tp('touchStart', y0); for (let i = 1; i <= 10; i++) { await tp('touchMove', y0 + (y1 - y0) * i / 10); await sleep(16); } await tp('touchEnd', y1); await sleep(300); };
   let failed = 0;
   for (const k of CASES) {
     await c.send('Emulation.setDeviceMetricsOverride', { width: k.width, height: k.height, deviceScaleFactor: 1, mobile: k.mobile });
@@ -296,6 +302,40 @@ async function main() {
     const l2 = c.once('Page.loadEventFired'); await c.send('Page.navigate', { url: `${base}/` }); await l2;
     await waitFor(() => evaluate(`document.querySelectorAll('#board .card').length > 0`));
   }
+  // Molte proposte (issue 612): la lista aperta scorre, l'ultima proposta si raggiunge e si tocca.
+  {
+    const repo = env.TRACKER_REPO, errs = [], ids = [];
+    for (let n = 0; n < 12; n++) { const id = String(700 + n); ids.push(id);
+      fs.writeFileSync(path.join(repo, 'issues', 'proposed', `${id}-molte.md`), `# Proposta numero ${n}\n\nOpened: 2026-01-01\nBlocked on: -\nStatus: backlog\nLabels: proposed\nSource: brain\n\n## Problema\nx\n`); }
+    for (const [w, hgt, mobile] of [[340, 700, true], [360, 740, true], [390, 844, true], [1280, 800, false]]) {
+      await c.send('Emulation.setDeviceMetricsOverride', { width: w, height: hgt, deviceScaleFactor: 1, mobile });
+      const ld = c.once('Page.loadEventFired'); await c.send('Page.navigate', { url: `${base}/` }); await ld;
+      if (!await waitFor(() => evaluate(`!!document.querySelector('#wait-p')`))) { errs.push(`${w}px: «Ti aspetta» non caricato`); continue; }
+      await evaluate(`document.getElementById('wait-p').click()`);
+      if (!await waitFor(() => evaluate(`document.querySelectorAll('.wait-prop').length >= 12`))) { errs.push(`${w}px: lista non aperta`); continue; }
+      if (mobile) { // real finger: the open list must scroll (issue 623)
+        await c.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+        const box = await evaluateRead(`(() => { const l = document.querySelector('.wait-list'), r = l.getBoundingClientRect(); l.scrollTop = 0; return { x: r.left + r.width / 2, y: r.top + Math.min(r.height, innerHeight - r.top) / 2, can: l.scrollHeight > l.clientHeight }; })()`);
+        if (!box.can) errs.push(`${w}px: la lista non ha niente da scorrere`);
+        else { await swipe(Math.round(box.x), Math.round(box.y + 60), Math.round(box.y - 60));
+          if (!(await evaluate(`document.querySelector('.wait-list').scrollTop`) > 0)) errs.push(`${w}px: il dito non scorre la lista`); }
+        await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+      }
+      fs.writeFileSync(path.join(SHOTS, `proposte-${w}.png`), Buffer.from((await c.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+      const r = await evaluateRead(`(() => { const ps = [...document.querySelectorAll('.wait-prop')], last = ps[ps.length - 1]; last.scrollIntoView({ block: 'nearest' });
+        const b = last.getBoundingClientRect(), el = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+        return { hit: !!el && last.contains(el), inView: b.top >= 0 && b.bottom <= innerHeight + 0.5 }; })()`);
+      if (!r.hit || !r.inView) errs.push(`${w}px: ultima proposta non raggiungibile ${JSON.stringify(r)}`);
+      await evaluate(`(() => { const ps = document.querySelectorAll('.wait-prop'); ps[ps.length - 1].click(); })()`);
+      if (!await waitFor(() => evaluate(`!document.querySelector('#drawer').hidden`))) errs.push(`${w}px: il tocco non apre il drawer`);
+    }
+    for (const id of ids) fs.rmSync(path.join(repo, 'issues', 'proposed', `${id}-molte.md`));
+    if (errs.length) { failed++; console.log('FAIL molte proposte:'); for (const e of errs) console.log('    ' + e); }
+    else console.log('ok molte proposte: lista scorrevole, ultima raggiungibile a 340/360/390/1280 px');
+    await c.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+    const l3 = c.once('Page.loadEventFired'); await c.send('Page.navigate', { url: `${base}/` }); await l3;
+    await waitFor(() => evaluate(`document.querySelectorAll('#board .card').length > 0`));
+  }
   // Tap on a card's ⏳ chip at phone width (issue 154): the popover explains it, the card stays closed.
   await c.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await c.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
@@ -363,6 +403,19 @@ async function main() {
     else { failed++; console.log('FAIL immagini endpoint: ' + JSON.stringify(got)); }
   }
   await c.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  // Copie inoltrate a un Project (issue 613): non sono lavoro fatto; il drawer mostra lo stato vivo dal mirror.
+  {
+    const fw = await evaluate(`(() => [...document.querySelectorAll('#board .col[data-col="done"] .card')].map(e => e.dataset.id))()`);
+    const got = {};
+    for (const id of ['022', '023']) {
+      await evaluate(`openIssue('${id}')`).catch(() => {});
+      await waitFor(() => evaluate(`!!document.querySelector('#drawer .forward')`));
+      got[id] = await evaluate(`(() => { const f = document.querySelector('#drawer .forward'); return f ? f.textContent + '|' + (f.querySelector('a')?.href || '') : ''; })()`);
+    }
+    if (!fw.includes('022') && !fw.includes('023') && fw.includes('020') && /Inoltrata.*sumisura#7.*aperta/.test(got['022']) && got['022'].endsWith('/issues/7') && /Inoltrata.*sumisura#6.*chiusa/.test(got['023']))
+      console.log('ok copie inoltrate: fuori da Fatte, drawer con stato aperta/chiusa e link');
+    else { failed++; console.log('FAIL copie inoltrate: ' + JSON.stringify({ fw, got })); }
+  }
   // Issue dei Progetti nella board (issue 184): the filter swaps the columns to the GitHub copy, read-only.
   await c.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
   await fill('#f-project', 'sumisura');
@@ -1116,6 +1169,33 @@ async function main() {
     if (await evaluate(`getComputedStyle(document.getElementById('bnav')).display`) !== 'none') errs.push('barra visibile sul computer');
     if (errs.length) { failed++; console.log('FAIL barra in basso:'); for (const e of errs) console.log('    ' + e); }
     else console.log('ok barra in basso: 10 pagine a 360/390 px chiaro e scuro, bersagli, voce corrente, navigazione con tocchi, Aiuto, niente barra sul computer');
+  }
+  // Pagina aperta prima di un deploy (issue 623): al ritorno sulla scheda con una versione nuova si ricarica, salvo testo non salvato.
+  {
+    const errs = [], pub = path.join(tmp, 'pub');
+    fs.cpSync(path.join(__dirname, '..', 'tracker', 'public'), pub, { recursive: true });
+    let prev = srv;
+    const restart = async dir => { const gone = new Promise(r => prev.once('exit', r)); prev.kill(); await gone;
+      const n = spawn(process.execPath, [path.join(__dirname, '..', 'tracker', 'server.js')], { env: { ...env, TRACKER_PUBLIC: dir }, stdio: ['ignore', 'ignore', 'inherit'] });
+      kids.push(n); prev = n; await waitHttp(`${base}/`, 15000); return n; };
+    const nav = async () => { const l = c.once('Page.loadEventFired'); await c.send('Page.navigate', { url: `${base}/` }); await l;
+      await waitFor(() => evaluate(`!!document.querySelector('#board .card')`)); await sleep(500); };
+    const back = () => evaluate(`document.dispatchEvent(new Event('visibilitychange'))`);
+    let cur = await restart(pub);
+    await nav(); await evaluate(`window.__old = 1`);
+    fs.appendFileSync(path.join(pub, 'style.css'), '\n/* v2 */\n');
+    cur = await restart(pub);
+    await back();
+    if (!await waitFor(() => evaluate(`window.__old === undefined && !!document.querySelector('#board .card')`))) errs.push('la pagina non si è ricaricata con la versione nuova');
+    // unsaved text: no reload, banner
+    await evaluate(`window.__old = 1; (() => { const t = document.createElement('textarea'); t.id = 'zz'; document.body.append(t); t.value = 'bozza'; })()`);
+    fs.appendFileSync(path.join(pub, 'style.css'), '\n/* v3 */\n');
+    cur = await restart(pub);
+    await back(); await sleep(1500);
+    if (await evaluate(`window.__old`) !== 1) errs.push('si è ricaricata con testo non salvato');
+    if (!await evaluate(`!!document.getElementById('newver')`)) errs.push('manca l\'avviso «Versione nuova: ricarica»');
+    if (errs.length) { failed++; console.log('FAIL versione nuova:'); for (const e of errs) console.log('    ' + e); }
+    else console.log('ok versione nuova: la pagina si ricarica al ritorno sulla scheda, con testo non salvato avvisa');
   }
   c.close();
   return failed ? 1 : 0;

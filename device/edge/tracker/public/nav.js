@@ -47,6 +47,23 @@
   }
 
   function start() { if (typeof icon === 'function') build(); }
+  // Version check (issue 623): after a deploy a page opened before keeps the old CSS/JS; on return to the tab, reload,
+  // unless a form field holds unsaved text (then a banner asks).
+  let loadedV = null;
+  const version = async () => { try { const r = await fetch('/api/version', { credentials: 'same-origin', cache: 'no-store' }); return r.ok ? (await r.json()).v : null; } catch { return null; } };
+  const dirty = () => [...document.querySelectorAll('textarea, input')].some(f => !f.hidden && f.type !== 'password' && f.type !== 'checkbox' && f.type !== 'radio' && f.value !== f.defaultValue);
+  async function checkVersion() {
+    if (document.hidden || loadedV === null) return;
+    const v = await version();
+    if (!v || v === loadedV) return;
+    if (!dirty()) { location.reload(); return; }
+    if (document.getElementById('newver')) return;
+    const b = el('button', { type: 'button', id: 'newver', class: 'newver' }, 'Versione nuova: ricarica');
+    b.addEventListener('click', () => location.reload());
+    document.body.append(b);
+  }
+  version().then(v => { if (loadedV === null) loadedV = v; });
+  document.addEventListener('visibilitychange', checkVersion);
   if (typeof icon === 'function') start();
   else { const s = document.createElement('script'); s.src = 'icons.js'; s.onload = start; document.head.append(s); }
 })();

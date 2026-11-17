@@ -205,6 +205,25 @@ function housekeep(repo, author = 'sistema') {
           continue;
         }
       }
+      // 2b. hidden work (issue 616): `Blocked on: user` with non-HITL `- [ ]` steps (epics have their own rule):
+      // those lines move to a new todo issue blocked on this one, so ops-auto sees them without a lint round trip.
+      if (!labels.includes('epic') && /^user\b/i.test(blocked)) {
+        const lines = i.p.desc.split('\n');
+        const moved = lines.filter(l => UNTICKED_LINE_RE.test(l) && !/\(HITL\)/.test(l));
+        if (moved.length) {
+          const par = (getField(i.p, 'Parent') || '').trim();
+          const body = `Passi autonomi spostati dalla issue ${i.id} (aspetta l'owner): li fa ops-auto, la ${i.id} resta ferma sul suo passo (HITL).\n\n## Esecuzione\n${moved.join('\n')}\n`;
+          const { file } = newIssue(repo, `${i.p.title.replace(/^Issue \d+:\s*/, '')}: passi autonomi`.slice(0, 120),
+            { status: 'todo', blockedOn: `issue ${i.id}`, related: i.id, body, parent: par && known.has(par) ? par : undefined });
+          const nid = FILE_RE.exec(path.basename(file))[1];
+          i.p.desc = lines.filter(l => !moved.includes(l)).join('\n');
+          addComment(i.p, author, `Passi non HITL spostati nella issue ${nid} (Blocked on: issue ${i.id}): ${moved.length} ${moved.length > 1 ? 'passi' : 'passo'}, così ops-auto li vede.`);
+          writeAtomic(i.full, serialize(i.p));
+          log.push(`split hidden work of ${i.id} into ${nid}`);
+          changed = true;
+          continue;
+        }
+      }
       const ids = blockers(blocked);
       if (ids && ids.every(k => done.has(k))) {
         setField(i.p, 'Blocked on', '-');
