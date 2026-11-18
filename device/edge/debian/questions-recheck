@@ -1,6 +1,6 @@
 #!/bin/sh
 # Answers that arrived on their own (issue 354, epic 351). An open issue may carry a `Check:` header line
-# (issues/README.md): `deb-version PKG >= X`, `release OWNER/REPO >= X`, `url-status URL`, `file-exists PATH`.
+# (issues/README.md): `deb-version PKG >= X`, `release OWNER/REPO >= X`, `url-status URL`, `url-contains URL TOKEN`, `file-exists PATH`.
 # This job runs each one with known tools (no AI, no free text: the arguments are validated, never evaluated;
 # the only internet is a GitHub release tag and a HEAD request read by curl, issues 113/121) and writes
 # $QS_DIR/found.json {"<issue id>": {ok, check, evidence, at}}. The tracker shows «Sembra risolta: <prova>» on the
@@ -48,6 +48,14 @@ for f in "$OPEN"/[0-9]*.md; do
 			000) ok=false ev="$2 non raggiungibile" ;;
 			*) ok=false ev="$2 risponde $code" ;;
 			esac
+		fi ;;
+	url-contains)
+		# Issue 628: a public raw file that must contain a token (e.g. a pinned version): fetched by curl, compared with grep -F.
+		if [ $# -eq 3 ] && printf '%s' "$2" | grep -Eq '^https://[A-Za-z0-9._~:/?&=%+#@-]{1,300}$' && printf '%s' "$3" | grep -Eq '^[A-Za-z0-9._+-]{1,60}$'; then
+			body=$(${QR_CURL:-curl} -fsS -L -m 20 --max-filesize 1000000 "$2" 2>/dev/null) || body=
+			if [ -z "$body" ]; then ok=false ev="$2 non letto"
+			elif printf '%s' "$body" | grep -qF -- "$3"; then ok=true ev="$2 contiene $3"
+			else ok=false ev="$2 non contiene ancora $3"; fi
 		fi ;;
 	file-exists)
 		if [ $# -eq 2 ] && printf '%s' "$2" | grep -Eq '^/[A-Za-z0-9._/+-]{1,200}$'; then

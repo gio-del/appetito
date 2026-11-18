@@ -21,6 +21,14 @@ case "$*" in
 esac
 X
 chmod +x "$t/apt" "$t/curl"
+cat > "$t/curl" <<'X'
+#!/bin/sh
+case "$*" in
+*releases/latest*) echo '{"tag_name":"v1.4.0"}' ;;
+*-w*) case "$*" in *up.example*) printf 200 ;; *) printf 503 ;; esac ;;
+*raw.example*) echo 'GO_VERSION=1.27.4' ;;
+esac
+X
 mk() { printf '# T\n\nOpened: 2026-10-31\nBlocked on: user (x)\nStatus: todo\nCheck: %s\n\n\nbody\n' "$2" > "$t/open/$1-x.md"; }
 mk 001 "deb-version caddy >= 2.11.4-1"
 mk 002 "release foo/bar >= 1.3.0"
@@ -31,6 +39,8 @@ mk 006 "file-exists $t/open/001-x.md"
 mk 007 "file-exists /nonexistent/zzz"
 mk 008 "deb-version caddy; rm -rf / >= 1"
 mk 009 "frobnicate x"
+mk 013 "url-contains https://raw.example/f 1.27.4"
+mk 014 "url-contains https://raw.example/f 1.27.9"
 printf '# T\n\nOpened: 2026-10-31\nStatus: todo\n\nbody\n' > "$t/open/010-x.md"
 cp -r "$t/open" "$t/before"
 export QS_DIR=$t/qs QS_STATE=$t/st QR_APT_POLICY=$t/apt QR_CURL=$t/curl
@@ -43,6 +53,8 @@ check "release above" "$(val 002)" true
 check "release below" "$(val 003)" false
 check "url up" "$(val 004)" true
 check "url down" "$(val 005)" false
+check "url-contains true" "$(val 013)" true
+check "url-contains false" "$(val 014)" false
 check "file exists" "$(val 006)" true
 check "file missing" "$(val 007)" false
 check "injection rejected" "$(val 008)" null

@@ -69,6 +69,16 @@ queue() {
 	waits=$(node "${HS_ISSUES_JS:-/opt/hs-tracker/issues.js}" --waiting "$ST" 2>/dev/null || echo '{}')
 	{ q0=$(node "${HS_ISSUES_JS:-/opt/hs-tracker/issues.js}" --queue "$R"); for q in $q0; do isproj "$q" && [ -s "$ST/ci/$q" ] && echo "$q"; done; for q in $q0; do isproj "$q" && [ -s "$ST/ci/$q" ] || echo "$q"; done; } | while IFS= read -r q; do
 		case " $SKIP " in *" $q "*) continue ;; esac
+		# Waiting for an external event (issue 628): a local issue whose `Check:` is not true yet (questions-recheck, fresh
+		# found.json, under 2 days) does not start Claude; once per day the log says so (Governabilità n. 1).
+		if ! isproj "$q" && grep -q '^Check:' "$R/issues/open/$q" 2>/dev/null; then
+			cid=${q%%-*}
+			cev=$(jq -r --arg i "$cid" --argjson n "$(date +%s)" '.[$i] | select(.ok == false and (.ai // false) == false and ($n - .at) < 172800) | .evidence' "${QS_DIR:-/var/lib/question-suggestions}/found.json" 2>/dev/null) || cev=
+			if [ -n "$cev" ]; then
+				[ "$(cat "$ST/check-wait-$cid" 2>/dev/null)" = "$(date +%F)" ] || { echo "$(date +%F)" > "$ST/check-wait-$cid"; log "#$cid saltata: attende il Check ($cev)"; }
+				continue
+			fi
+		fi
 		# waiting (open PR, hold): the rule is issues.js queueWaits, shared with the card and the tracker (issue 259)
 		if isproj "$q" && printf '%s' "$waits" | grep -q "\"$q\":"; then continue; fi
 		# h = stays in front (red CI, monitor issue), r = takes part in the rotation (issue 216); the order, by the strategy of /queue.html (config, issue 225), is issues.js --order

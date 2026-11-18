@@ -380,7 +380,7 @@ function lint(repo, nowMs = Date.now()) {
     const oc = getField(i.p, 'Owner-confirmed');
     if (oc !== undefined && !validDay(oc.trim())) add(i, 'owner-confirmed-bad', `Issue ${i.id}: Owner-confirmed «${oc.trim()}» non è una data valida (YYYY-MM-DD)`);
     const chk = getField(i.p, 'Check');
-    if (chk !== undefined && !checkValid(chk)) add(i, 'check-bad', `Issue ${i.id}: Check «${chk.trim().slice(0, 60)}» non è valido (deb-version PKG >= X, release OWNER/REPO >= X, url-status URL, file-exists /PATH)`);
+    if (chk !== undefined && !checkValid(chk)) add(i, 'check-bad', `Issue ${i.id}: Check «${chk.trim().slice(0, 60)}» non è valido (deb-version PKG >= X, release OWNER/REPO >= X, url-status URL, url-contains URL TOKEN, file-exists /PATH)`);
     const par = parentOf.get(i.id);
     if (par) {
       if (!/^\d{3,}$/.test(par) || !ids.has(par)) add(i, 'parent-bad', `Issue ${i.id}: Parent ${par} non esiste`, true);
@@ -455,7 +455,8 @@ function checkValid(v) {
   switch (w[0]) {
     case 'deb-version': return w.length === 4 && /^[a-z0-9][a-z0-9.+-]*$/.test(w[1]) && w[2] === '>=' && ver.test(w[3]);
     case 'release': return w.length === 4 && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(w[1]) && w[2] === '>=' && /^v?[0-9][A-Za-z0-9.+~-]*$/.test(w[3]);
-    case 'url-status': return w.length === 2 && /^https?:\/\/[A-Za-z0-9._~:\/?&=%+#23867 23867]{1,300}$/.test(w[1]);
+    case 'url-status': return w.length === 2 && /^https?:\/\/[A-Za-z0-9._~:\/?&=%+#@-]{1,300}$/.test(w[1]);
+    case 'url-contains': return w.length === 3 && /^https:\/\/[A-Za-z0-9._~:\/?&=%+#@-]{1,300}$/.test(w[1]) && /^[A-Za-z0-9._+-]{1,60}$/.test(w[2]);
     case 'file-exists': return w.length === 2 && /^\/[A-Za-z0-9._\/+-]{1,200}$/.test(w[1]);
     default: return false;
   }

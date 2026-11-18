@@ -642,7 +642,7 @@ const LINT_FIX = {
   'id-clash': "Due file usano lo stesso numero. Rinumera quello scritto a mano in `open/` o `done/` con `git mv` al numero dato da `issues-next-id` (mai i file di `issues/proposed/`, che non si leggono né si toccano), aggiungi un commento che spiega il cambio e aggiorna i riferimenti al vecchio numero (`Related:`, `Blocked on:`, `Parent:`) nelle issue che parlavano di quella rinumerata.",
   'parent-bad': "Correggi `Parent:`: deve nominare una issue esistente che non sia a sua volta una sotto-issue (un solo livello), oppure togli il campo.",
   'not-before-bad': "Correggi `Not before:`: dev'essere una data reale nel formato `YYYY-MM-DD` (fino a quel giorno la issue resta fuori dalla coda di ops-auto), oppure togli il campo se l'attesa non serve più.",
-  'check-bad': "Correggi `Check:`: una sola riga con `deb-version PKG >= X`, `release OWNER/REPO >= X`, `url-status URL` o `file-exists /PERCORSO`, oppure togli il campo.",
+  'check-bad': "Correggi `Check:`: una sola riga con `deb-version PKG >= X`, `release OWNER/REPO >= X`, `url-status URL`, `url-contains URL TOKEN` o `file-exists /PERCORSO`, oppure togli il campo.",
 };
 let lintOut = [];
 try { lintOut = JSON.parse(sh('/usr/local/bin/issues-lint', [REPO]) || '[]'); } catch {}
@@ -671,6 +671,30 @@ function withFp(fp) {
 }
 const fence = t => t.replace(/```/g, "'''").split('\n').map(l => l.slice(0, 300)).join('\n').trim();
 function slug(t) { return t.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, ''); }
+
+// Recurrence comment on an already open issue (issues 021, 624): hourly, but once a day when the issue is
+// `Blocked on: user` (the owner is already being waited for; an hourly line is only git noise). The daily
+// text says how long the fault has lasted (from `Opened:`). Returns the text, or null when not due yet.
+function recurrence(head, last, now) {
+  const owner = /^Blocked on: user\b/m.test(head);
+  if (now - last < (owner ? 86400e3 : 3600e3)) return null;
+  if (!owner) return `Successo di nuovo (${stamp()}).`;
+  const o = (/^Opened: (\d{4}-\d\d-\d\d)\s*$/m.exec(head) || [])[1];
+  const h = o ? Math.floor((now - Date.parse(o + 'T00:00:00Z')) / 3600e3) : -1;
+  const dur = h < 0 ? '' : h < 48 ? ` Dura da circa ${Math.max(h, 1)} ore.` : ` Dura da ${Math.floor(h / 24)} giorni.`;
+  return `Successo di nuovo (${stamp()}).${dur} Il guasto aspetta l'owner: un solo commento al giorno.`;
+}
+// Test: hs-monitor --recurrence-test FILE, FILE = { "head": "issue header", "from": ms, "hours": N }: one
+// recurrence per hour for N hours; prints the comments written.
+if (process.argv[2] === '--recurrence-test') {
+  const t = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+  let last = 0;
+  for (let i = 0; i < t.hours; i++) {
+    const now = t.from + i * 3600e3, r = recurrence(t.head, last, now);
+    if (r) { last = now; console.log(r.replace(/\(.*?\)/, '(T)')); }
+  }
+  process.exit(0);
+}
 
 function addComment(file, text) {
   let body = fs.readFileSync(file, 'utf8').replace(/\s*$/, '\n');
@@ -717,7 +741,9 @@ for (let ev of rb.open) {
   if (open) {
     if (ev.lint) continue; // a shape problem persists until fixed: no hourly "again" comments
     const last = st.commented[ev.fp] || 0;
-    if (Date.now() - last > 3600e3) { addComment(open.full, `Successo di nuovo (${stamp()}).`); st.commented[ev.fp] = Date.now(); }
+    let head = ''; try { head = fs.readFileSync(open.full, 'utf8').split('\n## ')[0]; } catch {}
+    const rt = recurrence(head, last, Date.now());
+    if (rt) { addComment(open.full, rt); st.commented[ev.fp] = Date.now(); }
     continue;
   }
   if (ev.lint && st.created.lint >= MAX_LINT_PER_DAY) continue;
