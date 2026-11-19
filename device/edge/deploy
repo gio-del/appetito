@@ -21,7 +21,8 @@ if [ -z "${HS_DEPLOY_WORKER:-}" ] && [ -f /etc/home-server.env ] && command -v h
 	exec "$HERE/deploy-request" ${SKIP:+--skip-tests}
 fi
 # Absolute path: a relative one breaks pre-receive, which runs inside the .git folder (issue 474).
-[ -n "${HS_DEPLOY_ROLLBACK:-}" ] || git -C "$HERE/../.." config core.hooksPath "$HERE/git-hooks"
+# Not from a linked worktree (ops-auto's, issue 636): the setting is shared and would point at a folder that goes away.
+[ -n "${HS_DEPLOY_ROLLBACK:-}" ] || [ -f "$HERE/../../.git" ] || git -C "$HERE/../.." config core.hooksPath "$HERE/git-hooks"
 # One line per outcome (issue 128, counted by ops-suggest-signals as sig-deploy-failed):
 # "DATE TIME ok", "DATE TIME failed check" (stopped before installing) or "DATE TIME failed install", each failed
 # one with a fixed short reason after a colon (issue 279): "failed check: syntax|shellcheck|lint|test:NAME.sh|step:<first FAIL words>|nofail",

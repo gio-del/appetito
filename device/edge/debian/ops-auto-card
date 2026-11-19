@@ -6,8 +6,7 @@
 // quota fino al …", the last run's error, or "in attesa, prossimo giro HH:MM" (next :07/:37
 // slot, after the 30-min "repo in uso" quiet from `ops-auto --busy` when it applies). The
 // queue comes from `ops-auto --queue`, the same selector the worker uses. "Errori rilevati"
-// counts monitor issues without the lint label; "Da riordinare" the issues-lint ones.
-// "Avvisi sicurezza" counts the advisory-/eol- issues of hs-advisories (issue 124).
+// and files changed before the end of its last run don't count; uncommitted files never block, issue 637).
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -94,43 +93,24 @@ let quotaUntil = 0, manualQuotaUntil = 0;
 // block until they are committed).
 function repoFreeAt() {
   const out = (sh(path.join(HOME, 'bin/ops-auto'), ['--busy']) || '').trim();
-  if (out === 'dirty') return Infinity;
   return (Number(out) || 0) * 1000;
 }
 
-// Which uncommitted files block the repo and since when: `ops-auto --dirty-info` (issue 296).
-function dirtyInfo() {
-  try { return JSON.parse(sh(path.join(HOME, 'bin/ops-auto'), ['--dirty-info']) || 'null'); } catch { return null; }
-}
-function dirtyText(d) {
-  if (!d || !d.files || !d.files.length) return '';
-  const age = Math.max(0, Math.floor(Date.now() / 1000) - d.since), h = Math.floor(age / 3600);
-  return ': ' + d.files.join(', ') + (d.total > d.files.length ? ` (+${d.total - d.files.length} altri)` : '') + ' da ' + (h >= 1 ? h + ' h' : Math.max(1, Math.floor(age / 60)) + ' min');
-}
-
-// Uncommitted work of an interrupted run that the next round resumes (issue 108): "ID REASON"
-// from `ops-auto --interrupted`; until the 5-hour limit resets (`limited`) it waits for it.
-const resumeId = working ? '' : ((sh(path.join(HOME, 'bin/ops-auto'), ['--interrupted']) || '').trim().split(' ')[0] || '');
-const limitedUntil = (Number(read(path.join(ST, 'limited'))) || 0) * 1000;
 const resuming = working && !!(readJson(path.join(ST, 'current.json'), {}) || {}).resume;
 
 // "Avvia ora" pressed in the tracker and not yet answered by ops-auto-request (issue 067).
 const req = readJson('/var/lib/ops-auto-req/request.json', null);
 const pendingReq = req && req.id !== (readJson(path.join(ST, 'request.json'), {}) || {}).id && now / 1000 - req.at < 660;
-let dirtyD = null;
 let state;
 if (working) state = resuming ? `ripresa ${dispId(current)}` : `al lavoro su ${dispId(current)}`;
 else if (pendingReq) state = 'avvio manuale richiesto';
 else if (paused) state = 'in pausa';
 else if (quotaUntil) state = `fermo per la quota fino al ${dm(new Date(quotaUntil))} ${hm(new Date(quotaUntil))}${manualQuotaUntil ? '' : ' (avvio manuale sì)'}`;
-else if (resumeId) state = limitedUntil > now ? `riprende #${resumeId} alle ${hm(new Date(limitedUntil))} (limite 5 ore)`
-  : `riprende #${resumeId} al prossimo giro ${hm(nextSlot(Math.max(now, repoFreeAt())))}`;
 else if (last && last.note) state = last.note;
 else if (!queue.length) state = 'in attesa: niente in coda';
 else {
   const free = repoFreeAt();
-  if (free === Infinity) { dirtyD = dirtyInfo(); state = 'in attesa: modifiche non committate nel repo' + dirtyText(dirtyD); }
-  else {
+  {
     const slot = nextSlot(Math.max(now, free));
     state = `in attesa, prossimo giro ${slot.getDate() === new Date(now).getDate() ? '' : dm(slot) + ' '}${hm(slot)}${free > now ? ' (repo in uso)' : ''}`;
   }
@@ -343,10 +323,8 @@ function rounds() {
   if (working) code = 'working';
   else if (paused) code = 'paused';
   else if (quotaUntil) code = 'quota';
-  else if (resumeId) code = 'resume';
   else if (last && last.note) code = 'error';
   else if (!queue.length) code = 'empty';
-  else if (free === Infinity) code = 'dirty';
   else if (free > now) code = 'busy';
   else code = 'idle';
   const live = streamInfo(path.join(ST, 'last-run.jsonl'));
@@ -361,8 +339,8 @@ function rounds() {
       attempt: cur && cur.id === current ? cur.attempt : null, manual: !!(cur && cur.manual), live } : null,
     lastRun: working ? null : live && (() => { const hr = history().filter(r => r.outcome !== 'running' && r.id).pop(); return { total: live.total, counts: live.counts, tools: live.tools, todo: live.todo, cost: live.cost,
       ...(hr ? { id: hr.id, title: hr.title, outcome: hr.outcome, end: hr.end || null } : {}) }; })(),
-    nextSlot: Math.floor(nextSlot(Math.max(now, free === Infinity ? now : free)).getTime() / 1000),
-    repo: { dirty: free === Infinity, files: dirtyD ? dirtyD.files : [], total: dirtyD ? dirtyD.total : 0, since: dirtyD ? dirtyD.since : null, freeAt: free === Infinity ? null : Math.floor(free / 1000) },
+    nextSlot: Math.floor(nextSlot(Math.max(now, free)).getTime() / 1000),
+    repo: { dirty: false, files: [], total: 0, since: null, freeAt: Math.floor(free / 1000) },
     gates: { paused, quotaMax, quotaManualMax, perRun: Number(setting('HS_AUTO_MAX_PER_RUN') || 1),
       week: weekReads[0] || null,
       five: live && live.rate && live.rate.five && live.rate.five.reset * 1000 > now ? { ...live.rate.five, at: live.lastAt } : null,

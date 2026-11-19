@@ -4,7 +4,7 @@
 # This job runs each one with known tools (no AI, no free text: the arguments are validated, never evaluated;
 # the only internet is a GitHub release tag and a HEAD request read by curl, issues 113/121) and writes
 # $QS_DIR/found.json {"<issue id>": {ok, check, evidence, at}}. The tracker shows «Sembra risolta: <prova>» on the
-# card when ok is true; nothing is ever closed or answered here. Cron of $HS_USER every 6 hours.
+# card when ok is true; a `Blocked on: user` issue gets its (HITL) steps ticked and is unblocked (issue 635), nothing else is closed. Cron of $HS_USER every 6 hours.
 # Usage: questions-recheck [ISSUES_DIR]     (test overrides: QS_DIR, QR_APT_POLICY, QR_CURL)
 set -eu
 export PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8
@@ -70,6 +70,16 @@ for f in "$OPEN"/[0-9]*.md; do
 			s/\s*\z/\n/;
 			$_ .= "\n## Comments\n" unless /^## Comments\s*$/m;
 			$_ .= "\n### $ENV{RC_STAMP} (recheck)\nIl controllo `Check:` è passato: $ENV{RC_EV}. La issue torna in coda (`Status: todo`).\n";' "$f" || true
+	fi
+	# Issue 635: an issue waiting on the owner whose Check passes: the server already sees the answer, so it ticks the
+	# (HITL) steps itself and unblocks (the worker then verifies and closes); the owner is not asked or notified.
+	if [ "$ok" = true ] && grep -q '^Blocked on: user' "$f" && grep -q '^- \[ \] (HITL)' "$f" && ! grep -q '^### .* (recheck)$' "$f"; then
+		RC_STAMP=$(date '+%F %H:%M') RC_EV=$ev perl -0pi -e '
+			s/^- \[ \] \(HITL\)/- [x] (HITL)/mg;
+			s/^Blocked on: user[^\n]*\n/Blocked on: -\n/m;
+			s/\s*\z/\n/;
+			$_ .= "\n## Comments\n" unless /^## Comments\s*$/m;
+			$_ .= "\n### $ENV{RC_STAMP} (recheck)\nIl controllo `Check:` è passato: $ENV{RC_EV}. I passi `(HITL)` sono chiusi dal server, senza chiedere a te.\n";' "$f" || true
 	fi
 	[ "$ok" != null ] || { [ -n "$ev" ] || ev="controllo non valido"; }
 	jq --arg id "$id" --arg c "$line" --arg e "$ev" --argjson ok "$ok" --argjson at "$now" \

@@ -75,6 +75,15 @@ check "backlog + Check ok -> todo" "$(sed -n 's/^Status: //p' "$t/open/011-x.md"
 check "backlog + Check ok -> unblocked" "$(sed -n 's/^Blocked on: //p' "$t/open/011-x.md")" "-"
 check "note written once" "$(grep -c '(recheck)$' "$t/open/011-x.md")" 1
 check "backlog + Check false untouched" "$(sed -n 's/^Status: //p' "$t/open/012-x.md")" backlog
+# todo issue waiting on the owner whose Check passes: HITL steps ticked, unblocked, once (issue 635)
+printf '# T\n\nOpened: 2026-10-31\nBlocked on: user (rotare)\nStatus: todo\nCheck: release foo/bar >= 1.3.0\n\n- [ ] (HITL) Fai X (perché)\n- [ ] altro\n' > "$t/open/013-x.md"
+printf '# T\n\nOpened: 2026-10-31\nBlocked on: user (x)\nStatus: todo\nCheck: release foo/bar >= 1.5.0\n\n- [ ] (HITL) Fai X (perché)\n' > "$t/open/014-x.md"
+sh "$S" "$t/open"; sh "$S" "$t/open"
+check "HITL step ticked" "$(grep -c '^- \[x\] (HITL)' "$t/open/013-x.md")" 1
+check "other step untouched" "$(grep -c '^- \[ \] altro' "$t/open/013-x.md")" 1
+check "HITL + Check ok -> unblocked" "$(sed -n 's/^Blocked on: //p' "$t/open/013-x.md")" "-"
+check "HITL note once" "$(grep -c '(recheck)$' "$t/open/013-x.md")" 1
+check "HITL + Check false untouched" "$(grep -c '^- \[ \] (HITL)' "$t/open/014-x.md")" 1
 check "advisory text no longer says close" "$(grep -c 'Poi chiudi la issue' device/edge/debian/hs-monitor || true)" 0
 # grammar shared with issues-lint
 v=$(node -e 'const {checkValid:c}=require(process.argv[1]);console.log([c("deb-version caddy >= 2.1"),c("url-status https://a.b/c"),c("file-exists /x/y"),c("release a/b >= v1.2"),c("rm -rf /"),c("deb-version a; b >= 1"),c("file-exists rel/p")].join())' "$(pwd)/device/edge/tracker/issues.js")

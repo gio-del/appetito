@@ -7,15 +7,9 @@
 # reason}), which ops-auto-card copies into the tracker's status file; the request file is never
 # deleted (it belongs to the tracker), a handled id is just ignored.
 # Refused: a request older than 10 minutes (the Edge was off), ops-auto already running,
-# uncommitted changes in the repo (not the ones ops-auto keeps to resume an interrupted run, issue
-# 108; then only a request for that issue, or with no issue, is accepted). ops-auto itself still
-# checks the quota and the issue.
+# ops-auto itself still checks the quota and the issue (uncommitted files never block: issue 637).
 # Race (issue 347): if a scheduled round takes the lock between this check and the start, the manual
 # ops-auto waits up to 2 minutes for it; if it can't run it rewrites this answer as `busy` with the reason.
-# Wake at the 5-hour reset (issue 108): when a run cut off by the limit left work to resume
-# (~/.local/state/ops-auto/interrupted), the first minute after the reset starts a scheduled-like
-# round (no --manual: pause and quota still apply) instead of waiting for :07/:37; `limited` is
-# then removed, so it happens once.
 # Fresh queue (issue 099): when an issue file or the open/done dirs changed since ops-auto-card last
 # wrote its status (a new To do issue, a closure), the card is rewritten now instead of at the next
 # hs-monitor run; the settings file counts too (issue 176: a quota change shows at once); with no
@@ -29,11 +23,6 @@ I=$HOME/home-server/issues
 SETF=${HS_SETTINGS_FILE:-/var/lib/hs-settings/settings.env}
 if [ ! -e "$DETAIL" ] || [ -n "$(find "$I/open" "$I/done" "$SETF" -newer "$DETAIL" -print -quit 2>/dev/null)" ]; then
 	"$HOME/bin/ops-auto-card" 2>/dev/null || true
-fi
-if [ -s "$ST/limited" ] && [ -s "$ST/interrupted" ] && [ "$(date +%s)" -ge "$(cat "$ST/limited")" ]; then
-	rm -f "$ST/limited"
-	echo "$(date '+%F %T') wake: 5-hour limit over, resuming #$(cut -d' ' -f1 "$ST/interrupted")" >> "$ST/ops-auto.log"
-	setsid hs-run ops-auto "$HOME/bin/ops-auto" >> "$HOME/.local/state/ops-auto.log" 2>&1 < /dev/null &
 fi
 [ -s "$REQ" ] || exit 0
 id=$(jq -r '.id // empty | select(test("^[a-f0-9]{16}$"))' "$REQ" 2>/dev/null) || exit 0
@@ -51,9 +40,6 @@ answer() {
 }
 if [ $(($(date +%s) - at)) -gt 600 ]; then answer refused "richiesta scaduta"; exit 0; fi
 if [ -e "$ST/lock" ] && ! flock -n "$ST/lock" true; then answer refused "già al lavoro"; exit 0; fi
-if [ "$("$HOME/bin/ops-auto" --busy)" = dirty ]; then answer refused "modifiche non committate nel repo"; exit 0; fi
-own=$("$HOME/bin/ops-auto" --interrupted); own=${own%% *}
-if [ -n "$own" ] && [ -n "$issue" ] && [ "$(echo "$issue" | tr "#" -)" != "$own" ]; then answer refused "prima riprende #$own"; exit 0; fi
 answer started
 # Detached from this job: a run can take up to an hour.
 setsid hs-run ops-auto "$HOME/bin/ops-auto" --manual ${issue:+--issue "$issue"} >> "$HOME/.local/state/ops-auto.log" 2>&1 < /dev/null &
